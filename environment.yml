@@ -18,3 +18,40 @@ dependencies:
     - submodules/fused-ssim
     - opencv-python
     - joblib
+
+
+# name: gaussian_splatting
+# channels:
+#   - nvidia
+#   - pytorch
+#   - conda-forge
+#   - defaults
+# dependencies:
+#   # Basis
+#   - python=3.10
+#   - pip
+#   - ninja               # schnellerer C++-Build
+#   - cmake               # für manche Submodule
+  
+#   # CUDA 11.8 Laufzeit und nvcc
+#   - cudatoolkit=11.8
+#   - cudatoolkit-dev=11.8
+  
+#   # PyTorch passend zu CUDA 11.8
+#   - pytorch=2.1.0
+#   - torchvision=0.16.0
+#   - torchaudio=2.1.0
+#   - pytorch-cuda=11.8    # sorgt dafür, dass PyTorch mit 11.8-Toolkit läuft
+
+#   # Hilfs‑Pakete
+#   - tqdm
+#   - plyfile
+
+#   # Pip‑Abhängigkeiten
+#   - pip:
+#       - opencv-python
+#       - joblib
+#       # Submodule bauen – nutzt jetzt CUDA 11.8 aus Conda
+#       - submodules/diff-gaussian-rasterization
+#       - submodules/simple-knn
+#       - submodules/fused-ssim
