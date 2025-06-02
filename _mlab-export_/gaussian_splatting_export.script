@@ -1,0 +1,20 @@
+Interface {
+  Inputs {}
+  Outputs {}
+  Parameters {
+    Field update {
+      type = Trigger
+    }
+  }
+}
+
+Commands {
+  source = $(LOCAL)/gaussian_splatting_export.py
+}
+
+Window {
+  name = appWindow
+  Button update {
+    command = update
+  }
+}
