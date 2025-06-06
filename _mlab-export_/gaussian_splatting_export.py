@@ -115,7 +115,7 @@ def generate_weighted_splats_from_image(num_points=5000, output_path="points3D.t
     output_path += "/sparse/0/points3D.txt"
     
     image, tile = access_image("Vesselness.output0")
-    dicom_img, dicom_tile = access_image("SubImage.output0")
+    dicom_img, dicom_tile = access_image("InImage.output0")
 
     # In NumPy-Array umwandeln
     arr = np.array(tile, dtype=np.float32)
@@ -178,7 +178,7 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
     os.makedirs(output_path, exist_ok=True)
 
     image, tile = access_image("Vesselness.output0")
-    dicom_img, dicom_tile = access_image("SubImage.output0")
+    dicom_img, dicom_tile = access_image("InImage.output0")
 
     arr = np.array(tile, dtype=np.float32)
     while arr.ndim > 3:
@@ -231,19 +231,20 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
                 pca = PCA(n_components=3)
                 pca.fit(sub_coords)
 
-                scaling = abs(pca.singular_values_ * np.mean(spacing)) #/ 100.0
-                rotation = pca.components_.T  # shape (3,3)
+                scaling = abs(pca.singular_values_ * np.mean(spacing)) / 100.0
+                rotation = pca.components_  # shape (3,3)
                 if(i<10):
                     print(rotation)
                 
                 f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
+                
+                scalings.append(scaling.tolist())
+                rotations.append(rotation.tolist())
             else:
                 continue
                 # scaling = np.array([1.0, 1.0, 1.0]) * np.mean(spacing) / 100.0
                 # rotation = np.eye(3)
-
-            scalings.append(scaling.tolist())
-            rotations.append(rotation.tolist())
+            
 
     np.save(
         os.path.join(output_path, "scalings.npy"), np.array(scalings, dtype=np.float32)

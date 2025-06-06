@@ -689,10 +689,10 @@ module gaussian_splatting_export {
     localMacro = 1
     windows {
       window _default {
-        geometry = "1681 736 198 27"
-        relativePosition = "0.0174 0.0295"
+        geometry = "1170 496 198 27"
+        relativePosition = "-0.1311 -0.1430"
         sizeHint = "75 27"
-        wasOpen = no
+        wasOpen = yes
       }
     }
   }
@@ -700,5 +700,53 @@ module gaussian_splatting_export {
     instanceName = gaussian_splatting_export
   }
 }
-connections = ""
+module ImageLoad {
+  internal {
+    frame = "785 877 176 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "235 253 473 366"
+        relativePosition = "-0.2542 -0.2795"
+        sizeHint = "473 366"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = ImageLoad
+    filename = "C:/DATA/AHREZ/AhrezPlanner/AHrEZ-2-RSNA/ML-SEGMENTATIONS\\BASEIMAGE.mlimage"
+    autoLoad = TRUE
+    readRaw = FALSE
+    rawX = 1
+    rawY = 1
+    rawZ = 1
+    rawC = 1
+    rawT = 1
+    rawU = 1
+    dataTypeRaw = "unsigned int8"
+    planarConfig = Contiguous
+    byteOrder = LittleEndian
+    dataOffset = 0
+    pageSizeHint = "0 0 0 0 0 0"
+    suppressErrorLog = FALSE
+    dicomIgnoreHalfVoxelShift = FALSE
+    enableCheckSumTests = FALSE
+  }
+}
+module AHrEZPlanner {
+  internal {
+    frame = "1025 901 112 56"
+    moduleGroupName = ""
+  }
+  fields {
+    instanceName = AHrEZPlanner
+  }
+}
+connections {
+  gaussian_splatting_export.image = ImageLoad.output0
+  gaussian_splatting_export.mask = AHrEZPlanner.outSegmentationMasks
+  gaussian_splatting_export.scene = AHrEZPlanner.sceneOutput
+}
 networkModel = ""

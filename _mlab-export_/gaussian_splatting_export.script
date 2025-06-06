@@ -1,6 +1,17 @@
 Interface {
-  Inputs {}
-  Outputs {}
+  Inputs {
+    Field image {
+      internalName = InImage.input0
+    }
+    Field mask {
+      internalName = InMask.input0
+    }
+    Field scene {
+      internalName = InScene.child
+    }
+  }
+  Outputs {
+  }
   Parameters {
     Field update {
       type = Trigger

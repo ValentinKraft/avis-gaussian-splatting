@@ -3,23 +3,6 @@ mevislabVersion = 4.0.70.335
 network {
   watchlist = ""
 }
-module AHrEZPlanner {
-  internal {
-    frame = "889 733 112 56"
-    moduleGroupName = ""
-    windows {
-      window _default {
-        geometry = "122 100 1702 985"
-        relativePosition = "0.0068 -0.4123"
-        sizeHint = "686 433"
-        wasOpen = no
-      }
-    }
-  }
-  fields {
-    instanceName = AHrEZPlanner
-  }
-}
 module SoPerspectiveCamera {
   internal {
     frame = "573 525 152 56"
@@ -36,7 +19,7 @@ module SoPerspectiveCamera {
   fields {
     instanceName = SoPerspectiveCamera
     viewportMapping = ADJUST_CAMERA
-    position = "40.5754508972168 -17.861946105957 -54.1717948913574"
+    position = "-37.7439651489258 -38.5191230773926 -44.6281356811523"
     orientation = "0 0 1 0"
     aspectRatio = 1
     nearDistance = 0.53953755
@@ -116,7 +99,7 @@ module RotateAtTarget {
   }
   fields {
     instanceName = RotateAtTarget
-    inPosition = "40.5754523209978 -17.8619463807817 -54.1717965406033"
+    inPosition = "-37.7439657273952 -38.5191212889968 -44.6281340220804"
     inTarget = "0 0 0"
     inUpVector = "0 0 1"
     onInputChangeBehavior = Clear
@@ -253,41 +236,6 @@ module SoAxis {
     boxTransparency = 1
   }
 }
-module ImageLoad {
-  internal {
-    frame = "705 1045 176 72"
-    moduleGroupName = ""
-    showNetworkPanel = true
-    windows {
-      window _default {
-        geometry = "235 253 473 366"
-        relativePosition = "-0.2542 -0.2795"
-        sizeHint = "473 366"
-        wasOpen = no
-      }
-    }
-  }
-  fields {
-    instanceName = ImageLoad
-    filename = "C:/DATA/AHREZ/AhrezPlanner/AHrEZ-2-RSNA/ML-SEGMENTATIONS\\BASEIMAGE.mlimage"
-    autoLoad = TRUE
-    readRaw = FALSE
-    rawX = 1
-    rawY = 1
-    rawZ = 1
-    rawC = 1
-    rawT = 1
-    rawU = 1
-    dataTypeRaw = "unsigned int8"
-    planarConfig = Contiguous
-    byteOrder = LittleEndian
-    dataOffset = 0
-    pageSizeHint = "0 0 0 0 0 0"
-    suppressErrorLog = FALSE
-    dicomIgnoreHalfVoxelShift = FALSE
-    enableCheckSumTests = FALSE
-  }
-}
 module SoTransform {
   internal {
     frame = "773 669 104 56"
@@ -327,7 +275,7 @@ module ImageSave {
   fields {
     instanceName = ImageSave
     taskVerboseLogging = FALSE
-    filename = C:/DEV/TESTS/gs/gaussian-splatting/_scene_/images/99.jpg
+    filename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_/images/99.jpg
     addFileExtension = TRUE
     format = JPG
     comment = MeVisLab
@@ -373,26 +321,26 @@ module SoCameraAccess {
   }
   fields {
     instanceName = SoCameraAccess
-    transformDeltaOut = "0.950690746307373 -0.0249459743499756 -0.309135496616364 0
-0.240012288093567 0.690454363822937 0.682397842407227 0
-0.196420893073082 -0.722945690155029 0.66239595413208 0
+    transformDeltaOut = "-0.988067626953125 0.0702368840575218 0.137076303362846 0
+-0.0981966182589531 0.398385584354401 -0.911946594715118 0
+-0.118661515414715 -0.914524972438812 -0.386735081672668 0
 0 0 0 1"
-    viewingMatrix = "0.402903884649277 0.708290278911591 0.579649329185486 0
-0.915242314338684 -0.311800330877304 -0.255170673131943 0
--1.49011594174908e-08 0.633328795433044 -0.773882746696472 0
-1.10268592834473e-06 3.814697265625e-06 -70 1"
-    projectionMatrix = "2.41421365737915 0 0 0
-0 2.41421318054199 0 0
--6.66767050461203e-08 6.6676697940693e-08 -1.00199806690216 -1
+    viewingMatrix = "0.714257299900055 -0.446207076311111 -0.539199352264404 0
+-0.699883282184601 -0.455370843410492 -0.550272881984711 0
+-1.49011569305912e-07 0.770413279533386 -0.637544572353363 0
+4.79817390441895e-06 -3.814697265625e-06 -69.9999771118164 1"
+    projectionMatrix = "2.41421318054199 0 0 0
+0 2.41421294212341 0 0
+-1.00015043358326e-07 -1.00015029147471e-07 -1.00199806690216 -1
 0 0 -1.08015310764313 0"
-    cameraSpaceMatrix = "-0.485925555229187 0.654127538204193 0.579649269580841 0
-0.654127538204193 0.712042927742004 -0.255170613527298 0
--0.579649269580841 0.255170613527298 -0.773882627487183 0
--1.9073486328125e-06 3.814697265625e-06 -69.9999847412109 1"
-    camPosition = "40.5754508972168 -17.861946105957 -54.1717948913574"
-    lookAtPosition = "5.96046447753906e-08 -0.633328795433044 0.773882865905762"
-    upVector = "0.708290278911591 -0.311800330877304 0.633328795433044"
-    viewVector = "-0.579649925231934 0.255170404911041 0.773882508277893"
+    cameraSpaceMatrix = "0.197870492935181 -0.818603277206421 -0.539199471473694 0
+-0.818603277206421 0.164584577083588 -0.550273299217224 0
+0.539199471473694 0.550273299217224 -0.637544870376587 0
+1.9073486328125e-06 -9.5367431640625e-06 -70.0000076293945 1"
+    camPosition = "-37.7439651489258 -38.5191230773926 -44.6281356811523"
+    lookAtPosition = "1.49011611938477e-07 -0.770413339138031 0.637544870376587"
+    upVector = "-0.446207076311111 -0.455370843410492 0.770413279533386"
+    viewVector = "0.539198935031891 0.550273001194 0.637545466423035"
     viewportSizeOut = "1024 1024"
     nearDistance = 0.53953755
     farDistance = 540.61768
@@ -518,7 +466,7 @@ module SubImage {
     }
   }
   fields {
-    instanceName = SubImage
+    instanceName = InImage
     boxInput = "0 0 0 0 0 0 -1 -1 -1 -1 -1 -1"
     autoApplyBox = FALSE
     correctForNegativeSubImageExtents = FALSE
@@ -703,21 +651,43 @@ module Arithmetic {
     scalarVariablesComment = ""
   }
 }
+module SoToggle {
+  internal {
+    frame = "1029 941 120 56"
+    moduleGroupName = ""
+    showNetworkPanel = true
+  }
+  fields {
+    instanceName = InScene
+    whichChild = -3
+    on = TRUE
+  }
+}
+module Bypass {
+  internal {
+    frame = "1221 929 104 64"
+    moduleGroupName = ""
+    showNetworkPanel = true
+  }
+  fields {
+    instanceName = InMask
+    noBypass = FALSE
+  }
+}
 connections {
   SoPerspectiveCamera.position = RotateAtTarget.inPosition
   SoPerspectiveCamera.orientation = RotateAtTarget.outAxisAngleRotation
   OffscreenRenderer.sceneGraph = SoGroup.self
-  SoGroup.children = "SoPerspectiveCamera.self SoAxis.self SoCameraAccess.self SoTransform.self AHrEZPlanner.sceneOutput"
+  SoGroup.children = "SoPerspectiveCamera.self SoAxis.self SoCameraAccess.self SoTransform.self InScene.self"
   View2D.inInvPreLUT = SoGroup.self
-  SoAxis.inputImage = SubImage.output0
+  SoAxis.inputImage = InImage.output0
   ImageSave.input0 = OffscreenRenderer.output0
-  HA.input0 = AHrEZPlanner.outSegmentationMasks
+  HA.input0 = InMask.output0
   FastMorphology.input0 = Threshold.output0
-  Vesselness.input0 = SubImage.output0
+  Vesselness.input0 = InImage.output0
   Vesselness.input1 = FastMorphology.output0
-  SubImage.input0 = ImageLoad.output0
-  SubImage1.input0 = AHrEZPlanner.outSegmentationMasks
-  SubImage2.input0 = AHrEZPlanner.outSegmentationMasks
+  SubImage1.input0 = InMask.output0
+  SubImage2.input0 = InMask.output0
   Threshold.input0 = Arithmetic.output0
   Arithmetic.input0 = HA.output0
   Arithmetic.input1 = SubImage1.output0
