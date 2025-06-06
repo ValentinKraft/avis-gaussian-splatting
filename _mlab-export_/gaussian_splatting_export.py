@@ -7,7 +7,7 @@ import numpy as np
 from sklearn.decomposition import PCA
 from scipy.spatial.transform import Rotation as R
 
-out_path = "C:/DEV/TESTS/gs/gaussian-splatting/_scene_"
+out_path = "C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_"
 transforms = {
     "camera_angle_x": 0.785398,
     "w": 1024,
@@ -17,8 +17,8 @@ transforms = {
 
 def quaternion_from_matrix(matrix):
     return R.from_matrix(matrix[:3, :3]).as_quat()  # x, y, z, w
-    
-    
+
+
 def access_image(node):
     image = ctx.field(node).image()
     if not image:
@@ -32,8 +32,8 @@ def access_image(node):
         return
 
     return image, tile
-    
-    
+
+
 def generate_pca_covariances(voxel_coords, arr, spacing, neighborhood_size=3):
     covariances = []
     rotations = []
@@ -217,7 +217,6 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
             r = dicom_tile[0, 0, 0, z, y, x]
             g = r
             b = r
-            f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
 
             # PCA für lokale Nachbarschaft
             window = 3
@@ -227,74 +226,88 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
 
             subvolume = arr[zmin:zmax, ymin:ymax, xmin:xmax]
             sub_coords = np.argwhere(subvolume > 0)
-            if len(sub_coords) < 3:
-                sub_coords = np.array([[0, 0, 0]])
 
-            pca = PCA(n_components=3)
-            pca.fit(sub_coords)
+            if len(sub_coords) >= 3:
+                pca = PCA(n_components=3)
+                pca.fit(sub_coords)
 
-            scaling = pca.singular_values_ * np.mean(spacing) / 100.0
-            rotation = pca.components_  # shape (3,3)
+                scaling = abs(pca.singular_values_ * np.mean(spacing)) #/ 100.0
+                rotation = pca.components_.T  # shape (3,3)
+                if(i<10):
+                    print(rotation)
+                
+                f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
+            else:
+                continue
+                # scaling = np.array([1.0, 1.0, 1.0]) * np.mean(spacing) / 100.0
+                # rotation = np.eye(3)
 
             scalings.append(scaling.tolist())
             rotations.append(rotation.tolist())
 
-    # Speichern der zusätzlichen Splat-Informationen
-    np.save(os.path.join(output_path, "scalings.npy"), np.array(scalings))
-    np.save(os.path.join(output_path, "rotations.npy"), np.array(rotations))
+    np.save(
+        os.path.join(output_path, "scalings.npy"), np.array(scalings, dtype=np.float32)
+    )  # [N,3]
+    np.save(
+        os.path.join(output_path, "rotations.npy"),
+        np.array(rotations, dtype=np.float32),
+    )  # [N,3,3]
 
     print(f"[✓] {num_points} gewichtete Punkte mit PCA gespeichert nach: {output_path}")
 
 
-
 def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=100):
-  
-  image_width = transforms["w"]
-  image_height = transforms["h"]
-  focal_length = (image_width / 2) / np.tan(transforms["camera_angle_x"] / 2)
-  camera_id = 1
-  
-  # render random cams and render images
-  with open(os.path.join(output_path+"/sparse/0", "images.txt"), "w") as f:
-    
-    f.write("# Image list with two lines of data per image:\n")
-    f.write("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, IMAGE_NAME\n")
-    f.write("#   POINTS2D[] as (X, Y, POINT3D_ID)\n")
 
-    for i in range(num_imgs):
-      
-      radius = extent
-      theta = random.uniform(0, 2 * np.pi)       # Azimut
-      phi = random.uniform(0.2 * np.pi, 0.8 * np.pi)  # Polarwinkel, um nicht nur oben/unten zu landen
+    image_width = transforms["w"]
+    image_height = transforms["h"]
+    focal_length = (image_width / 2) / np.tan(transforms["camera_angle_x"] / 2)
+    camera_id = 1
 
-      x = radius * np.sin(phi) * np.cos(theta)
-      y = radius * np.sin(phi) * np.sin(theta)
-      z = radius * np.cos(phi)
-      
-      ctx.field("RotateAtTarget.inPosition").setValue([x,y,z])
-      ctx.field("RotateAtTarget.update").touch()
-      ctx.field("OffscreenRenderer.update").touch()
-      ctx.field("ImageSave.filename").setValue(f"{output_path}/images/{i}.jpg")
-      ctx.field("ImageSave.save").touch()
+    # render random cams and render images
+    with open(os.path.join(output_path + "/sparse/0", "images.txt"), "w") as f:
 
-      rot = ctx.field("RotateAtTarget.outQuaternionRotation").value
-      
-      # Original Quaternion von Kamera zu Welt
-      #q_wc = [rot[3], rot[0], rot[1], rot[2]]
-      r_wc = R.from_quat([rot[0], -rot[1], -rot[2], rot[3]])  # [x, y, z, w]
-      
-      r_cw = r_wc.inv()
-      
-      qx, qy, qz, qw = r_cw.as_quat()
+        f.write("# Image list with two lines of data per image:\n")
+        f.write("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, IMAGE_NAME\n")
+        f.write("#   POINTS2D[] as (X, Y, POINT3D_ID)\n")
 
-      # Kamerazentrum
-      C = np.array([x, -y, -z])
-      t = -r_cw.as_matrix() @ C
-      
-      f.write(f"{i+1} {qw} {qx} {qy} {qz} {t[0]/10.0} {t[1]/10.0} {t[2]/10.0} {camera_id} {i}.jpg\n")
-  
-  print(f"data exported to {output_path}")
-  
+        for i in range(num_imgs):
+
+            radius = extent
+            theta = random.uniform(0, 2 * np.pi)  # Azimut
+            phi = random.uniform(
+                0.2 * np.pi, 0.8 * np.pi
+            )  # Polarwinkel, um nicht nur oben/unten zu landen
+
+            x = radius * np.sin(phi) * np.cos(theta)
+            y = radius * np.sin(phi) * np.sin(theta)
+            z = radius * np.cos(phi)
+
+            ctx.field("RotateAtTarget.inPosition").setValue([x, y, z])
+            ctx.field("RotateAtTarget.update").touch()
+            ctx.field("OffscreenRenderer.update").touch()
+            ctx.field("ImageSave.filename").setValue(f"{output_path}/images/{i}.jpg")
+            ctx.field("ImageSave.save").touch()
+
+            rot = ctx.field("RotateAtTarget.outQuaternionRotation").value
+
+            # Original Quaternion von Kamera zu Welt
+            # q_wc = [rot[3], rot[0], rot[1], rot[2]]
+            r_wc = R.from_quat([rot[0], -rot[1], -rot[2], rot[3]])  # [x, y, z, w]
+
+            r_cw = r_wc.inv()
+
+            qx, qy, qz, qw = r_cw.as_quat()
+
+            # Kamerazentrum
+            C = np.array([x, -y, -z])
+            t = -r_cw.as_matrix() @ C
+
+            f.write(
+                f"{i+1} {qw} {qx} {qy} {qz} {t[0]/10.0} {t[1]/10.0} {t[2]/10.0} {camera_id} {i}.jpg\n"
+            )
+
+    print(f"data exported to {output_path}")
+
 ##############################################
 
 def update():
