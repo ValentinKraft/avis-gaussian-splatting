@@ -33,6 +33,65 @@ def access_image(node):
 
     return image, tile
 
+def write_gaussian_ply(
+    path,
+    points: np.ndarray,
+    colors: np.ndarray,
+    scales: np.ndarray,
+    rotations: np.ndarray,
+    opacities: np.ndarray = None
+):
+    assert points.shape[1] == 3
+    assert colors.shape[1] == 3
+    assert scales.shape[1] == 3
+    assert rotations.shape[1:] == (3, 3)
+
+    N = points.shape[0]
+    if opacities is None:
+        opacities = np.ones((N, 1), dtype=np.float32)
+
+    if colors.dtype != np.uint8:
+        colors = np.clip(colors * 255.0, 0, 255).astype(np.uint8)
+
+    rotations_flat = rotations.reshape(N, 9)
+
+    header = f"""ply
+format binary_little_endian 1.0
+element vertex {N}
+property float x
+property float y
+property float z
+property uchar red
+property uchar green
+property uchar blue
+property float opacity
+property float scale_0
+property float scale_1
+property float scale_2
+property float rot_0
+property float rot_1
+property float rot_2
+property float rot_3
+property float rot_4
+property float rot_5
+property float rot_6
+property float rot_7
+property float rot_8
+end_header
+"""
+
+    with open(path, "wb") as f:
+        f.write(header.encode("utf-8"))
+        for i in range(N):
+            xyz = points[i].astype(np.float32)
+            rgb = colors[i].astype(np.uint8)
+            alpha = np.float32(opacities[i][0])
+            scale = scales[i].astype(np.float32)
+            rot = rotations_flat[i].astype(np.float32)
+            data = np.concatenate([xyz, rgb, [alpha], scale, rot])
+            f.write(data.tobytes())
+    print(f"[✓] Gaussian Splatting PLY written to: {path}")
+
 
 def generate_pca_covariances(voxel_coords, arr, spacing, neighborhood_size=3):
     covariances = []
@@ -86,6 +145,7 @@ def generate_pca_covariances(voxel_coords, arr, spacing, neighborhood_size=3):
 
     return covariances, rotations, scalings
 
+###########################################################################################################
 
 def generate_random_splats(num_points=5000, output_path="points3D.txt"):
     
@@ -112,7 +172,7 @@ def generate_random_splats(num_points=5000, output_path="points3D.txt"):
 
 def generate_weighted_splats_from_image(num_points=5000, output_path="points3D.txt"):
   
-    output_path += "/sparse/0/points3D.txt"
+    output_path = os.path.join(output_path, "sparse/0")
     
     image, tile = access_image("Vesselness.output0")
     dicom_img, dicom_tile = access_image("InImage.output0")
@@ -152,9 +212,13 @@ def generate_weighted_splats_from_image(num_points=5000, output_path="points3D.t
     voxel_coords = np.stack(coords, axis=-1)  # (z, y, x)
     
     #covs, rots, scales = generate_pca_covariances(voxel_coords, arr, spacing)
-
+    scalings = []
+    rotations = []
+    positions = []
+    colors = []
+    
     # points3D.txt schreiben
-    with open(output_path, "w") as f:
+    with open(os.path.join(output_path, "points3D.txt"), "w") as f:
         f.write("# 3D point list with one line per point:\n")
         f.write("# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
 
@@ -167,8 +231,23 @@ def generate_weighted_splats_from_image(num_points=5000, output_path="points3D.t
             r = dicom_tile[0,0,0,z,y,x]
             g = dicom_tile[0,0,0,z,y,x]
             b = dicom_tile[0,0,0,z,y,x]
+            
+            positions.append([wx, wy, wz])
+            colors.append([r, g, b])
+            scalings.append([1,1,1])
+            rotations.append(R.identity().as_matrix().tolist())
 
             f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
+
+    # Gaussian Splatting PLY schreiben
+    positions = np.array(positions, dtype=np.float32)
+    colors = np.array(colors, dtype=np.uint8)
+    scalings = np.array(scalings, dtype=np.float32)
+    rotations = np.array(rotations, dtype=np.float32)
+    opacities = np.ones((len(positions), 1), dtype=np.float32)  # optional
+
+    ply_path = os.path.join(output_path, "points3D.ply")
+    write_gaussian_ply(ply_path, positions, colors, scalings, rotations, opacities)
 
     print(f"[✓] {num_points} gewichtete Punkte aus Bild gespeichert nach: {output_path}")
 
@@ -204,21 +283,25 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
 
     scalings = []
     rotations = []
+    positions = []
+    colors = []
 
     with open(os.path.join(output_path, "points3D.txt"), "w") as f:
         f.write("# 3D point list with one line per point:\n")
         f.write("# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
 
         for i, (z, y, x) in enumerate(voxel_coords, 1):
+            # World coords in Meter
             wx = (origin[0] + x * spacing[0]) / 100.0
             wy = (origin[1] + y * spacing[1]) / -100.0
             wz = (origin[2] + z * spacing[2]) / -100.0
 
+            # Farbe von Originalbild
             r = dicom_tile[0, 0, 0, z, y, x]
             g = r
             b = r
 
-            # PCA für lokale Nachbarschaft
+            # Lokale PCA
             window = 3
             zmin, zmax = max(0, z - window), min(arr.shape[0], z + window + 1)
             ymin, ymax = max(0, y - window), min(arr.shape[1], y + window + 1)
@@ -232,27 +315,29 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
                 pca.fit(sub_coords)
 
                 scaling = abs(pca.singular_values_ * np.mean(spacing)) / 100.0
-                rotation = pca.components_  # shape (3,3)
-                if(i<10):
-                    print(rotation)
-                
-                f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
-                
+                rotation = pca.components_
+
+                positions.append([wx, wy, wz])
+                colors.append([r, g, b])
                 scalings.append(scaling.tolist())
                 rotations.append(rotation.tolist())
-            else:
-                continue
-                # scaling = np.array([1.0, 1.0, 1.0]) * np.mean(spacing) / 100.0
-                # rotation = np.eye(3)
-            
 
-    np.save(
-        os.path.join(output_path, "scalings.npy"), np.array(scalings, dtype=np.float32)
-    )  # [N,3]
-    np.save(
-        os.path.join(output_path, "rotations.npy"),
-        np.array(rotations, dtype=np.float32),
-    )  # [N,3,3]
+                # Optionaler Colmap-Kompatibilitäts-Export
+                f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
+
+    # Numpy speichern (falls gewünscht)
+    #np.save(os.path.join(output_path, "scalings.npy"), np.array(scalings, dtype=np.float32))
+    #np.save(os.path.join(output_path, "rotations.npy"), np.array(rotations, dtype=np.float32))
+
+    # Gaussian Splatting PLY schreiben
+    positions = np.array(positions, dtype=np.float32)
+    colors = np.array(colors, dtype=np.uint8)
+    scalings = np.array(scalings, dtype=np.float32)
+    rotations = np.array(rotations, dtype=np.float32)
+    opacities = np.ones((len(positions), 1), dtype=np.float32)  # optional
+
+    ply_path = os.path.join(output_path, "points3D.ply")
+    write_gaussian_ply(ply_path, positions, colors, scalings, rotations, opacities)
 
     print(f"[✓] {num_points} gewichtete Punkte mit PCA gespeichert nach: {output_path}")
 
@@ -313,6 +398,6 @@ def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=
 
 def update():
     
-    #generate_weighted_splats_from_image(num_points=100000,output_path=out_path)
-    generate_weighted_splats_from_image_with_pca(num_points=100000, output_dir=out_path)
+    generate_weighted_splats_from_image(num_points=100000,output_path=out_path)
+    #generate_weighted_splats_from_image_with_pca(num_points=100000, output_dir=out_path)
     render_images_and_generate_cameras_txt(100,out_path,70)
