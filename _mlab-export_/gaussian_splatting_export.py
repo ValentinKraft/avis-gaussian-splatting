@@ -35,18 +35,27 @@ def access_image(node):
 
 def write_gaussian_ply(
     path,
-    points: np.ndarray,
-    colors: np.ndarray,
-    scales: np.ndarray,
-    rotations: np.ndarray,
-    opacities: np.ndarray = None
+    points,
+    colors,
+    scales,
+    rotations,
+    opacities = None
 ):
+    positions = np.array(positions, dtype=np.float32)
+    colors = np.array(colors, dtype=np.uint8)
+    scalings = np.array(scalings, dtype=np.float32)
+    rotations = np.array(rotations, dtype=np.float32)
+    opacities = np.ones((len(positions), 1), dtype=np.float32)  # optional
+    
     assert points.shape[1] == 3
     assert colors.shape[1] == 3
     assert scales.shape[1] == 3
     assert rotations.shape[1:] == (3, 3)
+    
 
     N = points.shape[0]
+    print(f"Nr of points: {N}")
+    
     if opacities is None:
         opacities = np.ones((N, 1), dtype=np.float32)
 
@@ -89,6 +98,8 @@ end_header
             scale = scales[i].astype(np.float32)
             rot = rotations_flat[i].astype(np.float32)
             data = np.concatenate([xyz, rgb, [alpha], scale, rot])
+            # if(i % 50 == 0):
+            #     print(f"Point {i}: {xyz}")
             f.write(data.tobytes())
     print(f"[✓] Gaussian Splatting PLY written to: {path}")
 
@@ -170,26 +181,22 @@ def generate_random_splats(num_points=5000, output_path="points3D.txt"):
     print(f"[✓] {num_points} Punkte aus Bild gespeichert nach: {output_path}")
 
 
-def generate_weighted_splats_from_image(num_points=5000, output_path="points3D.txt"):
-  
-    output_path = os.path.join(output_path, "sparse/0")
-    
+def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="output"):
+    output_path = os.path.join(output_dir, "sparse/0")
+    os.makedirs(output_path, exist_ok=True)
+
     image, tile = access_image("Vesselness.output0")
     dicom_img, dicom_tile = access_image("InImage.output0")
 
-    # In NumPy-Array umwandeln
     arr = np.array(tile, dtype=np.float32)
-    
-    # Falls zusätzliche Dimensionen existieren, diese entfernen
     while arr.ndim > 3:
-      arr = arr[0]
+        arr = arr[0]
 
-    # Bildgrößen und Weltinformationen
     dims = image.imageExtent()[1:4]  # (x,y,z)
     spacing = image.voxelSize()
     print(f"Spacing: {spacing}")
-    m = image.voxelToWorldMatrix()#.getTranslation()
-    origin = [m[0][3],m[1][3],m[2][3]]
+    m = image.voxelToWorldMatrix()
+    origin = [m[0][3], m[1][3], m[2][3]]
     print(f"Origin: {origin}")
 
     # Wahrscheinlichkeitsverteilung erstellen (z. B. Werte > 0)
@@ -210,76 +217,6 @@ def generate_weighted_splats_from_image(num_points=5000, output_path="points3D.t
     # Berechne Voxel-Koordinaten (z,y,x Reihenfolge beachten!)
     coords = np.unravel_index(chosen_indices, arr.shape)
     voxel_coords = np.stack(coords, axis=-1)  # (z, y, x)
-    
-    #covs, rots, scales = generate_pca_covariances(voxel_coords, arr, spacing)
-    scalings = []
-    rotations = []
-    positions = []
-    colors = []
-    
-    # points3D.txt schreiben
-    with open(os.path.join(output_path, "points3D.txt"), "w") as f:
-        f.write("# 3D point list with one line per point:\n")
-        f.write("# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
-
-        for i, (z, y, x) in enumerate(voxel_coords, 1):
-            # Weltkoordinaten berechnen
-            wx = (origin[0] + x * spacing[0] ) / 100.0
-            wy = (origin[1] + y * spacing[1] ) / -100.0
-            wz = (origin[2] + z * spacing[2] ) / -100.0
-
-            r = dicom_tile[0,0,0,z,y,x]
-            g = dicom_tile[0,0,0,z,y,x]
-            b = dicom_tile[0,0,0,z,y,x]
-            
-            positions.append([wx, wy, wz])
-            colors.append([r, g, b])
-            scalings.append([1,1,1])
-            rotations.append(R.identity().as_matrix().tolist())
-
-            f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
-
-    # Gaussian Splatting PLY schreiben
-    positions = np.array(positions, dtype=np.float32)
-    colors = np.array(colors, dtype=np.uint8)
-    scalings = np.array(scalings, dtype=np.float32)
-    rotations = np.array(rotations, dtype=np.float32)
-    opacities = np.ones((len(positions), 1), dtype=np.float32)  # optional
-
-    ply_path = os.path.join(output_path, "points3D.ply")
-    write_gaussian_ply(ply_path, positions, colors, scalings, rotations, opacities)
-
-    print(f"[✓] {num_points} gewichtete Punkte aus Bild gespeichert nach: {output_path}")
-
-
-def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="output"):
-    output_path = os.path.join(output_dir, "sparse/0")
-    os.makedirs(output_path, exist_ok=True)
-
-    image, tile = access_image("Vesselness.output0")
-    dicom_img, dicom_tile = access_image("InImage.output0")
-
-    arr = np.array(tile, dtype=np.float32)
-    while arr.ndim > 3:
-        arr = arr[0]
-
-    dims = image.imageExtent()[1:4]  # (x,y,z)
-    spacing = image.voxelSize()
-    m = image.voxelToWorldMatrix()
-    origin = [m[0][3], m[1][3], m[2][3]]
-
-    arr_flat = arr.flatten()
-    arr_flat[arr_flat < 0] = 0
-    total = np.sum(arr_flat)
-    if total == 0:
-        print("Alle Bildwerte sind 0.")
-        return
-    probs = arr_flat / total
-
-    all_indices = np.arange(len(arr_flat))
-    chosen_indices = np.random.choice(all_indices, size=num_points, replace=False, p=probs)
-    coords = np.unravel_index(chosen_indices, arr.shape)
-    voxel_coords = np.stack(coords, axis=-1)
 
     scalings = []
     rotations = []
@@ -326,18 +263,12 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
                 f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
 
     # Numpy speichern (falls gewünscht)
-    #np.save(os.path.join(output_path, "scalings.npy"), np.array(scalings, dtype=np.float32))
-    #np.save(os.path.join(output_path, "rotations.npy"), np.array(rotations, dtype=np.float32))
+    np.save(os.path.join(output_path, "scalings.npy"), np.array(scalings, dtype=np.float32))
+    np.save(os.path.join(output_path, "rotations.npy"), np.array(rotations, dtype=np.float32))
 
     # Gaussian Splatting PLY schreiben
-    positions = np.array(positions, dtype=np.float32)
-    colors = np.array(colors, dtype=np.uint8)
-    scalings = np.array(scalings, dtype=np.float32)
-    rotations = np.array(rotations, dtype=np.float32)
-    opacities = np.ones((len(positions), 1), dtype=np.float32)  # optional
-
     ply_path = os.path.join(output_path, "points3D.ply")
-    write_gaussian_ply(ply_path, positions, colors, scalings, rotations, opacities)
+    write_gaussian_ply(ply_path, positions, colors, scalings, rotations)
 
     print(f"[✓] {num_points} gewichtete Punkte mit PCA gespeichert nach: {output_path}")
 
@@ -398,6 +329,5 @@ def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=
 
 def update():
     
-    generate_weighted_splats_from_image(num_points=100000,output_path=out_path)
-    #generate_weighted_splats_from_image_with_pca(num_points=100000, output_dir=out_path)
+    generate_weighted_splats_from_image_with_pca(num_points=100000, output_dir=out_path)
     render_images_and_generate_cameras_txt(100,out_path,70)
