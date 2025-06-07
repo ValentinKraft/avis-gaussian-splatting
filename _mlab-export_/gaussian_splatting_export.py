@@ -192,10 +192,10 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
 
     dims = image.imageExtent()[1:4]  # (x,y,z)
     spacing = image.voxelSize()
-    print(f"Spacing: {spacing}")
+    #print(f"Spacing: {spacing}")
     m = image.voxelToWorldMatrix()
     origin = [m[0][3], m[1][3], m[2][3]]
-    print(f"Origin: {origin}")
+    #print(f"Origin: {origin}")
 
     # Wahrscheinlichkeitsverteilung erstellen (z. B. Werte > 0)
     arr_flat = arr.flatten()
@@ -322,7 +322,7 @@ def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=
                 f"{i+1} {qw} {qx} {qy} {qz} {t[0]/10.0} {t[1]/10.0} {t[2]/10.0} {camera_id} {i}.jpg\n"
             )
 
-    print(f"data exported to {output_path}")
+    #print(f"data exported to {output_path}")
 
 ##############################################
 
