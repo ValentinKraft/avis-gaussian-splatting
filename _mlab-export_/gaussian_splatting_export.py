@@ -41,20 +41,18 @@ def write_gaussian_ply(
     rotations,
     opacities = None
 ):
-    positions = np.array(positions, dtype=np.float32)
+    points = np.array(points, dtype=np.float32)
     colors = np.array(colors, dtype=np.uint8)
-    scalings = np.array(scalings, dtype=np.float32)
+    scales = np.array(scales, dtype=np.float32)
     rotations = np.array(rotations, dtype=np.float32)
-    opacities = np.ones((len(positions), 1), dtype=np.float32)  # optional
+    opacities = np.ones((len(points), 1), dtype=np.float32)  # optional
     
     assert points.shape[1] == 3
     assert colors.shape[1] == 3
     assert scales.shape[1] == 3
     assert rotations.shape[1:] == (3, 3)
-    
 
     N = points.shape[0]
-    print(f"Nr of points: {N}")
     
     if opacities is None:
         opacities = np.ones((N, 1), dtype=np.float32)
@@ -271,7 +269,7 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
     ply_path = os.path.join(output_path, "points3D.ply")
     write_gaussian_ply(ply_path, positions, colors, scalings, rotations)
 
-    print(f"[✓] {num_points} gewichtete Punkte mit PCA gespeichert nach: {output_path}")
+    print(f"[✓] {len(positions)} von {num_points} gewichteten Punkten mit PCA gespeichert nach: {output_path}")
 
 
 def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=100):
