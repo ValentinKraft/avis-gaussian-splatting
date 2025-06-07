@@ -181,7 +181,7 @@ def generate_random_splats(num_points=5000, output_path="points3D.txt"):
     print(f"[✓] {num_points} Punkte aus Bild gespeichert nach: {output_path}")
 
 
-def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="output"):
+def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="output", use_pca=True):
     output_path = os.path.join(output_dir, "sparse/0")
     os.makedirs(output_path, exist_ok=True)
 
@@ -239,28 +239,29 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
             b = r
 
             # Lokale PCA
-            window = 3
-            zmin, zmax = max(0, z - window), min(arr.shape[0], z + window + 1)
-            ymin, ymax = max(0, y - window), min(arr.shape[1], y + window + 1)
-            xmin, xmax = max(0, x - window), min(arr.shape[2], x + window + 1)
+            if(use_pca):
+                window = 3
+                zmin, zmax = max(0, z - window), min(arr.shape[0], z + window + 1)
+                ymin, ymax = max(0, y - window), min(arr.shape[1], y + window + 1)
+                xmin, xmax = max(0, x - window), min(arr.shape[2], x + window + 1)
 
-            subvolume = arr[zmin:zmax, ymin:ymax, xmin:xmax]
-            sub_coords = np.argwhere(subvolume > 0)
+                subvolume = arr[zmin:zmax, ymin:ymax, xmin:xmax]
+                sub_coords = np.argwhere(subvolume > 0)
 
-            if len(sub_coords) >= 3:
-                pca = PCA(n_components=3)
-                pca.fit(sub_coords)
+                if len(sub_coords) >= 3:
+                    pca = PCA(n_components=3)
+                    pca.fit(sub_coords)
 
-                scaling = abs(pca.singular_values_ * np.mean(spacing)) / 100.0
-                rotation = pca.components_
+                    scaling = abs(pca.singular_values_ * np.mean(spacing)) / 100.0
+                    rotation = pca.components_
 
-                positions.append([wx, wy, wz])
-                colors.append([r, g, b])
-                scalings.append(scaling.tolist())
-                rotations.append(rotation.tolist())
+                    positions.append([wx, wy, wz])
+                    colors.append([r, g, b])
+                    scalings.append(scaling.tolist())
+                    rotations.append(rotation.tolist())
 
-                # Optionaler Colmap-Kompatibilitäts-Export
-                f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
+            # Write to points3D.txt
+            f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
 
     # Numpy speichern (falls gewünscht)
     np.save(os.path.join(output_path, "scalings.npy"), np.array(scalings, dtype=np.float32))
