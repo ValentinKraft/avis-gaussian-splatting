@@ -175,16 +175,16 @@ class GaussianModel:
         exposure = torch.eye(3, 4, device="cuda")[None].repeat(len(cam_infos), 1, 1)
         self._exposure = nn.Parameter(exposure.requires_grad_(True))
         
-        print(f"Before: {self._rotation[:10]}")        
+        #print(f"Before: {self._rotation[:10]}")        
         self._override_rotations()
 
     def _override_rotations(self):
-        scales_np = np.load("C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_/sparse/0/scalings.npy")  # (N, 3)
-        rots_np = np.load("C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_/sparse/0/rotations.npy")  # (N, 3, 3)
+        scales_np = np.load("C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_/sparse/0/scalings.npy")
+        rots_np = np.load("C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_/sparse/0/rotations.npy")
             
         print("Loaded scaling shape:", scales_np.shape)  # z.B. (100000, 3)
         print("Loaded rotation shape:", rots_np.shape)  # z.B. (100000, 3, 3)
-        assert rots_np.shape[1:] == (3, 3), "Rotation shape is not (N, 3, 3)!"
+        #assert rots_np.shape[1:] == (3, 3), "Rotation shape is not (N, 3, 3)!"
 
         # Umwandeln in Torch-Tensoren und Parameter
         self._scaling = nn.Parameter(
@@ -194,7 +194,7 @@ class GaussianModel:
             torch.tensor(rots_np, dtype=torch.float32, device="cuda").requires_grad_(True)
         )
         
-        print(f"After: {self._rotation[:10]}")
+        #print(f"After: {self._rotation[:10]}")
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense

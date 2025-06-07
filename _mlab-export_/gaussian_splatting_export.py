@@ -50,7 +50,7 @@ def write_gaussian_ply(
     assert points.shape[1] == 3
     assert colors.shape[1] == 3
     assert scales.shape[1] == 3
-    assert rotations.shape[1:] == (3, 3)
+    #assert rotations.shape[1:] == (3, 3)
 
     N = points.shape[0]
     
@@ -60,7 +60,7 @@ def write_gaussian_ply(
     if colors.dtype != np.uint8:
         colors = np.clip(colors * 255.0, 0, 255).astype(np.uint8)
 
-    rotations_flat = rotations.reshape(N, 9)
+    #rotations_flat = rotations.reshape(N, 9)
 
     header = f"""ply
 format binary_little_endian 1.0
@@ -94,7 +94,7 @@ end_header
             rgb = colors[i].astype(np.uint8)
             alpha = np.float32(opacities[i][0])
             scale = scales[i].astype(np.float32)
-            rot = rotations_flat[i].astype(np.float32)
+            rot = rotations[i].astype(np.float32)
             data = np.concatenate([xyz, rgb, [alpha], scale, rot])
             # if(i % 50 == 0):
             #     print(f"Point {i}: {xyz}")
@@ -251,12 +251,18 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
                     pca.fit(sub_coords)
 
                     scaling = abs(pca.singular_values_ * np.mean(spacing)) / 100.0
-                    rotation = pca.components_
+                    #rotation = pca.components_
+                    
+                    rotation_matrix = pca.components_
+                    # scipy erwartet Zeilen = Basisvektoren → korrekt so
+                    rot = R.from_matrix(rotation_matrix)
+                    quat = rot.as_quat()  # [x, y, z, w]
+                    rotations.append(quat.tolist())
 
                     positions.append([wx, wy, wz])
                     colors.append([r, g, b])
                     scalings.append(scaling.tolist())
-                    rotations.append(rotation.tolist())
+                    #rotations.append(rotation.tolist())
 
             # Write to points3D.txt
             f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
