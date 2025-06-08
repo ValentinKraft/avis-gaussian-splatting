@@ -185,7 +185,6 @@ class GaussianModel:
             
         print("Loaded scaling shape:", scales_np.shape)  # z.B. (100000, 3)
         print("Loaded rotation shape:", rots_np.shape)  # z.B. (100000, 3, 3)
-        #assert rots_np.shape[1:] == (3, 3), "Rotation shape is not (N, 3, 3)!"
 
         # Umwandeln in Torch-Tensoren und Parameter
         self._scaling = nn.Parameter(

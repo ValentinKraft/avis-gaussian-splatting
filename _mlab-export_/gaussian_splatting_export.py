@@ -251,18 +251,15 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
                     pca.fit(sub_coords)
 
                     scaling = abs(pca.singular_values_ * np.mean(spacing)) / -1.0
-                    #rotation = pca.components_
                     
                     rotation_matrix = pca.components_
-                    # scipy erwartet Zeilen = Basisvektoren → korrekt so
                     rot = R.from_matrix(rotation_matrix)
                     quat = rot.as_quat()  # [x, y, z, w]
+                    
                     rotations.append(quat.tolist())
-
                     positions.append([wx, wy, wz])
                     colors.append([r, g, b])
                     scalings.append(scaling.tolist())
-                    #rotations.append(rotation.tolist())
 
             # Write to points3D.txt
             f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
@@ -272,8 +269,7 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
     np.save(os.path.join(output_path, "rotations.npy"), np.array(rotations, dtype=np.float32))
 
     # Gaussian Splatting PLY schreiben
-    ply_path = os.path.join(output_path, "points3D.ply")
-    #write_gaussian_ply(ply_path, positions, colors, scalings, rotations)
+    #write_gaussian_ply(os.path.join(output_path, "points3D.ply"), positions, colors, scalings, rotations)
 
     print(f"[✓] {len(positions)} von {num_points} gewichteten Punkten mit PCA gespeichert nach: {output_path}")
 
