@@ -180,6 +180,7 @@ class GaussianModel:
 
     def _override_rotations(self):
         scales_np = np.load("C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_/sparse/0/scalings.npy")
+        scales_np = scales_np/2.0
         rots_np = np.load("C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_/sparse/0/rotations.npy")
             
         print("Loaded scaling shape:", scales_np.shape)  # z.B. (100000, 3)
