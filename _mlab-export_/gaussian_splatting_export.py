@@ -257,7 +257,7 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
                     # scipy erwartet Zeilen = Basisvektoren → korrekt so
                     rot = R.from_matrix(rotation_matrix)
                     quat = rot.as_quat()  # [x, y, z, w]
-                    rotations.append(quat[::-1].tolist()) # [w, z, y, x]
+                    rotations.append(quat.tolist())
 
                     positions.append([wx, wy, wz])
                     colors.append([r, g, b])
