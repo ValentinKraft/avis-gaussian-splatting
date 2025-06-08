@@ -250,7 +250,7 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
                     pca = PCA(n_components=3)
                     pca.fit(sub_coords)
 
-                    scaling = abs(pca.singular_values_ * np.mean(spacing)) / -1.0
+                    scaling = pca.singular_values_ * np.mean(spacing) * -1.0
                     
                     rotation_matrix = pca.components_
                     rot = R.from_matrix(rotation_matrix)
