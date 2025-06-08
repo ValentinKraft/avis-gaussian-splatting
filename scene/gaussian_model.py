@@ -175,7 +175,7 @@ class GaussianModel:
         exposure = torch.eye(3, 4, device="cuda")[None].repeat(len(cam_infos), 1, 1)
         self._exposure = nn.Parameter(exposure.requires_grad_(True))
         
-        print(f"Before: {self._rotation[:10]}")
+        print(f"Before: {self._scaling[:10]}")
         self._override_rotations()
 
     def _override_rotations(self):
@@ -187,14 +187,14 @@ class GaussianModel:
         #assert rots_np.shape[1:] == (3, 3), "Rotation shape is not (N, 3, 3)!"
 
         # Umwandeln in Torch-Tensoren und Parameter
-        # self._scaling = nn.Parameter(
-        #     torch.tensor(scales_np, dtype=torch.float32, device="cuda").requires_grad_(True)
-        # )
+        self._scaling = nn.Parameter(
+           torch.tensor(scales_np, dtype=torch.float32, device="cuda").requires_grad_(True)
+        )
         self._rotation = nn.Parameter(
             torch.tensor(rots_np, dtype=torch.float32, device="cuda").requires_grad_(True)
         )
         
-        print(f"After: {self._rotation[:10]}")
+        print(f"After: {self._scaling[:10]}")
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
