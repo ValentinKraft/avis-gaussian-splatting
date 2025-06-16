@@ -192,7 +192,7 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
 
     dims = image.imageExtent()[1:4]  # (x,y,z)
     spacing = image.voxelSize()
-    #print(f"Spacing: {spacing}")
+    print(f"Spacing: {spacing}")
     m = image.voxelToWorldMatrix()
     origin = [m[0][3], m[1][3], m[2][3]]
     #print(f"Origin: {origin}")
@@ -227,9 +227,9 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
 
         for i, (z, y, x) in enumerate(voxel_coords, 1):
             # World coords in Meter
-            wx = (origin[0] + x * spacing[0]) / 100.0
-            wy = (origin[1] + y * spacing[1]) / -100.0
-            wz = (origin[2] + z * spacing[2]) / -100.0
+            wx = (origin[0] + x * spacing[0]) / 100.0 * (2/3)
+            wy = (origin[1] + y * spacing[1]) / 100.0 * (-2/3)
+            wz = (origin[2] + z * spacing[2]) / 100.0 * (-2/3)
 
             # Farbe von Originalbild
             r = dicom_tile[0, 0, 0, z, y, x]
@@ -251,7 +251,7 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
                     pca.fit(sub_coords)
 
                     scaling = pca.singular_values_ * np.mean(spacing)
-                    scaling = np.clip(scaling, 0.01, 50) / -2.0  # Clamp scaling
+                    scaling = np.clip(scaling, 0.2, 10) / -2.0  # Clamp scaling
                     
                     rotation_matrix = pca.components_
                     rot = R.from_matrix(rotation_matrix)
@@ -261,13 +261,21 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
                     positions.append([wx, wy, wz])
                     colors.append([r, g, b])
                     scalings.append(scaling.tolist())
+                else:
+                    print("pca failed for voxel at", (x, y, z))
+                    rotations.append(R.identity().as_quat().tolist())
+                    positions.append([wx, wy, wz])
+                    colors.append([r, g, b])
+                    scalings.append([1,1,1])
+                    
 
             # Write to points3D.txt
             f.write(f"{i} {wx:.6f} {wy:.6f} {wz:.6f} {r} {g} {b} 0.0 1 1 2 1\n")
 
     # Numpy speichern (falls gewünscht)
-    np.save(os.path.join(output_path, "scalings.npy"), np.array(scalings, dtype=np.float32))
-    np.save(os.path.join(output_path, "rotations.npy"), np.array(rotations, dtype=np.float32))
+    if(use_pca):
+        np.save(os.path.join(output_path, "scalings.npy"), np.array(scalings, dtype=np.float32))
+        np.save(os.path.join(output_path, "rotations.npy"), np.array(rotations, dtype=np.float32))
 
     # Gaussian Splatting PLY schreiben
     #write_gaussian_ply(os.path.join(output_path, "points3D.ply"), positions, colors, scalings, rotations)
@@ -331,5 +339,6 @@ def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=
 
 def update():
     
+    #generate_random_splats(num_points=100000, output_path=out_path)
     generate_weighted_splats_from_image_with_pca(num_points=100000, output_dir=out_path)
     render_images_and_generate_cameras_txt(100,out_path,70)
