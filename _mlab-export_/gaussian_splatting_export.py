@@ -159,6 +159,12 @@ def generate_pca_covariances(voxel_coords, arr, spacing, neighborhood_size=3):
 def generate_random_splats(num_points=5000, output_path="points3D.txt"):
     
     output_path += "/sparse/0/points3D.txt"
+    
+    image, tile = access_image("Vesselness.output0")
+    spacing = image.voxelSize()
+
+    m = image.voxelToWorldMatrix()
+    origin = [m[0][3], m[1][3], m[2][3]]
 
     # points3D.txt schreiben
     with open(output_path, "w") as f:
@@ -166,9 +172,13 @@ def generate_random_splats(num_points=5000, output_path="points3D.txt"):
         f.write("# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
 
         for i in range(num_points):
-            wx = random.uniform(-0.2,0.2)
-            wy = random.uniform(-0.2,0.2)
-            wz = random.uniform(-0.2,0.2)
+            x = random.uniform(-200,+200)
+            y = random.uniform(-200,+200)
+            z = random.uniform(-200,+200)
+            
+            wx = (origin[0] + x * spacing[0]) / 100.0
+            wy = (origin[1] + y * spacing[1]) / -100.0
+            wz = (origin[2] + z * spacing[2]) / -100.0
 
             r = random.randint(100, 255)
             g = random.randint(100, 255)
