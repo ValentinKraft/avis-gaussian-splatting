@@ -176,9 +176,9 @@ def generate_random_splats(num_points=5000, output_path="points3D.txt"):
             y = random.uniform(-200,+200)
             z = random.uniform(-200,+200)
             
-            wx = (origin[0] + x * spacing[0]) / 100.0
-            wy = (origin[1] + y * spacing[1]) / -100.0
-            wz = (origin[2] + z * spacing[2]) / -100.0
+            wx = (origin[0] + x * spacing[0] + 120) / 100.0
+            wy = (origin[1] + y * spacing[1] + 120) / -100.0
+            wz = (origin[2] + z * spacing[2] + 200) / -100.0
 
             r = random.randint(100, 255)
             g = random.randint(100, 255)
@@ -245,6 +245,10 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
             r = dicom_tile[0, 0, 0, z, y, x]
             g = r
             b = r
+            
+            r = random.randint(100, 255)
+            g = random.randint(100, 255)
+            b = random.randint(100, 255)
 
             # Lokale PCA
             if(use_pca):
@@ -349,6 +353,6 @@ def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=
 
 def update():
     
-    #generate_random_splats(num_points=100000, output_path=out_path)
-    generate_weighted_splats_from_image_with_pca(num_points=100000, output_dir=out_path)
+    generate_random_splats(num_points=100000, output_path=out_path)
+    #generate_weighted_splats_from_image_with_pca(num_points=100000, output_dir=out_path)
     render_images_and_generate_cameras_txt(100,out_path,70)
