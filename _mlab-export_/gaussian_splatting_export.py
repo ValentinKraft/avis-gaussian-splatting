@@ -264,8 +264,8 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
                     pca = PCA(n_components=3)
                     pca.fit(sub_coords)
 
-                    scaling = pca.singular_values_ * np.mean(spacing)
-                    scaling = np.clip(scaling, 0.2, 10) / -2.0  # Clamp scaling
+                    scaling = pca.singular_values_ * -np.mean(spacing)
+                    #scaling = np.clip(scaling, 0.2, 10) / -2.0  # Clamp scaling
                     
                     rotation_matrix = pca.components_
                     rot = R.from_matrix(rotation_matrix)
@@ -353,6 +353,6 @@ def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=
 
 def update():
     
-    generate_random_splats(num_points=100000, output_path=out_path)
-    #generate_weighted_splats_from_image_with_pca(num_points=100000, output_dir=out_path)
+    #generate_random_splats(num_points=100000, output_path=out_path)
+    generate_weighted_splats_from_image_with_pca(num_points=100000, output_dir=out_path)
     render_images_and_generate_cameras_txt(100,out_path,70)
