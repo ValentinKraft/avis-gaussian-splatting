@@ -22,6 +22,9 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from gaussian_splatting.losses.volume_loss import VolumeLoss
+from gaussian_splatting.utils.splat_to_volume import splat_to_volume
+from gaussian_splatting.data.volume_loader import VolumeLoader
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -118,6 +121,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
+
+        # Example: Convert splats to volume and compute volume loss (minimal integration)
+        # This assumes gaussians.get_xyz returns (N, 3) tensor of splat positions
+        splats = gaussians.get_xyz if hasattr(gaussians, 'get_xyz') else None
+        if splats is not None:
+            volume_shape = (64, 64, 64)  # Example shape, adjust as needed
+            pred_volume = splat_to_volume(splats, volume_shape)
+            target_volume = torch.zeros_like(pred_volume)  # Placeholder target
+            volume_loss_fn = VolumeLoss()
+            vol_loss = volume_loss_fn(pred_volume, target_volume)
+            loss += 0.01 * vol_loss  # Weight for volume loss (adjust as needed)
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         else:
@@ -267,19 +281,41 @@ if __name__ == "__main__":
     parser.add_argument('--disable_viewer', action='store_true', default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument('--volume_supervision', action='store_true', default=False, help='Enable volume supervision loss')
+    parser.add_argument('--volume_gt', type=str, default=None, help='Path to ground truth volume file')
+    parser.add_argument('--volume_loss_type', type=str, default='dice', help='Type of volume loss: mse|dice|tversky|kl')
+    parser.add_argument('--volume_loss_weight', type=float, default=1.0, help='Weight for volume loss')
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
-    
     print("Optimizing " + args.model_path)
 
-    # Initialize system state (RNG)
     safe_state(args.quiet)
-
-    # Start GUI server, configure and run training
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
-
-    # All done
     print("\nTraining complete.")
+    # Volume supervision setup
+    volume_loss_fn = None
+    volume_gt = None
+    if hasattr(opt, 'volume_supervision') and opt.volume_supervision and getattr(opt, 'volume_gt', None):
+        volume_loss_fn = VolumeLoss(loss_type=getattr(opt, 'volume_loss_type', 'dice'), weight=getattr(opt, 'volume_loss_weight', 1.0))
+        loader = VolumeLoader(data_dir=os.path.dirname(opt.volume_gt))
+        volume_gt = loader.load(os.path.basename(opt.volume_gt)).cuda()
+        volume_shape = volume_gt.shape
+        # Loss
+        loss = None
+        if hasattr(opt, 'volume_supervision') and opt.volume_supervision and volume_loss_fn is not None and volume_gt is not None:
+            splats = gaussians.get_xyz if hasattr(gaussians, 'get_xyz') else None
+            if splats is not None:
+                pred_volume = splat_to_volume(splats, volume_shape)
+                vol_loss = volume_loss_fn(pred_volume, volume_gt)
+                loss = vol_loss
+        else:
+            gt_image = viewpoint_cam.original_image.cuda()
+            Ll1 = l1_loss(image, gt_image)
+            if FUSED_SSIM_AVAILABLE:
+                ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+            else:
+                ssim_value = ssim(image, gt_image)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
