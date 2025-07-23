@@ -175,7 +175,7 @@ class GaussianModel:
         exposure = torch.eye(3, 4, device="cuda")[None].repeat(len(cam_infos), 1, 1)
         self._exposure = nn.Parameter(exposure.requires_grad_(True))
         
-        self._override_rotations(source_path)
+        #self._override_rotations(source_path)
 
     def _override_rotations(self, source_path : str):
         source_path = os.path.join(source_path, "sparse", "0")
