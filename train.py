@@ -295,22 +295,24 @@ if __name__ == "__main__":
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
     print("\nTraining complete.")
-    # Volume supervision setup
+    # Volume supervision setup (once, before loop)
     volume_loss_fn = None
     volume_gt = None
+    volume_shape = None
     if hasattr(opt, 'volume_supervision') and opt.volume_supervision and getattr(opt, 'volume_gt', None):
         volume_loss_fn = VolumeLoss(loss_type=getattr(opt, 'volume_loss_type', 'dice'), weight=getattr(opt, 'volume_loss_weight', 1.0))
         loader = VolumeLoader(data_dir=os.path.dirname(opt.volume_gt))
         volume_gt = loader.load(os.path.basename(opt.volume_gt)).cuda()
         volume_shape = volume_gt.shape
         # Loss
-        loss = None
         if hasattr(opt, 'volume_supervision') and opt.volume_supervision and volume_loss_fn is not None and volume_gt is not None:
             splats = gaussians.get_xyz if hasattr(gaussians, 'get_xyz') else None
             if splats is not None:
                 pred_volume = splat_to_volume(splats, volume_shape)
                 vol_loss = volume_loss_fn(pred_volume, volume_gt)
                 loss = vol_loss
+            else:
+                loss = torch.tensor(0.0, device="cuda")
         else:
             gt_image = viewpoint_cam.original_image.cuda()
             Ll1 = l1_loss(image, gt_image)
