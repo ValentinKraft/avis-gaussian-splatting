@@ -16,6 +16,21 @@ Interface {
     Field update {
       type = Trigger
     }
+    Field numPoints {
+      type = Int
+      value = 100000
+    }
+    Field numImages {
+      type = Int
+      value = 100
+    }
+    Field outputPath {
+      type = String
+      value = "C:/"
+    }
+    Field smartMode {
+      type = Bool
+    }
   }
 }
 
@@ -24,8 +39,14 @@ Commands {
 }
 
 Window {
-  name = appWindow
+  Box "Settings" {
+  Field numPoints { title = "Nr of initial splats/points"}
+  Field numImages {title = "Nr of rendered images"}
+    Field smartMode { title = "Smart initialization" }
+  Field outputPath {title = "Output path"}
+
   Button update {
     command = update
+  }
   }
 }

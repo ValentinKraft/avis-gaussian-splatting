@@ -1,5 +1,5 @@
 // MDL v1 utf8
-mevislabVersion = 4.0.70.335
+mevislabVersion = 4.1.70.498
 network {
   watchlist = ""
 }
@@ -29,6 +29,7 @@ module RunPythonScript {
     in7 = ""
     in8 = ""
     in9 = ""
+    inBaseComment = inBase
     inComment0 = in0
     inComment1 = in1
     inComment2 = in2
@@ -39,6 +40,7 @@ module RunPythonScript {
     inComment7 = in7
     inComment8 = in8
     inComment9 = in9
+    autoUpdate = TRUE
     autoApply0 = TRUE
     autoApply1 = TRUE
     autoApply2 = TRUE
@@ -150,6 +152,7 @@ module RunPythonScript {
     in7 = ""
     in8 = ""
     in9 = ""
+    inBaseComment = inBase
     inComment0 = in0
     inComment1 = in1
     inComment2 = in2
@@ -160,6 +163,7 @@ module RunPythonScript {
     inComment7 = in7
     inComment8 = in8
     inComment9 = in9
+    autoUpdate = TRUE
     autoApply0 = TRUE
     autoApply1 = TRUE
     autoApply2 = TRUE
@@ -439,6 +443,7 @@ module RunPythonScript {
     in7 = ""
     in8 = ""
     in9 = ""
+    inBaseComment = inBase
     inComment0 = in0
     inComment1 = in1
     inComment2 = in2
@@ -449,6 +454,7 @@ module RunPythonScript {
     inComment7 = in7
     inComment8 = in8
     inComment9 = in9
+    autoUpdate = TRUE
     autoApply0 = TRUE
     autoApply1 = TRUE
     autoApply2 = TRUE
@@ -555,6 +561,7 @@ module RunPythonScript {
     in7 = ""
     in8 = ""
     in9 = ""
+    inBaseComment = inBase
     inComment0 = in0
     inComment1 = in1
     inComment2 = in2
@@ -565,6 +572,7 @@ module RunPythonScript {
     inComment7 = in7
     inComment8 = in8
     inComment9 = in9
+    autoUpdate = TRUE
     autoApply0 = TRUE
     autoApply1 = TRUE
     autoApply2 = TRUE
@@ -689,63 +697,40 @@ module gaussian_splatting_export {
     localMacro = 1
     windows {
       window _default {
-        geometry = "1170 496 198 27"
-        relativePosition = "-0.1311 -0.1430"
-        sizeHint = "75 27"
+        geometry = "1165 492 512 167"
+        relativePosition = "-0.0869 -0.1458"
+        sizeHint = "220 135"
         wasOpen = yes
       }
     }
   }
   fields {
     instanceName = gaussian_splatting_export
-  }
-}
-module ImageLoad {
-  internal {
-    frame = "785 877 176 72"
-    moduleGroupName = ""
-    showNetworkPanel = true
-    windows {
-      window _default {
-        geometry = "235 253 473 366"
-        relativePosition = "-0.2542 -0.2795"
-        sizeHint = "473 366"
-        wasOpen = no
-      }
-    }
-  }
-  fields {
-    instanceName = ImageLoad
-    filename = "C:/DATA/AHREZ/AhrezPlanner/AHrEZ-2-RSNA/ML-SEGMENTATIONS\\BASEIMAGE.mlimage"
-    autoLoad = TRUE
-    readRaw = FALSE
-    rawX = 1
-    rawY = 1
-    rawZ = 1
-    rawC = 1
-    rawT = 1
-    rawU = 1
-    dataTypeRaw = "unsigned int8"
-    planarConfig = Contiguous
-    byteOrder = LittleEndian
-    dataOffset = 0
-    pageSizeHint = "0 0 0 0 0 0"
-    suppressErrorLog = FALSE
-    dicomIgnoreHalfVoxelShift = FALSE
-    enableCheckSumTests = FALSE
+    numPoints = 100000
+    numImages = 100
+    outputPath = "C:\\DEV\\TESTS\\gs\\_scene_-TMP"
   }
 }
 module AHrEZPlanner {
   internal {
-    frame = "1025 901 112 56"
+    frame = "961 885 112 56"
     moduleGroupName = ""
+    windows {
+      window _default {
+        geometry = "1832 314 686 485"
+        relativePosition = "0.1323 -0.2737"
+        sizeHint = "686 485"
+        wasOpen = yes
+      }
+    }
   }
   fields {
     instanceName = AHrEZPlanner
+    currentCase = ""
   }
 }
 connections {
-  gaussian_splatting_export.image = ImageLoad.output0
+  gaussian_splatting_export.image = AHrEZPlanner.outImage
   gaussian_splatting_export.mask = AHrEZPlanner.outSegmentationMasks
   gaussian_splatting_export.scene = AHrEZPlanner.sceneOutput
 }

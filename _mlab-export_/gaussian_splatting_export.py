@@ -7,7 +7,6 @@ import numpy as np
 from sklearn.decomposition import PCA
 from scipy.spatial.transform import Rotation as R
 
-out_path = "C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_"
 transforms = {
     "camera_angle_x": 0.785398,
     "w": 1024,
@@ -314,10 +313,8 @@ def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=
         for i in range(num_imgs):
 
             radius = extent
-            theta = random.uniform(0, 2 * np.pi)  # Azimut
-            phi = random.uniform(
-                0.2 * np.pi, 0.8 * np.pi
-            )  # Polarwinkel, um nicht nur oben/unten zu landen
+            theta = random.uniform(0.0, 2.0 * np.pi)  # Azimut
+            phi = random.uniform(0.0, np.pi)  # Polar angle, to avoid only landing at the top/bottom
 
             x = radius * np.sin(phi) * np.cos(theta)
             y = radius * np.sin(phi) * np.sin(theta)
@@ -352,7 +349,14 @@ def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=
 ##############################################
 
 def update():
+    out_path = ctx.field("outputPath").value
+    num_points = ctx.field("numPoints").value
+    num_images = ctx.field("numImages").value
+    smart_mode = ctx.field("smartMode").value
     
-    #generate_random_splats(num_points=100000, output_path=out_path)
-    generate_weighted_splats_from_image_with_pca(num_points=100000, output_dir=out_path)
-    render_images_and_generate_cameras_txt(100,out_path,70)
+    # if(smart_mode):
+    #     generate_weighted_splats_from_image_with_pca(num_points=num_points, output_dir=out_path)
+    # else:
+    #     generate_random_splats(num_points=100000, output_path=out_path)
+    
+    render_images_and_generate_cameras_txt(num_images,out_path,450)
