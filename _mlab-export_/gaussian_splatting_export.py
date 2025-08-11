@@ -7,12 +7,12 @@ import numpy as np
 from sklearn.decomposition import PCA
 from scipy.spatial.transform import Rotation as R
 
-transforms = {
-    "camera_angle_x": 0.785398,
-    "w": 1024,
-    "h": 1024,
-    "frames": []
-}
+# transforms = {
+#     "camera_angle_x": 0.785398,
+#     "w": 1024,
+#     "h": 1024,
+#     "frames": []
+# }
 
 def quaternion_from_matrix(matrix):
     return R.from_matrix(matrix[:3, :3]).as_quat()  # x, y, z, w
@@ -298,9 +298,9 @@ def generate_weighted_splats_from_image_with_pca(num_points=5000, output_dir="ou
 
 def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=100):
 
-    image_width = transforms["w"]
-    image_height = transforms["h"]
-    focal_length = (image_width / 2) / np.tan(transforms["camera_angle_x"] / 2)
+    #image_width = transforms["w"]
+    #image_height = transforms["h"]
+    #focal_length = (image_width / 2) / np.tan(transforms["camera_angle_x"] / 2)
     camera_id = 1
 
     # render random cams and render images
@@ -352,11 +352,13 @@ def update():
     out_path = ctx.field("outputPath").value
     num_points = ctx.field("numPoints").value
     num_images = ctx.field("numImages").value
-    smart_mode = ctx.field("smartMode").value
+    smart_init = ctx.field("smartInit").value
+    render_only = ctx.field("renderOnly").value
     
-    # if(smart_mode):
-    #     generate_weighted_splats_from_image_with_pca(num_points=num_points, output_dir=out_path)
-    # else:
-    #     generate_random_splats(num_points=100000, output_path=out_path)
+    if(not render_only):
+        if(smart_init):
+            generate_weighted_splats_from_image_with_pca(num_points=num_points, output_dir=out_path)
+        else:
+            generate_random_splats(num_points=100000, output_path=out_path)
     
     render_images_and_generate_cameras_txt(num_images,out_path,450)
