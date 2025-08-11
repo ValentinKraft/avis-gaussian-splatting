@@ -359,6 +359,6 @@ def update():
         if(smart_init):
             generate_weighted_splats_from_image_with_pca(num_points=num_points, output_dir=out_path)
         else:
-            generate_random_splats(num_points=100000, output_path=out_path)
+            generate_random_splats(num_points=num_points, output_path=out_path)
     
-    render_images_and_generate_cameras_txt(num_images,out_path,450)
+    render_images_and_generate_cameras_txt(num_images,out_path,600)

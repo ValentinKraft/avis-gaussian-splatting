@@ -1,5 +1,5 @@
 // MDL v1 utf8
-mevislabVersion = 4.0.70.335
+mevislabVersion = 4.1.70.498
 network {
   watchlist = ""
 }
@@ -9,8 +9,8 @@ module SoPerspectiveCamera {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1001 163 450 258"
-        relativePosition = "0.1385 -0.3576"
+        geometry = "1970 197 450 258"
+        relativePosition = "0.1381 -0.3578"
         sizeHint = "406 258"
         wasOpen = no
       }
@@ -23,7 +23,7 @@ module SoPerspectiveCamera {
     orientation = "0 0 1 0"
     aspectRatio = 1
     nearDistance = 0.53953755
-    farDistance = 540.61768
+    farDistance = 3000
     focalDistance = 1836.3105
     heightAngle = 0.78539819
   }
@@ -35,8 +35,8 @@ module OffscreenRenderer {
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1871 737 296 370"
-        relativePosition = "0.0869 0.0302"
+        geometry = "1869 737 296 370"
+        relativePosition = "0.0863 0.0302"
         sizeHint = "268 370"
         wasOpen = no
       }
@@ -51,8 +51,8 @@ module OffscreenRenderer {
     size = "1024 1024"
     pixelScale = 1
     bgColor = "0 0 0"
-    enableMultiSampling = FALSE
-    multiSampling = 16
+    enableMultiSampling = TRUE
+    multiSampling = 2
   }
 }
 module SoGroup {
@@ -164,7 +164,8 @@ module View2D {
     enableSlicing = TRUE
     showColorChannelValues = FALSE
     colorChannelSeparator = " / "
-    useRelativeLUTIfNoInputImage = TRUE
+    scaleLUTForNewImage = TRUE
+    computeLUTOnImageChange = FALSE
   }
 }
 module SoAxis {
