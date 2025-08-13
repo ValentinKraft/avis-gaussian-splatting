@@ -692,14 +692,14 @@ generate_weighted_splats_from_image(
 }
 module gaussian_splatting_export {
   internal {
-    frame = "917 725 184 56"
+    frame = "925 725 184 56"
     moduleGroupName = ""
     localMacro = 1
     windows {
       window _default {
-        geometry = "1165 492 512 167"
-        relativePosition = "-0.0869 -0.1458"
-        sizeHint = "220 135"
+        geometry = "996 329 540 238"
+        relativePosition = "-0.1320 -0.2629"
+        sizeHint = "248 206"
         wasOpen = yes
       }
     }
@@ -707,8 +707,11 @@ module gaussian_splatting_export {
   fields {
     instanceName = gaussian_splatting_export
     numPoints = 100000
-    numImages = 100
-    outputPath = "C:\\DEV\\TESTS\\gs\\_scene_-TMP"
+    numImages = 400
+    outputPath = "C:\\DEV\\TESTS\\gs\\_SCENES_\\_scene_"
+    smartInit = FALSE
+    renderOnly = TRUE
+    renderResolution = "1024 1024"
   }
 }
 module AHrEZPlanner {
@@ -717,8 +720,8 @@ module AHrEZPlanner {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1832 314 686 485"
-        relativePosition = "0.1323 -0.2737"
+        geometry = "1831 314 686 485"
+        relativePosition = "0.1320 -0.2737"
         sizeHint = "686 485"
         wasOpen = yes
       }
