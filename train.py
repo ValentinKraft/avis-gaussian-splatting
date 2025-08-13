@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -49,6 +49,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
     scene = Scene(dataset, gaussians)
+
+    # Initialize volume supervision if enabled
+    volume_supervisor = None
+    if opt.volume_supervision and opt.volume_path:
+        from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
+
+        volume_supervisor = VolumeSupervisor(
+            volume_path=opt.volume_path,
+            volume_shape=tuple(opt.volume_shape),
+            loss_type=opt.volume_loss_type,
+            loss_weight=opt.volume_loss_weight,
+        )
+
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -63,10 +76,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
     depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
 
-    viewpoint_stack = scene.getTrainCameras().copy()
-    viewpoint_indices = list(range(len(viewpoint_stack)))
+    # Initialize viewpoints based on supervision type
+    viewpoint_stack = scene.getTrainCameras().copy() if opt.rgb_supervision else []
+    viewpoint_indices = list(range(len(viewpoint_stack))) if opt.rgb_supervision else []
+
+    # Initialize tracking variables
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
+    ema_vol_loss_for_log = 0.0
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -115,15 +132,33 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
 
-        # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        if FUSED_SSIM_AVAILABLE:
-            ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
-        else:
-            ssim_value = ssim(image, gt_image)
+        # Initialize total loss
+        loss = 0.0
 
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+        # RGB supervision loss if enabled
+        if opt.rgb_supervision:
+            gt_image = viewpoint_cam.original_image.cuda()
+            Ll1 = l1_loss(image, gt_image)
+            if FUSED_SSIM_AVAILABLE:
+                ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+            else:
+                ssim_value = ssim(image, gt_image)
+            rgb_loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (
+                1.0 - ssim_value
+            )
+            loss = loss + rgb_loss
+
+        # Volume supervision loss if enabled
+        volume_loss = 0.0
+        if opt.volume_supervision and volume_supervisor is not None:
+            vol_loss, vol_metrics = volume_supervisor.compute_loss(gaussians)
+            volume_loss = vol_loss.item()
+            loss = loss + vol_loss
+
+            # Log volume metrics
+            if tb_writer and iteration % 10 == 0:
+                for name, value in vol_metrics.items():
+                    tb_writer.add_scalar(f"volume/{name}", value, iteration)
 
         # Depth regularization
         Ll1depth_pure = 0.0
@@ -149,7 +184,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
+                postfix = {
+                    "Loss": f"{ema_loss_for_log:.{7}f}",
+                    "Depth": f"{ema_Ll1depth_for_log:.{7}f}",
+                }
+                if opt.volume_supervision:
+                    postfix["Vol"] = f"{ema_vol_loss_for_log:.{7}f}"
+                progress_bar.set_postfix(postfix)
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
@@ -169,7 +210,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii)
-                
+
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
