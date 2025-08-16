@@ -45,6 +45,11 @@ class OptimizationParams:
         self.volume_loss_type = "dice"
         self.volume_loss_weight = 1.0
         self.volume_shape = [64, 64, 64]
+        self.volume_transform = ""
+
+        # Initialization from mask
+        self.init_from_mask = False
+        self.mask_path = ""
 
         # Add arguments to parser
         parser.add_argument('--iterations', type=int, default=self.iterations)

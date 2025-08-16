@@ -2,7 +2,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 
 """
@@ -136,40 +136,43 @@ def transform_points_to_world(
         
     return points
 
+
 def initialize_gaussians(
     model,
-    volume_path: str,
     n_points: int = 5000,
     volume_transform: Optional[Tensor] = None,
     scene_bounds: Optional[Tuple[Tensor, Tensor]] = None,
+    volume_path: Optional[str] = None,
+    mask_path: Optional[str] = None,
     **kwargs
 ):
     """
-    Initialize a Gaussian model from a segmentation volume.
-    
+    Initialize a Gaussian model from a volume or mask.
+
     Args:
         model: Gaussian model to initialize
-        volume_path: Path to volume file
         n_points: Number of points to sample
         volume_transform: Optional 4x4 transform matrix
         scene_bounds: Optional (min, max) scene bounds
+        volume_path: Optional path to volume file
+        mask_path: Optional path to mask file
         **kwargs: Additional args for initialize_from_volume
     """
     # Get points in volume space
     points, scales, opacities = initialize_from_volume(
-        volume_path, 
+        mask_path if mask_path else volume_path,
         n_points,
         device=model._xyz.device,
         **kwargs
     )
-    
+
     # Transform to world space
     points = transform_points_to_world(points, volume_transform, scene_bounds)
-    
+
     # Update model parameters
     with torch.no_grad():
         model._xyz.copy_(points)
         model._scaling.copy_(scales)
         model._opacity.copy_(opacities)
-        
+
     return model

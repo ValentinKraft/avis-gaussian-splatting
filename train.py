@@ -17,7 +17,8 @@ from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
-from scene import Scene, GaussianModel
+from scene.gaussian_model import GaussianModel
+from scene.volume_scene import VolumeScene
 from utils.general_utils import safe_state, get_expon_lr_func
 import uuid
 from tqdm import tqdm
@@ -42,35 +43,45 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+
+def training(
+    dataset,
+    opt,
+    pipe,
+    testing_iterations,
+    saving_iterations,
+    checkpoint_iterations,
+    checkpoint,
+    debug_from,
+    args,
+):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
     first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset)
+    tb_writer = prepare_output_and_logger(args)
 
-    # Set default SH degree for volume-only training
-    sh_degree = dataset.sh_degree if dataset else 0
-    gaussians = GaussianModel(sh_degree, opt.optimizer_type)
+    # Set default SH degree and create gaussians
+    gaussians = GaussianModel(
+        0, opt.optimizer_type
+    )  # Use degree 0 for volume-only training
 
-    # Create scene if using RGB supervision
-    scene = None
-    if opt.source_path:
-        scene = Scene(dataset, gaussians)
+    # Create scene for volume-based training
+    scene = VolumeScene(args, gaussians)
 
     # Initialize from segmentation mask if requested
-    if opt.init_from_mask:
-        if not opt.mask_path:
+    if args.init_from_mask:
+        if not args.mask_path:
             sys.exit("Error: --mask_path required when using --init_from_mask")
 
         from gaussian_splatting.utils.volume_initializer import initialize_gaussians
 
         # Load volume transform if provided
         volume_transform = None
-        if opt.volume_transform:
+        if args.volume_transform:
             volume_transform = (
-                torch.from_numpy(np.load(opt.volume_transform)).float().cuda()
+                torch.from_numpy(np.load(args.volume_transform)).float().cuda()
             )
 
         # Get scene bounds for scaling
@@ -83,25 +94,38 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Initialize gaussians by sampling from mask
         initialize_gaussians(
-            gaussians,
-            volume_path="",  # Not used when initializing from mask
-            mask_path=opt.mask_path,
-            n_points=opt.init_n_points,
+            model=gaussians,  # Make the argument explicit
+            mask_path=args.mask_path,
+            n_points=args.init_n_points,
             volume_transform=volume_transform,
             scene_bounds=scene_bounds,
-            noise_std=opt.position_noise,
+            noise_std=(
+                args.position_noise
+                if hasattr(args, "position_noise")
+                else opt.position_noise
+            ),
         )
 
     # Initialize volume supervision if enabled
     volume_supervisor = None
-    if opt.volume_supervision and opt.volume_path:
+    if args.volume_supervision and args.volume_path:
         from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
 
         volume_supervisor = VolumeSupervisor(
-            volume_path=opt.volume_path,
-            volume_shape=tuple(opt.volume_shape),
-            loss_type=opt.volume_loss_type,
-            loss_weight=opt.volume_loss_weight,
+            volume_path=args.volume_path,
+            volume_shape=tuple(
+                args.volume_shape if hasattr(args, "volume_shape") else opt.volume_shape
+            ),
+            loss_type=(
+                args.volume_loss_type
+                if hasattr(args, "volume_loss_type")
+                else opt.volume_loss_type
+            ),
+            loss_weight=(
+                args.volume_loss_weight
+                if hasattr(args, "volume_loss_weight")
+                else opt.volume_loss_weight
+            ),
         )
 
     gaussians.training_setup(opt)
@@ -238,7 +262,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
+            training_report(
+                tb_writer, iteration, loss, iter_start.elapsed_time(iter_end)
+            )
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -272,6 +298,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
+
 def prepare_output_and_logger(args):    
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
@@ -279,7 +306,7 @@ def prepare_output_and_logger(args):
         else:
             unique_str = str(uuid.uuid4())
         args.model_path = os.path.join("./output/", unique_str[0:10])
-        
+
     # Set up output folder
     print("Output folder: {}".format(args.model_path))
     os.makedirs(args.model_path, exist_ok = True)
@@ -294,17 +321,12 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, train_test_exp):
-    if tb_writer:
-        tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
-        tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
-        tb_writer.add_scalar('iter_time', elapsed, iteration)
 
-    # Report test and samples of training set
-    if iteration in testing_iterations:
-        torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
+def training_report(tb_writer, iteration, loss, elapsed):
+    """Simple training report for volume-based training"""
+    if tb_writer:
+        tb_writer.add_scalar("train_loss/volume_loss", loss.item(), iteration)
+        tb_writer.add_scalar('iter_time', elapsed, iteration)
 
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:
@@ -334,12 +356,83 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
         torch.cuda.empty_cache()
 
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
+
+    # Core parameter groups
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
+
+    # Volume supervision arguments
+    volume_group = parser.add_argument_group("Volume Supervision")
+    volume_group.add_argument(
+        "--volume_supervision",
+        action="store_true",
+        help="Enable volume supervision loss",
+    )
+    volume_group.add_argument(
+        "--volume_path",
+        type=str,
+        default="",
+        help="Path to ground truth volume file (.nii, .npy, .mhd)",
+    )
+    volume_group.add_argument(
+        "--volume_loss_type",
+        type=str,
+        default="dice",
+        choices=["mse", "dice", "tversky", "kl"],
+        help="Type of volume supervision loss",
+    )
+    volume_group.add_argument(
+        "--volume_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight for volume supervision loss",
+    )
+    volume_group.add_argument(
+        "--volume_shape",
+        type=int,
+        nargs=3,
+        default=[64, 64, 64],
+        help="Target shape for volume supervision (D, H, W)",
+    )
+
+    # Volume initialization arguments
+    init_group = parser.add_argument_group("Volume Initialization")
+    init_group.add_argument(
+        "--init_from_mask",
+        action="store_true",
+        help="Initialize Gaussian points by sampling from segmentation mask",
+    )
+    init_group.add_argument(
+        "--mask_path",
+        type=str,
+        default="",
+        help="Path to segmentation mask file (.nii, .npy, .mhd)",
+    )
+    init_group.add_argument(
+        "--volume_transform",
+        type=str,
+        default="",
+        help="Path to 4x4 transform matrix for volume alignment (.npy)",
+    )
+    init_group.add_argument(
+        "--init_n_points",
+        type=int,
+        default=5000,
+        help="Number of points to sample from mask",
+    )
+    init_group.add_argument(
+        "--position_noise",
+        type=float,
+        default=0.01,
+        help="Standard deviation of position noise for initialization",
+    )
+
+    # Other arguments
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
@@ -349,20 +442,46 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument('--disable_viewer', action='store_true', default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--start_checkpoint", type=str, default=None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
-    
+
     print("Optimizing " + args.model_path)
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
+    # Create dummy dataset for volume-only mode
+    if not args.source_path and args.init_from_mask:
+
+        class DummyDataset:
+            def __init__(self, model_path):
+                self.cameras_extent = 1.0  # Default extent
+                self.white_background = False
+                self.model_path = model_path
+                self.source_path = ""
+                self.sh_degree = 0
+
+        dataset = DummyDataset(args.model_path)
+    else:
+        dataset = lp.extract(args)
+
     # Start GUI server, configure and run training
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+
+    training(
+        dataset,
+        op.extract(args),
+        pp.extract(args),
+        args.test_iterations,
+        args.save_iterations,
+        args.checkpoint_iterations,
+        args.start_checkpoint,
+        args.debug_from,
+        args,  # Pass the full arguments
+    )
 
     # All done
     print("\nTraining complete.")
