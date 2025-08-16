@@ -49,8 +49,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
-    scene = Scene(dataset, gaussians)
+
+    # Set default SH degree for volume-only training
+    sh_degree = dataset.sh_degree if dataset else 0
+    gaussians = GaussianModel(sh_degree, opt.optimizer_type)
+
+    # Create scene if using RGB supervision
+    scene = None
+    if opt.source_path:
+        scene = Scene(dataset, gaussians)
 
     # Initialize from segmentation mask if requested
     if opt.init_from_mask:

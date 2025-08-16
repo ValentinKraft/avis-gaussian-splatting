@@ -130,16 +130,28 @@ class ModelParams:
         self.sh_degree = 3
         self.white_background = False
         self.data_device = "cuda"
-        
+
         # Add arguments
-        parser.add_argument('--source_path', type=str, required=not sentinel,
-                          help='Path to source directory containing images')
+        parser.add_argument(
+            "--source_path",
+            type=str,
+            default="",
+            help="Path to source directory containing images (optional if using --init_from_mask)",
+        )
         parser.add_argument('--model_path', type=str, required=not sentinel,
                           help='Path to save model')
-        parser.add_argument('--images', type=str, default=self.images,
-                          help='Image folder')
-        parser.add_argument('--resolution', type=int, default=self.resolution,
-                          help='Resolution of images')
+        parser.add_argument(
+            "--images",
+            type=str,
+            default=self.images,
+            help="Image folder (only needed with RGB supervision)",
+        )
+        parser.add_argument(
+            "--resolution",
+            type=int,
+            default=self.resolution,
+            help="Resolution of images (only needed with RGB supervision)",
+        )
         parser.add_argument('--sh_degree', type=int, default=self.sh_degree,
                           help='Degree of spherical harmonics')
         parser.add_argument('--white_background', action='store_true',
