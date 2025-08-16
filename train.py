@@ -11,6 +11,8 @@
 
 import os
 import torch
+import sys
+import numpy as np
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
@@ -49,6 +51,39 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
     scene = Scene(dataset, gaussians)
+
+    # Initialize from segmentation mask if requested
+    if opt.init_from_mask:
+        if not opt.mask_path:
+            sys.exit("Error: --mask_path required when using --init_from_mask")
+
+        from gaussian_splatting.utils.volume_initializer import initialize_gaussians
+
+        # Load volume transform if provided
+        volume_transform = None
+        if opt.volume_transform:
+            volume_transform = (
+                torch.from_numpy(np.load(opt.volume_transform)).float().cuda()
+            )
+
+        # Get scene bounds for scaling
+        scene_bounds = None
+        if dataset.cameras_extent is not None:
+            scene_bounds = (
+                torch.tensor([-dataset.cameras_extent], device="cuda"),
+                torch.tensor([dataset.cameras_extent], device="cuda"),
+            )
+
+        # Initialize gaussians by sampling from mask
+        initialize_gaussians(
+            gaussians,
+            volume_path="",  # Not used when initializing from mask
+            mask_path=opt.mask_path,
+            n_points=opt.init_n_points,
+            volume_transform=volume_transform,
+            scene_bounds=scene_bounds,
+            noise_std=opt.position_noise,
+        )
 
     # Initialize volume supervision if enabled
     volume_supervisor = None

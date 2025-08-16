@@ -1,5 +1,11 @@
 # Volume Supervision for 3D Gaussian Splatting - Progress Update
 
+Prompt: "Hey Copilot, please read the file `task.instructions.md` in the .github folder and perform all tasks described step by step.
+Create new files where needed and adapt the existing code where necessary.  
+Use PyTorch and adhere to the style of the 3DGS code base.
+Track your tasks and your progress in a new md file (such as todo-list.md). Explain your steps and your reasoning shortly and where necessary."
+
+
 ## Implementation Status
 
 ### Core Components ✅ ALL COMPLETED

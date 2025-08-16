@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 
 """
@@ -37,7 +37,7 @@ class OptimizationParams:
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
-        
+
         # Volume supervision parameters
         self.rgb_supervision = True
         self.volume_supervision = False
@@ -45,7 +45,7 @@ class OptimizationParams:
         self.volume_loss_type = "dice"
         self.volume_loss_weight = 1.0
         self.volume_shape = [64, 64, 64]
-        
+
         # Add arguments to parser
         parser.add_argument('--iterations', type=int, default=self.iterations)
         parser.add_argument('--position_lr_init', type=float, default=self.position_lr_init)
@@ -63,7 +63,7 @@ class OptimizationParams:
         parser.add_argument('--densify_from_iter', type=int, default=self.densify_from_iter)
         parser.add_argument('--densify_until_iter', type=int, default=self.densify_until_iter)
         parser.add_argument('--densify_grad_threshold', type=float, default=self.densify_grad_threshold)
-        
+
         # Volume supervision arguments
         parser.add_argument('--rgb_supervision', action='store_true', default=True,
                           help='Enable RGB image supervision')
@@ -78,6 +78,38 @@ class OptimizationParams:
                           help='Weight for volume supervision loss')
         parser.add_argument('--volume_shape', type=int, nargs=3, default=[64, 64, 64],
                           help='Target shape for volume supervision (D, H, W)')
+
+        # Volume initialization arguments
+        parser.add_argument(
+            "--init_from_mask",
+            action="store_true",
+            default=False,
+            help="Initialize Gaussian points by sampling from segmentation mask",
+        )
+        parser.add_argument(
+            "--mask_path",
+            type=str,
+            default="",
+            help="Path to segmentation mask file (.nii, .npy, .mhd)",
+        )
+        parser.add_argument(
+            "--volume_transform",
+            type=str,
+            default="",
+            help="Path to 4x4 transform matrix for volume alignment (.npy)",
+        )
+        parser.add_argument(
+            "--init_n_points",
+            type=int,
+            default=5000,
+            help="Number of points to sample from mask",
+        )
+        parser.add_argument(
+            "--position_noise",
+            type=float,
+            default=0.01,
+            help="Standard deviation of position noise for initialization",
+        )
 
     def extract(self, args):
         """Extract parameters from parsed arguments."""
