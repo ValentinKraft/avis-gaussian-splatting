@@ -17,17 +17,16 @@ import torch.nn.functional as F
 from pathlib import Path
 
 def initialize_from_volume(
-    volume_path: str,
-    mask_path: Optional[str] = None,
+    mask_path: str,
     n_points: int = 5000,
     noise_std: float = 0.01,
     device: torch.device = torch.device('cuda')
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """
-    Initialize Gaussian points by sampling from a segmentation mask volume.
+    Initialize Gaussian points by sampling from a segmentation mask.
+    The mask is expected to be pre-aligned with the volume and have the same dimensions.
     
     Args:
-        volume_path: Path to volume file (can be empty if using mask only)
         mask_path: Path to segmentation mask (.nii, .npy, .mhd)
                   Values should be in [0,1], either binary or continuous
         n_points: Number of points to sample
@@ -38,12 +37,9 @@ def initialize_from_volume(
         Tuple of (positions, scales, opacities)
     """
     from gaussian_splatting.data.volume_loader import VolumeLoader
-    
-    # Load mask volume
-    if not mask_path:
-        raise ValueError("mask_path is required for initialization")
         
-    loader = VolumeLoader(target_shape=(64, 64, 64), device=device)
+    # Load mask - keep original dimensions since it's pre-aligned
+    loader = VolumeLoader(device=device)
     mask = loader.load_volume(mask_path)
     
     # Sample points based on mask values
@@ -59,11 +55,11 @@ def initialize_from_volume(
     
     # Flatten everything
     coords_flat = coords.reshape(-1, 3)
-    probs_flat = mask.reshape(-1)
+    mask_flat = mask.reshape(-1)
     
     # Sample points based on mask values
-    if probs_flat.unique().numel() == 2:  # Binary mask
-        valid_idx = torch.nonzero(probs_flat > 0).squeeze(1)
+    if mask_flat.unique().numel() == 2:  # Binary mask
+        valid_idx = torch.nonzero(mask_flat > 0).squeeze(1)
         if len(valid_idx) == 0:
             raise ValueError("No valid points found in mask")
             
@@ -74,22 +70,32 @@ def initialize_from_volume(
             selected_idx = valid_idx
             
         points = coords_flat[selected_idx]
+        opacities = torch.ones(len(points), 1, device=device)
         
     else:  # Continuous mask - sample proportional to values
         # Add small epsilon to ensure some probability everywhere in mask
-        probs = probs_flat + 1e-6
+        probs = mask_flat + 1e-6
         probs = probs / probs.sum()  # Normalize to probability distribution
         
         # Sample point indices according to mask values
         selected_idx = torch.multinomial(probs, n_points, replacement=True)
         points = coords_flat[selected_idx]
         
+        # Use mask values as initial opacities
+        opacities = mask_flat[selected_idx].unsqueeze(1)
+    
     # Normalize coordinates to [0, 1]
     points = points / torch.tensor([W-1, H-1, D-1], device=device)
     
     # Add noise to positions
     points = points + torch.randn_like(points) * noise_std
     points = torch.clamp(points, 0, 1)
+    
+    # Initialize scales (use smaller scales for denser point clouds)
+    base_scale = 0.01 * (5000 / n_points) ** (1/3)  # Scale based on point density
+    scales = torch.ones(len(points), 3, device=device) * base_scale
+    
+    return points, scales, opacities
     
     # Initialize scales and opacities
     scales = torch.ones(len(points), 3, device=device) * 0.01

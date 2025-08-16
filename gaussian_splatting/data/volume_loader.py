@@ -21,15 +21,15 @@ import torch.nn.functional as F
 class VolumeLoader:
     """
     Loader for volumetric data supporting various medical imaging formats.
-    Handles loading, resampling, and coordinate system alignment.
+    Handles loading, optional resampling, and coordinate system alignment.
     """
     
     def __init__(self, 
-                 target_shape: Tuple[int, int, int] = (64, 64, 64),
+                 target_shape: Optional[Tuple[int, int, int]] = None,
                  device: torch.device = torch.device('cuda')):
         """
         Args:
-            target_shape: Desired output volume shape
+            target_shape: Optional target shape for resampling. If None, keeps original dimensions
             device: Device to load tensors to
         """
         self.target_shape = target_shape
@@ -79,25 +79,27 @@ class VolumeLoader:
         """
         Process loaded volume:
         1. Normalize to [0, 1]
-        2. Resample to target shape
+        2. Optionally resample to target shape
         3. Move to device
         """
         # Normalize
         volume = (volume - volume.min()) / (volume.max() - volume.min() + 1e-8)
         
-        # Add batch and channel dimensions for resampling
-        volume = volume.unsqueeze(0).unsqueeze(0)
-        
-        # Resample to target shape
-        volume = F.interpolate(
-            volume,
-            size=self.target_shape,
-            mode='trilinear',
-            align_corners=True
-        )
-        
-        # Remove batch and channel dimensions
-        volume = volume.squeeze(0).squeeze(0)
+        # Resample if target shape is specified
+        if self.target_shape is not None:
+            # Add batch and channel dimensions for resampling
+            volume = volume.unsqueeze(0).unsqueeze(0)
+            
+            # Resample to target shape
+            volume = F.interpolate(
+                volume,
+                size=self.target_shape,
+                mode='trilinear',
+                align_corners=True
+            )
+            
+            # Remove batch and channel dimensions
+            volume = volume.squeeze(0).squeeze(0)
         
         return volume.to(self.device)
     
