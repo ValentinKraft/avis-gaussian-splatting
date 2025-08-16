@@ -69,10 +69,12 @@ class VolumeSupervisor:
             Tuple of (loss tensor, metrics dict)
         """
         # Convert gaussians to volume
+        # Note: get_xyz has shape (3, N) and get_scaling has shape (N, 3)
         volume_pred = splat_to_volume(
-            gaussians.get_xyz,
+            gaussians.get_xyz,  # Will be transposed in splat_to_volume
             self.volume_shape,
-            gaussians.get_scaling,
+            None,  # Skip covariances for now
+            scale=0.05
         )
         
         # Compute loss

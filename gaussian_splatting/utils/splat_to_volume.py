@@ -1,32 +1,18 @@
-# Copyright (C) 2023, Inria
-# GRAPHDECO research group, https://team.inria.fr/graphdeco
-# All rights reserved.
-#
-# This software is free for non-commercial, research and evaluation use 
-# under the terms of the LICENSE.md file.
-
-"""
-Differentiable conversion of 3D Gaussian splats to volumetric representation.
-"""
-
+from typing import Optional, Tuple
 import torch
 from torch import Tensor
-from typing import Tuple, Optional
 import torch.nn.functional as F
 
-def create_grid_points(
-    volume_shape: Tuple[int, int, int],
-    device: torch.device = torch.device("cuda")
-) -> Tensor:
+def create_grid_points(volume_shape: Tuple[int, int, int], device: torch.device) -> Tensor:
     """
-    Create a grid of points for the volume.
+    Create a grid of 3D points for volume rendering.
     
     Args:
-        volume_shape: (depth, height, width) of the volume
-        device: Torch device to create tensors on
+        volume_shape: (depth, height, width) of output volume
+        device: Device to create tensors on
     
     Returns:
-        Grid points tensor of shape (depth, height, width, 3)
+        Grid points tensor (D, H, W, 3)
     """
     D, H, W = volume_shape
     
@@ -103,13 +89,6 @@ def gaussian_kernel_3d(
     # Sum contributions from all Gaussians
     # (D, H, W)
     return kernels.sum(dim=-1)
-        return torch.exp(-0.5 * torch.sum(diff * diff, dim=-1) / (scale ** 2))
-    else:
-        # Use full covariance matrix
-        diff = points - mean
-        cov_inv = torch.inverse(cov)
-        mahalanobis = torch.sum(diff @ cov_inv * diff, dim=-1)
-        return torch.exp(-0.5 * mahalanobis)
 
 def splat_to_volume(
     splats: Tensor,
@@ -121,7 +100,7 @@ def splat_to_volume(
     Convert 3D Gaussian splats to a volumetric representation.
     
     Args:
-        splats: Tensor of splat centers (N, 3)
+        splats: Tensor of splat centers (3, N) or (N, 3)
         volume_shape: Output volume shape (depth, height, width)
         covariances: Optional covariance matrices (N, 3, 3)
         scale: Scale factor for isotropic Gaussians when covariances not provided
@@ -131,11 +110,19 @@ def splat_to_volume(
     """
     device = splats.device
     
+    # Handle different input formats
+    if splats.shape[0] == 3:
+        # Convert from (3, N) to (N, 3)
+        print(f"Converting splats from shape {splats.shape} to (N, 3)")
+        splats = splats.T
+    
+    print(f"Splatting {splats.shape[0]} points to volume of shape {volume_shape}")
+    
     # Create volume grid
     points = create_grid_points(volume_shape, device)
     
     # Process all splats at once
-    volume = gaussian_kernel_3d_batched(points, splats, covariances, scale)
+    volume = gaussian_kernel_3d(points, splats, covariances, scale)
     
     # Normalize volume to [0, 1]
     volume = volume / (volume.max() + 1e-6)
