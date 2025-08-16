@@ -16,6 +16,8 @@ from typing import Tuple, Optional
 import torch.nn.functional as F
 from pathlib import Path
 
+from scene.gaussian_model import GaussianModel
+
 def initialize_from_volume(
     mask_path: str,
     n_points: int = 5000,
@@ -110,35 +112,39 @@ def transform_points_to_world(
 ) -> Tensor:
     """
     Transform points from volume space to world space.
-    
+
     Args:
-        points: Points in normalized volume space [0,1]^3
+        points: Points in normalized volume space [0,1]^3 (shape [N, 3])
         volume_transform: Optional 4x4 transform matrix
         scene_bounds: Optional (min, max) scene bounds to scale into
-        
+
     Returns:
-        Points in world space
+        Points in world space (shape [N, 3])
     """
+    device = points.device
+
     if scene_bounds is not None:
         min_bound, max_bound = scene_bounds
+        # Ensure bounds are on same device as points
+        min_bound = min_bound.to(device)
+        max_bound = max_bound.to(device)
         scale = max_bound - min_bound
         points = points * scale + min_bound
-        
+
     if volume_transform is not None:
+        # Ensure transform is on same device as points
+        volume_transform = volume_transform.to(device)
         # Add homogeneous coordinate
-        points_h = torch.cat([
-            points,
-            torch.ones(len(points), 1, device=points.device)
-        ], dim=1)
-        
+        points_h = torch.cat([points, torch.ones(len(points), 1, device=device)], dim=1)
+
         # Transform
         points = (volume_transform @ points_h.T).T[:, :3]
-        
+
     return points
 
 
 def initialize_gaussians(
-    model,
+    model: GaussianModel,
     n_points: int = 5000,
     volume_transform: Optional[Tensor] = None,
     scene_bounds: Optional[Tuple[Tensor, Tensor]] = None,
@@ -159,11 +165,9 @@ def initialize_gaussians(
         **kwargs: Additional args for initialize_from_volume
     """
     # Get points in volume space
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     points, scales, opacities = initialize_from_volume(
-        mask_path if mask_path else volume_path,
-        n_points,
-        device=model._xyz.device,
-        **kwargs
+        mask_path if mask_path else volume_path, n_points, device=device, **kwargs
     )
 
     # Transform to world space
@@ -171,8 +175,30 @@ def initialize_gaussians(
 
     # Update model parameters
     with torch.no_grad():
-        model._xyz.copy_(points)
-        model._scaling.copy_(scales)
-        model._opacity.copy_(opacities)
+        # Get shapes and device
+        num_points = points.shape[0]  # points is [N, 3]
+        device = points.device
+
+        # Initialize all model tensors
+        model._xyz = points.T  # Convert [N, 3] -> [3, N]
+        model._scaling = torch.log(scales)  # [N, 3], model expects log-scales
+        model._opacity = torch.log(opacities)  # [N, 1], model expects log-opacity
+
+        # Initialize rotation quaternions to identity
+        model._rotation = torch.zeros((num_points, 4), device=device)
+        model._rotation[..., 0] = 1  # w=1, x=y=z=0 for identity rotation
+
+        # Initialize max 2D radii
+        model.max_radii2D = torch.zeros(num_points, device=device)
+
+        # Initialize SH features if needed
+        if model.max_sh_degree > 0:
+            model.num_sh_channels = (model.max_sh_degree + 1) ** 2 * 3
+            model._features_dc = torch.full(
+                (num_points, 3), 0.5, device=device
+            )  # Mid-gray
+            model._features_rest = torch.zeros(
+                num_points, model.num_sh_channels - 3, device=device
+            )
 
     return model

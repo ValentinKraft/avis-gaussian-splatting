@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -35,7 +35,7 @@ class GaussianModel:
             actual_covariance = L @ L.transpose(1, 2)
             symm = strip_symmetric(actual_covariance)
             return symm
-        
+
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
 
@@ -45,7 +45,6 @@ class GaussianModel:
         self.inverse_opacity_activation = inverse_sigmoid
 
         self.rotation_activation = torch.nn.functional.normalize
-
 
     def __init__(self, sh_degree, optimizer_type="default"):
         self.active_sh_degree = 0
@@ -80,7 +79,7 @@ class GaussianModel:
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
         )
-    
+
     def restore(self, model_args, training_args):
         (self.active_sh_degree, 
         self._xyz, 
@@ -102,43 +101,33 @@ class GaussianModel:
     @property
     def get_scaling(self):
         return self.scaling_activation(self._scaling)
-    
+
     @property
     def get_rotation(self):
         return self.rotation_activation(self._rotation)
-    
+
     @property
     def get_xyz(self):
         return self._xyz
-    
+
     @property
     def get_features(self):
         features_dc = self._features_dc
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1)
-    
+
     @property
     def get_features_dc(self):
         return self._features_dc
-    
+
     @property
     def get_features_rest(self):
         return self._features_rest
-    
+
     @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
-    
-    @property
-    def get_exposure(self):
-        return self._exposure
 
-    def get_exposure_from_name(self, image_name):
-        if self.pretrained_exposures is None:
-            return self._exposure[self.exposure_mapping[image_name]]
-        else:
-            return self.pretrained_exposures[image_name]
-    
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
@@ -170,33 +159,29 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
-        self.pretrained_exposures = None
-        exposure = torch.eye(3, 4, device="cuda")[None].repeat(len(cam_infos), 1, 1)
-        self._exposure = nn.Parameter(exposure.requires_grad_(True))
-        
-        #self._override_rotations(source_path)
+
+        # self._override_rotations(source_path)
 
     def _override_rotations(self, source_path : str):
         source_path = os.path.join(source_path, "sparse", "0")
         scales_np = np.load(os.path.join(source_path, "scalings.npy"))
-        #scales_np = np.sqrt(scales_np)
+        # scales_np = np.sqrt(scales_np)
         scales_np = np.clip(scales_np, -4.0, -0.01)
-        #scales_np *= 2.0
+        # scales_np *= 2.0
         rots_np = np.load(os.path.join(source_path, "rotations.npy"))
-        
+
         print("Loaded scaling shape:", scales_np.shape)  # z.B. (100000, 3)
         print("Loaded rotation shape:", rots_np.shape)  # z.B. (100000, 3, 3)
 
         # Umwandeln in Torch-Tensoren und Parameter
-        #print(f"Before: {self._scaling[:20]}")
+        # print(f"Before: {self._scaling[:20]}")
         self._scaling = nn.Parameter(
            torch.tensor(scales_np, dtype=torch.float32, device="cuda").requires_grad_(True)
         )
         self._rotation = nn.Parameter(
             torch.tensor(rots_np, dtype=torch.float32, device="cuda").requires_grad_(True)
         )
-        #print(f"After: {self._scaling[:20]}")
+        # print(f"After: {self._scaling[:20]}")
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
@@ -221,24 +206,18 @@ class GaussianModel:
                 # A special version of the rasterizer is required to enable sparse adam
                 self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
 
-        self.exposure_optimizer = torch.optim.Adam([self._exposure])
+        # No exposure optimization for volume-only supervision
+        self.exposure_optimizer = None
 
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
-                                                    lr_final=training_args.position_lr_final*self.spatial_lr_scale,
-                                                    lr_delay_mult=training_args.position_lr_delay_mult,
-                                                    max_steps=training_args.position_lr_max_steps)
-        
-        self.exposure_scheduler_args = get_expon_lr_func(training_args.exposure_lr_init, training_args.exposure_lr_final,
-                                                        lr_delay_steps=training_args.exposure_lr_delay_steps,
-                                                        lr_delay_mult=training_args.exposure_lr_delay_mult,
-                                                        max_steps=training_args.iterations)
+        self.xyz_scheduler_args = get_expon_lr_func(
+            lr_init=training_args.position_lr_init * self.spatial_lr_scale,
+            lr_final=training_args.position_lr_final * self.spatial_lr_scale,
+            lr_delay_mult=training_args.position_lr_delay_mult,
+            max_steps=training_args.position_lr_max_steps,
+        )
 
     def update_learning_rate(self, iteration):
-        ''' Learning rate scheduling per step '''
-        if self.pretrained_exposures is None:
-            for param_group in self.exposure_optimizer.param_groups:
-                param_group['lr'] = self.exposure_scheduler_args(iteration)
-
+        """Learning rate scheduling per step"""
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 lr = self.xyz_scheduler_args(iteration)
@@ -285,17 +264,6 @@ class GaussianModel:
 
     def load_ply(self, path, use_train_test_exp = False):
         plydata = PlyData.read(path)
-        if use_train_test_exp:
-            exposure_file = os.path.join(os.path.dirname(path), os.pardir, os.pardir, "exposure.json")
-            if os.path.exists(exposure_file):
-                with open(exposure_file, "r") as f:
-                    exposures = json.load(f)
-                self.pretrained_exposures = {image_name: torch.FloatTensor(exposures[image_name]).requires_grad_(False).cuda() for image_name in exposures}
-                print(f"Pretrained exposures loaded.")
-            else:
-                print(f"No exposure to be loaded at {exposure_file}")
-                self.pretrained_exposures = None
-
         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
                         np.asarray(plydata.elements[0]["y"]),
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
@@ -460,7 +428,7 @@ class GaussianModel:
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
-        
+
         new_xyz = self._xyz[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]

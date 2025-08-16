@@ -43,29 +43,70 @@ def create_grid_points(
 
 def gaussian_kernel_3d(
     points: Tensor,
-    mean: Tensor,
-    cov: Optional[Tensor] = None,
+    means: Tensor,
+    covs: Optional[Tensor] = None,
     scale: float = 1.0
 ) -> Tensor:
     """
-    Compute 3D Gaussian kernel values for given points.
+    Compute batched 3D Gaussian kernel values for multiple centers.
     
     Args:
         points: Grid points (D, H, W, 3)
-        mean: Gaussian center (3,)
-        cov: Optional covariance matrix (3, 3)
+        means: Gaussian centers (N, 3)
+        covs: Optional covariance matrices (N, 3, 3)  
         scale: Scale factor for isotropic Gaussian
-        
+    
     Returns:
-        Kernel values at each point (D, H, W)
+        Combined kernel values at each point (D, H, W)
     """
-    if cov is None:
-        # Use isotropic Gaussian
-        diff = points - mean.view(1, 1, 1, 3)
+    D, H, W = points.shape[:3]
+    N = means.shape[0]
+    
+    # Reshape points for broadcasting against means
+    # points: (D, H, W, 3) -> (D, H, W, 1, 3)
+    points_exp = points.unsqueeze(3)
+    
+    # Reshape means for broadcasting against points
+    # means: (N, 3) -> (1, 1, 1, N, 3) 
+    means_exp = means.reshape(1, 1, 1, N, 3)
+    
+    # Compute differences for all points and means at once
+    # diff: (D, H, W, N, 3)
+    diff = points_exp - means_exp
+    
+    if covs is None:
+        # Use isotropic Gaussian for all centers
+        sq_dist = torch.sum(diff * diff, dim=-1)  # (D, H, W, N)
+        kernels = torch.exp(-0.5 * sq_dist / (scale ** 2))  # (D, H, W, N)
+    else:
+        # Use full covariance matrices
+        # covs: (N, 3, 3)
+        # Compute inverse of each covariance matrix
+        cov_invs = torch.inverse(covs)  # (N, 3, 3)
+        
+        # Expand covs for broadcasting
+        # (N, 3, 3) -> (1, 1, 1, N, 3, 3)
+        cov_invs = cov_invs.reshape(1, 1, 1, N, 3, 3)
+        
+        # Reshape diff for matrix multiplication
+        # (D, H, W, N, 3) -> (D, H, W, N, 1, 3)
+        diff_exp = diff.unsqueeze(-2)
+        
+        # Compute mahalanobis distance
+        # (D, H, W, N)
+        mahalanobis = torch.sum(
+            (diff_exp @ cov_invs) * diff_exp.transpose(-2, -1),
+            dim=(-2, -1)
+        )
+        kernels = torch.exp(-0.5 * mahalanobis)
+    
+    # Sum contributions from all Gaussians
+    # (D, H, W)
+    return kernels.sum(dim=-1)
         return torch.exp(-0.5 * torch.sum(diff * diff, dim=-1) / (scale ** 2))
     else:
         # Use full covariance matrix
-        diff = points - mean.view(1, 1, 1, 3)
+        diff = points - mean
         cov_inv = torch.inverse(cov)
         mahalanobis = torch.sum(diff @ cov_inv * diff, dim=-1)
         return torch.exp(-0.5 * mahalanobis)
@@ -93,14 +134,8 @@ def splat_to_volume(
     # Create volume grid
     points = create_grid_points(volume_shape, device)
     
-    # Initialize output volume
-    volume = torch.zeros(volume_shape, device=device)
-    
-    # Accumulate contributions from each splat
-    for i, center in enumerate(splats):
-        cov = covariances[i] if covariances is not None else None
-        kernel = gaussian_kernel_3d(points, center, cov, scale)
-        volume = volume + kernel
+    # Process all splats at once
+    volume = gaussian_kernel_3d_batched(points, splats, covariances, scale)
     
     # Normalize volume to [0, 1]
     volume = volume / (volume.max() + 1e-6)
@@ -119,6 +154,7 @@ def differentiable_max_pooling(volume: Tensor, kernel_size: int = 3) -> Tensor:
     Returns:
         Pooled volume (D, H, W)
     """
+    volume_shape = volume.shape
     padding = kernel_size // 2
     
     # Add batch and channel dimensions
