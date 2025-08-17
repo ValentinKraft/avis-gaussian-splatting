@@ -40,11 +40,11 @@ def initialize_from_volume(
         Tuple of (positions, scales, opacities)
     """
     from gaussian_splatting.data.volume_loader import VolumeLoader
-        
+
     # Load mask - keep original dimensions since it's pre-aligned
     loader = VolumeLoader(device=device)
     mask = loader.load_volume(mask_path)
-    
+
     # Sample points based on mask values
     # Create coordinate grid
     D, H, W = mask.shape
@@ -55,55 +55,83 @@ def initialize_from_volume(
         indexing='ij'
     )
     coords = torch.stack([x, y, z], dim=-1).float()
-    
+
     # Flatten everything
     coords_flat = coords.reshape(-1, 3)
     mask_flat = mask.reshape(-1)
-    
+
+    # Print mask stats for debugging
+    print(
+        f"Mask stats: min={mask_flat.min().item():.4f}, max={mask_flat.max().item():.4f}, "
+        f"mean={mask_flat.mean().item():.4f}, nonzero={(mask_flat > 0).sum().item()}"
+    )
+
     # Sample points based on mask values
-    if mask_flat.unique().numel() == 2:  # Binary mask
+    if mask_flat.unique().numel() <= 2:  # Binary mask
         valid_idx = torch.nonzero(mask_flat > 0).squeeze(1)
         if len(valid_idx) == 0:
             raise ValueError("No valid points found in mask")
-            
+
+        print(
+            f"Binary mask detected: {len(valid_idx)} valid points of {len(mask_flat)} total"
+        )
+
         # Random sampling from valid points
         if len(valid_idx) > n_points:
             selected_idx = valid_idx[torch.randperm(len(valid_idx))[:n_points]]
         else:
-            selected_idx = valid_idx
-            
+            # If we have fewer valid points than requested, duplicate some
+            print(
+                f"Warning: Only {len(valid_idx)} valid points, fewer than requested {n_points}"
+            )
+            repeats_needed = (n_points + len(valid_idx) - 1) // len(valid_idx)
+            repeated_idx = valid_idx.repeat(repeats_needed)
+            selected_idx = repeated_idx[:n_points]
+
         points = coords_flat[selected_idx]
         opacities = torch.ones(len(points), 1, device=device)
-        
+
     else:  # Continuous mask - sample proportional to values
-        # Add small epsilon to ensure some probability everywhere in mask
-        probs = mask_flat + 1e-6
+        print(
+            f"Continuous mask detected: values range [{mask_flat.min().item():.4f}, {mask_flat.max().item():.4f}]"
+        )
+
+        # Add small epsilon and add more weight to positive values to ensure good coverage
+        mask_weighted = mask_flat.clone()
+        mask_weighted[mask_weighted > 0] = (
+            mask_weighted[mask_weighted > 0] + 0.2
+        )  # Boost positive values
+
+        probs = mask_weighted + 1e-6
         probs = probs / probs.sum()  # Normalize to probability distribution
-        
+
         # Sample point indices according to mask values
         selected_idx = torch.multinomial(probs, n_points, replacement=True)
         points = coords_flat[selected_idx]
-        
-        # Use mask values as initial opacities
-        opacities = mask_flat[selected_idx].unsqueeze(1)
-    
+
+        # Use mask values as initial opacities, but ensure a minimum value
+        raw_opacities = mask_flat[selected_idx].unsqueeze(1)
+        opacities = torch.clamp(
+            raw_opacities, min=0.3
+        )  # Minimum opacity for visibility
+
     # Normalize coordinates to [0, 1]
     points = points / torch.tensor([W-1, H-1, D-1], device=device)
-    
+
     # Add noise to positions
     points = points + torch.randn_like(points) * noise_std
     points = torch.clamp(points, 0, 1)
-    
+
     # Initialize scales (use smaller scales for denser point clouds)
     base_scale = 0.01 * (5000 / n_points) ** (1/3)  # Scale based on point density
     scales = torch.ones(len(points), 3, device=device) * base_scale
-    
+
     return points, scales, opacities
-    
+
     # Initialize scales and opacities
     scales = torch.ones(len(points), 3, device=device) * 0.01
     opacities = torch.ones(len(points), 1, device=device)
-    
+
     return points, scales, opacities
 
 def transform_points_to_world(

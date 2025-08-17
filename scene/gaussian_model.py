@@ -108,6 +108,16 @@ class GaussianModel:
 
     @property
     def get_xyz(self):
+        # Make sure _xyz is a Parameter and requires_grad is properly set
+        if not isinstance(self._xyz, nn.Parameter):
+            print("WARNING: _xyz is not a Parameter, converting it")
+            self._xyz = nn.Parameter(self._xyz.clone().detach().requires_grad_(True))
+
+        # If _xyz doesn't require gradients, force it
+        if not self._xyz.requires_grad:
+            print("WARNING: _xyz doesn't require gradients, enabling them")
+            self._xyz.requires_grad_(True)
+
         return self._xyz
 
     @property
