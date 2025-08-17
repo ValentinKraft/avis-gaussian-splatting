@@ -159,12 +159,12 @@ def training(
         if volume_supervisor is not None:
             # Ensure model has proper requires_grad set
             print(f"Before compute_loss: xyz requires_grad: {gaussians._xyz.requires_grad}")
-            
+
             # Compute the volume loss
             vol_loss, vol_metrics = volume_supervisor.compute_loss(gaussians)
             volume_loss = vol_loss.item()
             loss = vol_loss
-            
+
             # Check the loss gradient status
             print(f"After compute_loss: loss requires_grad: {vol_loss.requires_grad}, loss: {vol_loss.item()}")
 
@@ -209,6 +209,33 @@ def training(
                     "timing/iter_ms", iter_start.elapsed_time(iter_end), iteration
                 )
                 tb_writer.add_scalar("model/points", gaussians._xyz.shape[1], iteration)
+
+            # Save PLY file at specified iterations
+            save_ply_every = (
+                args.save_ply_every if hasattr(args, "save_ply_every") else 1
+            )
+            if (
+                iteration % save_ply_every == 0
+                or iteration == 1
+                or iteration == opt.iterations
+            ):
+                ply_output_dir = os.path.join(args.model_path, "ply_sequence")
+                prefix = (
+                    args.ply_output_prefix
+                    if hasattr(args, "ply_output_prefix")
+                    else "gaussians"
+                )
+                ply_output_path = gaussians.save_ply_sequence(
+                    ply_output_dir, iteration, prefix
+                )
+
+                # Log PLY saving every 100 iterations to avoid console spam
+                if (
+                    iteration % 100 == 0
+                    or iteration == 1
+                    or iteration == opt.iterations
+                ):
+                    print(f"\n[ITER {iteration}] Saved model as PLY: {ply_output_path}")
 
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
@@ -331,6 +358,21 @@ if __name__ == "__main__":
         type=float,
         default=0.01,
         help="Standard deviation of position noise for initialization",
+    )
+
+    # PLY saving options
+    ply_group = parser.add_argument_group("PLY Export Options")
+    ply_group.add_argument(
+        "--save_ply_every",
+        type=int,
+        default=1,
+        help="Save PLY file every N iterations (default: 1 = every iteration)",
+    )
+    ply_group.add_argument(
+        "--ply_output_prefix",
+        type=str,
+        default="gaussians",
+        help="Prefix for PLY filenames",
     )
 
     # Other arguments

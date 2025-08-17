@@ -236,36 +236,120 @@ class GaussianModel:
 
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
-        # All channels except the 3 DC
-        for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
-            l.append('f_dc_{}'.format(i))
-        for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
-            l.append('f_rest_{}'.format(i))
+        
+        # Handle features for volume-only training (might be empty tensors)
+        if self._features_dc.numel() > 0:
+            for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
+                l.append('f_dc_{}'.format(i))
+        else:
+            # Add dummy DC features for volume-only model
+            for i in range(3):  # RGB channels
+                l.append('f_dc_{}'.format(i))
+                
+        if self._features_rest.numel() > 0:
+            for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
+                l.append('f_rest_{}'.format(i))
+        
         l.append('opacity')
-        for i in range(self._scaling.shape[1]):
-            l.append('scale_{}'.format(i))
-        for i in range(self._rotation.shape[1]):
-            l.append('rot_{}'.format(i))
+        
+        if self._scaling.numel() > 0:
+            for i in range(self._scaling.shape[1]):
+                l.append('scale_{}'.format(i))
+        
+        if self._rotation.numel() > 0:
+            for i in range(self._rotation.shape[1]):
+                l.append('rot_{}'.format(i))
+                
         return l
 
     def save_ply(self, path):
+        """Save the Gaussian model to a PLY file.
+
+        Args:
+            path: Path to save the PLY file
+        """
         mkdir_p(os.path.dirname(path))
 
-        xyz = self._xyz.detach().cpu().numpy()
+        # Get the number of points
+        if self._xyz.shape[0] == 3:  # Shape is [3, N]
+            num_points = self._xyz.shape[1]
+            xyz = self._xyz.detach().cpu().numpy().T  # Convert to [N, 3]
+        else:  # Shape is already [N, 3]
+            num_points = self._xyz.shape[0]
+            xyz = self._xyz.detach().cpu().numpy()
+            
+        # Create normals
         normals = np.zeros_like(xyz)
-        f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        
+        # Handle empty feature tensors for volume-only training
+        if self._features_dc.numel() > 0:
+            f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        else:
+            # Create dummy features for volume-only model
+            f_dc = np.zeros((num_points, 3))
+            
+        if self._features_rest.numel() > 0:
+            f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        else:
+            # Create empty features array for volume-only model
+            f_rest = np.zeros((num_points, 0))
+            
+        # Handle other attributes
         opacities = self._opacity.detach().cpu().numpy()
+        if opacities.shape[0] != num_points:
+            # Ensure opacity has shape [N, 1]
+            opacities = np.ones((num_points, 1))
+            
         scale = self._scaling.detach().cpu().numpy()
+        if scale.shape[0] != num_points:
+            # Ensure scale has shape [N, 3]
+            scale = np.ones((num_points, 3)) * 0.01
+            
         rotation = self._rotation.detach().cpu().numpy()
+        if rotation.shape[0] != num_points:
+            # Ensure rotation has shape [N, 4]
+            rotation = np.zeros((num_points, 4))
+            rotation[:, 0] = 1  # Identity rotation
+        
+        # Special handling for empty tensors in construct_list_of_attributes
+        attributes_list = self.construct_list_of_attributes()
+        dtype_full = [(attribute, 'f4') for attribute in attributes_list]
 
-        dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
-
-        elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        # Create combined attributes array
+        elements = np.empty(num_points, dtype=dtype_full)
+        
+        # Safely concatenate all attributes
+        all_attributes = []
+        all_attributes.append(xyz)          # [N, 3]
+        all_attributes.append(normals)      # [N, 3]
+        all_attributes.append(f_dc)         # [N, 3]
+        if f_rest.shape[1] > 0:
+            all_attributes.append(f_rest)   # [N, F-3]
+        all_attributes.append(opacities)    # [N, 1]
+        all_attributes.append(scale)        # [N, 3]
+        all_attributes.append(rotation)     # [N, 4]
+        
+        attributes = np.concatenate(all_attributes, axis=1)
         elements[:] = list(map(tuple, attributes))
+        
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
+
+    def save_ply_sequence(self, output_dir, iteration, prefix="gaussians"):
+        """Save the Gaussian model to a PLY file with iteration number.
+
+        Args:
+            output_dir: Directory to save the PLY file
+            iteration: Current iteration number
+            prefix: Prefix for the filename
+
+        Returns:
+            Path to the saved PLY file
+        """
+        mkdir_p(output_dir)
+        path = os.path.join(output_dir, f"{prefix}_{iteration:06d}.ply")
+        self.save_ply(path)
+        return path
 
     def reset_opacity(self):
         opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
