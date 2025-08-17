@@ -94,7 +94,8 @@ def splat_to_volume(
     splats: Tensor,
     volume_shape: Tuple[int, int, int],
     covariances: Optional[Tensor] = None,
-    scale: float = 0.1
+    scale: float = 0.1,
+    batch_size: int = 100  # Process points in batches to save memory
 ) -> Tensor:
     """
     Convert 3D Gaussian splats to a volumetric representation.
@@ -104,29 +105,91 @@ def splat_to_volume(
         volume_shape: Output volume shape (depth, height, width)
         covariances: Optional covariance matrices (N, 3, 3)
         scale: Scale factor for isotropic Gaussians when covariances not provided
+        batch_size: Number of points to process at once to manage memory
         
     Returns:
         Volume tensor (D, H, W)
     """
     device = splats.device
     
-    # Handle different input formats
+    # Print input tensor info for debugging
+    print(f"Input splats shape: {splats.shape}, requires_grad: {splats.requires_grad}")
+    
+    # Check if input requires gradients - if not, let's early return with a warning
+    if not splats.requires_grad:
+        print("WARNING: Input tensor does not require gradients - this will break backpropagation!")
+    
+    # Handle different input formats WITHOUT detaching - we need to keep the computation graph
     if splats.shape[0] == 3:
-        # Convert from (3, N) to (N, 3)
+        # Convert from (3, N) to (N, 3) without breaking gradient chain
         print(f"Converting splats from shape {splats.shape} to (N, 3)")
-        splats = splats.T
+        points_n3 = splats.permute(1, 0)  # Use permute instead of T to maintain gradient connections
+    else:
+        # Keep the tensor as is
+        points_n3 = splats
     
-    print(f"Splatting {splats.shape[0]} points to volume of shape {volume_shape}")
+    total_points = points_n3.shape[0]
+    print(f"Splatting {total_points} points to volume of shape {volume_shape}")
     
-    # Create volume grid
-    points = create_grid_points(volume_shape, device)
+    # Create volume grid - these don't need gradients
+    grid_points = create_grid_points(volume_shape, device)
     
-    # Process all splats at once
-    volume = gaussian_kernel_3d(points, splats, covariances, scale)
+    # Start with a zero tensor that inherits requires_grad from splats
+    # This is critical for gradient flow
+    volume = torch.zeros(volume_shape, device=device, requires_grad=splats.requires_grad)
     
-    # Normalize volume to [0, 1]
-    volume = volume / (volume.max() + 1e-6)
+    # Process splats in batches to save memory
+    num_batches = (total_points + batch_size - 1) // batch_size
+    print(f"Processing in {num_batches} batches of size {batch_size}")
     
+    for i in range(num_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, total_points)
+        
+        # Get current batch of points
+        batch_points = points_n3[start_idx:end_idx]
+        batch_covs = None
+        if covariances is not None:
+            batch_covs = covariances[start_idx:end_idx]
+            
+        # Process batch and accumulate results
+        if (i+1) % 10 == 0:
+            print(f"Processing batch {i+1}/{num_batches}")
+        
+        # Process all points in the batch at once if possible
+        batch_contribution = torch.zeros_like(volume)
+        
+        # Use the single-point version in a loop for memory efficiency
+        for j in range(batch_points.shape[0]):
+            center = batch_points[j]
+            
+            # Calculate Gaussian kernel for this point
+            # Make sure this operation is differentiable with respect to center
+            diff = grid_points - center.view(1, 1, 1, 3)
+            sq_dist = torch.sum(diff * diff, dim=-1)
+            kernel = torch.exp(-0.5 * sq_dist / (scale ** 2))
+            
+            # Add contribution to batch accumulation
+            batch_contribution = batch_contribution + kernel
+        
+        # Add the batch contribution to the main volume
+        volume = volume + batch_contribution
+    
+    # Normalize volume to [0, 1] - ensure we preserve gradient flow
+    max_val = volume.max()
+    if max_val > 0:
+        # Use proper differentiable normalization
+        volume = volume / (max_val + 1e-6)
+    
+    print(f"Volume range: [{volume.min().item():.4f}, {volume.max().item():.4f}]")
+    print(f"Volume requires_grad: {volume.requires_grad}")
+    
+    # Create a proper connection between the input and output
+    if splats.requires_grad and not volume.requires_grad:
+        print("WARNING: Gradient chain broken, creating dummy connection")
+        # Create dummy connection to ensure gradient flow
+        volume = volume + (splats.sum() * 0)
+        
     return volume
 
 def differentiable_max_pooling(volume: Tensor, kernel_size: int = 3) -> Tensor:

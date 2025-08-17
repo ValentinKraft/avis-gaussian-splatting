@@ -132,13 +132,19 @@ class VolumeLoss(nn.Module):
         Returns:
             Weighted loss value
         """
+        # Print gradient information for debugging
+        print(f"VolumeLoss input - pred requires_grad: {pred.requires_grad}, target requires_grad: {target.requires_grad}")
+        
         if self.loss_type == 'kl':
-            # KL divergence expects log probabilities for pred
+            # KL divergence expects log probabilities for pred - preserve gradients
             pred = torch.clamp(pred, 1e-7, 1.0)
             target = torch.clamp(target, 1e-7, 1.0)
             pred = torch.log(pred)
             loss = self.criterion(pred, target)
         else:
             loss = self.criterion(pred, target)
+        
+        weighted_loss = self.weight * loss
+        print(f"VolumeLoss output - loss: {loss.item()}, requires_grad: {weighted_loss.requires_grad}")
             
-        return self.weight * loss
+        return weighted_loss

@@ -68,17 +68,32 @@ class VolumeSupervisor:
         Returns:
             Tuple of (loss tensor, metrics dict)
         """
+        # Check if xyz requires gradients
+        xyz = gaussians.get_xyz
+        print(f"xyz requires_grad: {xyz.requires_grad}")
+        print(f"xyz shape: {xyz.shape}")
+        
         # Convert gaussians to volume
         # Note: get_xyz has shape (3, N) and get_scaling has shape (N, 3)
         volume_pred = splat_to_volume(
-            gaussians.get_xyz,  # Will be transposed in splat_to_volume
+            xyz,  # Will be transposed in splat_to_volume
             self.volume_shape,
             None,  # Skip covariances for now
             scale=0.05
         )
         
-        # Compute loss
+        # Verify volume_pred has gradients
+        print(f"volume_pred requires_grad: {volume_pred.requires_grad}")
+        
+        # Store predicted volume for visualization (use clone to avoid breaking gradient chain)
+        self.volume_pred = volume_pred.detach().clone()
+        
+        # Compute loss - make sure both tensors are on the same device
+        self.volume_gt = self.volume_gt.to(volume_pred.device)
         loss = self.criterion(volume_pred, self.volume_gt)
+        
+        # Verify loss has gradients
+        print(f"loss requires_grad: {loss.requires_grad}")
         
         # Update metrics
         with torch.no_grad():

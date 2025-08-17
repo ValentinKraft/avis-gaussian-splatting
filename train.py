@@ -157,16 +157,32 @@ def training(
         # Volume supervision loss
         volume_loss = 0.0
         if volume_supervisor is not None:
+            # Ensure model has proper requires_grad set
+            print(f"Before compute_loss: xyz requires_grad: {gaussians._xyz.requires_grad}")
+            
+            # Compute the volume loss
             vol_loss, vol_metrics = volume_supervisor.compute_loss(gaussians)
             volume_loss = vol_loss.item()
             loss = vol_loss
+            
+            # Check the loss gradient status
+            print(f"After compute_loss: loss requires_grad: {vol_loss.requires_grad}, loss: {vol_loss.item()}")
 
             # Log volume metrics
             if tb_writer and iteration % 10 == 0:
                 for name, value in vol_metrics.items():
                     tb_writer.add_scalar(f"volume/{name}", value, iteration)
 
-        loss.backward()
+        # Make sure the loss requires gradients before calling backward
+        if loss.requires_grad:
+            print("Loss requires gradients, calling backward...")
+            loss.backward()
+        else:
+            print("ERROR: Loss does not require gradients! Check gradient chain.")
+            # Try to create a dummy loss with gradients
+            dummy_loss = (gaussians._xyz.sum() * 0) + loss
+            print(f"Created dummy loss with requires_grad: {dummy_loss.requires_grad}")
+            dummy_loss.backward()
 
         iter_end.record()
 

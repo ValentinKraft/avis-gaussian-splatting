@@ -10,6 +10,7 @@ Initialize Gaussian points from volume data for 3D Gaussian Splatting.
 """
 
 import torch
+import torch.nn as nn
 from torch import Tensor
 import numpy as np
 from typing import Tuple, Optional
@@ -174,31 +175,31 @@ def initialize_gaussians(
     points = transform_points_to_world(points, volume_transform, scene_bounds)
 
     # Update model parameters
-    with torch.no_grad():
-        # Get shapes and device
-        num_points = points.shape[0]  # points is [N, 3]
-        device = points.device
+    # Get shapes and device
+    num_points = points.shape[0]  # points is [N, 3]
+    device = points.device
 
-        # Initialize all model tensors
-        model._xyz = points.T  # Convert [N, 3] -> [3, N]
-        model._scaling = torch.log(scales)  # [N, 3], model expects log-scales
-        model._opacity = torch.log(opacities)  # [N, 1], model expects log-opacity
+    # Initialize all model tensors with proper nn.Parameters
+    model._xyz = nn.Parameter(points.T.contiguous().requires_grad_(True))  # Convert [N, 3] -> [3, N]
+    model._scaling = nn.Parameter(torch.log(scales).contiguous().requires_grad_(True))  # [N, 3], model expects log-scales
+    model._opacity = nn.Parameter(torch.log(opacities).contiguous().requires_grad_(True))  # [N, 1], model expects log-opacity
 
-        # Initialize rotation quaternions to identity
-        model._rotation = torch.zeros((num_points, 4), device=device)
-        model._rotation[..., 0] = 1  # w=1, x=y=z=0 for identity rotation
+    # Initialize rotation quaternions to identity
+    rotations = torch.zeros((num_points, 4), device=device)
+    rotations[..., 0] = 1  # w=1, x=y=z=0 for identity rotation
+    model._rotation = nn.Parameter(rotations.contiguous().requires_grad_(True))
 
-        # Initialize max 2D radii
-        model.max_radii2D = torch.zeros(num_points, device=device)
+    # Initialize max 2D radii
+    model.max_radii2D = torch.zeros(num_points, device=device)
 
-        # Initialize SH features if needed
-        if model.max_sh_degree > 0:
-            model.num_sh_channels = (model.max_sh_degree + 1) ** 2 * 3
-            model._features_dc = torch.full(
-                (num_points, 3), 0.5, device=device
-            )  # Mid-gray
-            model._features_rest = torch.zeros(
-                num_points, model.num_sh_channels - 3, device=device
-            )
+    # Initialize SH features if needed
+    if model.max_sh_degree > 0:
+        model.num_sh_channels = (model.max_sh_degree + 1) ** 2 * 3
+        model._features_dc = nn.Parameter(
+            torch.full((num_points, 3), 0.5, device=device).contiguous().requires_grad_(True)
+        )  # Mid-gray
+        model._features_rest = nn.Parameter(
+            torch.zeros(num_points, model.num_sh_channels - 3, device=device).contiguous().requires_grad_(True)
+        )
 
     return model
