@@ -99,6 +99,7 @@ def splat_to_volume(
     batch_size: int = 100,  # Process points in batches to save memory
     scaling: Optional[Tensor] = None,  # Optional per-point scale factors
     opacity: Optional[Tensor] = None,  # Optional per-point opacity values
+    intensities: Optional[Tensor] = None,  # Optional per-point intensity values
 ) -> Tensor:
     """
     Convert 3D Gaussian splats to a volumetric representation.
@@ -167,6 +168,17 @@ def splat_to_volume(
         else:
             point_opacities = opacity
 
+    # Prepare intensity values if provided
+    point_intensities = None
+    if intensities is not None:
+        if len(intensities.shape) == 2 and intensities.shape[1] == 1:
+            point_intensities = intensities.squeeze(1)  # Convert (N, 1) to (N,)
+        else:
+            point_intensities = intensities
+    else:
+        # Default to 1.0 intensity if not provided
+        point_intensities = torch.ones(total_points, device=device)
+
     for i in range(num_batches):
         start_idx = i * batch_size
         end_idx = min((i + 1) * batch_size, total_points)
@@ -182,6 +194,10 @@ def splat_to_volume(
         batch_opacities = None
         if point_opacities is not None:
             batch_opacities = point_opacities[start_idx:end_idx]
+
+        batch_intensities = None
+        if point_intensities is not None:
+            batch_intensities = point_intensities[start_idx:end_idx]
 
         # Process batch and accumulate results
         if (i+1) % 10 == 0:
@@ -210,6 +226,11 @@ def splat_to_volume(
             # Apply opacity if available
             if batch_opacities is not None:
                 kernel = kernel * batch_opacities[j].item()
+
+            # Apply intensity value to scale the contribution
+            if batch_intensities is not None:
+                # Intensity directly affects the value of each voxel
+                kernel = kernel * batch_intensities[j].item()
 
             # Add contribution to batch accumulation
             batch_contribution = batch_contribution + kernel

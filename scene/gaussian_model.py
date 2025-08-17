@@ -62,6 +62,10 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+        # Add intensity values for volume-based rendering (not learnable parameters)
+        self.intensities = torch.empty(0)
+        # Store reference volume for intensity updates
+        self.reference_volume = None
         self.setup_functions()
 
     def capture(self):
@@ -78,21 +82,34 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
+            self.intensities,  # Store intensity values
         )
 
     def restore(self, model_args, training_args):
-        (self.active_sh_degree, 
-        self._xyz, 
-        self._features_dc, 
-        self._features_rest,
-        self._scaling, 
-        self._rotation, 
-        self._opacity,
-        self.max_radii2D, 
-        xyz_gradient_accum, 
-        denom,
-        opt_dict, 
-        self.spatial_lr_scale) = model_args
+        (
+            self.active_sh_degree,
+            self._xyz,
+            self._features_dc,
+            self._features_rest,
+            self._scaling,
+            self._rotation,
+            self._opacity,
+            self.max_radii2D,
+            xyz_gradient_accum,
+            denom,
+            opt_dict,
+            self.spatial_lr_scale,
+            *extra_args,
+        ) = model_args
+
+        # Restore intensity values if available
+        if len(extra_args) > 0:
+            self.intensities = extra_args[0]
+        else:
+            # Create default intensities if not available (for backward compatibility)
+            num_points = self._xyz.shape[1]
+            self.intensities = torch.full((num_points, 1), 0.5, device=self._xyz.device)
+
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
@@ -198,14 +215,24 @@ class GaussianModel:
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
+        # Initialize optimizer parameters list
         l = [
-            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
-            {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
-            {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
+            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"}
+        ]
+        
+        # Only add feature parameters if they exist (for volume-only training they might be None)
+        if self._features_dc is not None:
+            l.append({'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"})
+        
+        if self._features_rest is not None:
+            l.append({'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"})
+        
+        # Always add these parameters
+        l.extend([
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
-        ]
+        ])
 
         if self.optimizer_type == "default":
             self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -236,30 +263,33 @@ class GaussianModel:
 
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
-        
+
         # Handle features for volume-only training (might be empty tensors)
-        if self._features_dc.numel() > 0:
+        if self._features_dc is not None and self._features_dc.numel() > 0:
             for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
                 l.append('f_dc_{}'.format(i))
         else:
             # Add dummy DC features for volume-only model
             for i in range(3):  # RGB channels
                 l.append('f_dc_{}'.format(i))
-                
-        if self._features_rest.numel() > 0:
+
+        if self._features_rest is not None and self._features_rest.numel() > 0:
             for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
                 l.append('f_rest_{}'.format(i))
-        
+
+        # Always add intensity value for volume-based models
+        l.append("intensity")
+
         l.append('opacity')
-        
+
         if self._scaling.numel() > 0:
             for i in range(self._scaling.shape[1]):
                 l.append('scale_{}'.format(i))
-        
+
         if self._rotation.numel() > 0:
             for i in range(self._rotation.shape[1]):
                 l.append('rot_{}'.format(i))
-                
+
         return l
 
     def save_ply(self, path):
@@ -277,47 +307,60 @@ class GaussianModel:
         else:  # Shape is already [N, 3]
             num_points = self._xyz.shape[0]
             xyz = self._xyz.detach().cpu().numpy()
-            
+
         # Create normals
         normals = np.zeros_like(xyz)
-        
+
         # Handle empty feature tensors for volume-only training
-        if self._features_dc.numel() > 0:
+        if self._features_dc is not None and self._features_dc.numel() > 0:
             f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         else:
-            # Create dummy features for volume-only model
-            f_dc = np.zeros((num_points, 3))
-            
-        if self._features_rest.numel() > 0:
+            # Create dummy features for volume-only model using intensity values if available
+            if hasattr(self, "intensities") and self.intensities.numel() > 0:
+                # Repeat intensity values for RGB channels to create grayscale
+                intensity_values = self.intensities.detach().cpu().numpy()
+                f_dc = np.repeat(intensity_values, 3, axis=1)
+            else:
+                # Default to mid-gray if no intensities available
+                f_dc = np.ones((num_points, 3)) * 0.5
+
+        if self._features_rest is not None and self._features_rest.numel() > 0:
             f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         else:
             # Create empty features array for volume-only model
             f_rest = np.zeros((num_points, 0))
-            
+
+        # Get intensity values
+        if hasattr(self, "intensities") and self.intensities.numel() > 0:
+            intensity_values = self.intensities.detach().cpu().numpy()
+        else:
+            # Default intensity values if not available
+            intensity_values = np.ones((num_points, 1)) * 0.5
+
         # Handle other attributes
         opacities = self._opacity.detach().cpu().numpy()
         if opacities.shape[0] != num_points:
             # Ensure opacity has shape [N, 1]
             opacities = np.ones((num_points, 1))
-            
+
         scale = self._scaling.detach().cpu().numpy()
         if scale.shape[0] != num_points:
             # Ensure scale has shape [N, 3]
             scale = np.ones((num_points, 3)) * 0.01
-            
+
         rotation = self._rotation.detach().cpu().numpy()
         if rotation.shape[0] != num_points:
             # Ensure rotation has shape [N, 4]
             rotation = np.zeros((num_points, 4))
             rotation[:, 0] = 1  # Identity rotation
-        
+
         # Special handling for empty tensors in construct_list_of_attributes
         attributes_list = self.construct_list_of_attributes()
         dtype_full = [(attribute, 'f4') for attribute in attributes_list]
 
         # Create combined attributes array
         elements = np.empty(num_points, dtype=dtype_full)
-        
+
         # Safely concatenate all attributes
         all_attributes = []
         all_attributes.append(xyz)          # [N, 3]
@@ -325,13 +368,14 @@ class GaussianModel:
         all_attributes.append(f_dc)         # [N, 3]
         if f_rest.shape[1] > 0:
             all_attributes.append(f_rest)   # [N, F-3]
+        all_attributes.append(intensity_values)  # [N, 1] - Intensity values
         all_attributes.append(opacities)    # [N, 1]
         all_attributes.append(scale)        # [N, 3]
         all_attributes.append(rotation)     # [N, 4]
-        
+
         attributes = np.concatenate(all_attributes, axis=1)
         elements[:] = list(map(tuple, attributes))
-        
+
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
@@ -556,3 +600,29 @@ class GaussianModel:
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
+
+    def update_intensities(self, volume):
+        """
+        Update intensity values for all Gaussians based on their current positions in the volume.
+        This should be called when positions or scales change significantly.
+
+        Args:
+            volume: Reference volume with intensity values
+        """
+        if volume is None:
+            return
+
+        # Store reference volume for future updates
+        self.reference_volume = volume
+
+        from gaussian_splatting.utils.intensity_sampler import update_intensities
+
+        # Update intensities based on current positions and scales
+        with torch.no_grad():  # No gradients needed for this operation
+            self.intensities = update_intensities(
+                self.get_xyz, volume, self.get_scaling
+            )
+
+        print(
+            f"Updated intensities: range [{self.intensities.min().item():.4f}, {self.intensities.max().item():.4f}]"
+        )

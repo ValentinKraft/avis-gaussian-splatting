@@ -199,6 +199,28 @@ def initialize_gaussians(
         mask_path if mask_path else volume_path, n_points, device=device, **kwargs
     )
 
+    # Sample intensity values from the volume if available
+    intensities = None
+    if volume_path:
+        from gaussian_splatting.data.volume_loader import VolumeLoader
+        from gaussian_splatting.utils.intensity_sampler import (
+            sample_intensities_from_volume,
+        )
+
+        # Load volume for intensity sampling
+        loader = VolumeLoader(device=device)
+        volume = loader.load_volume(volume_path)
+
+        # Sample intensities at point locations
+        print("Sampling intensity values from volume...")
+        intensities = sample_intensities_from_volume(points, volume, scales)
+        print(
+            f"Intensity range: [{intensities.min().item():.4f}, {intensities.max().item():.4f}]"
+        )
+    else:
+        # Default mid-gray if no volume is provided
+        intensities = torch.full((points.shape[0], 1), 0.5, device=device)
+
     # Transform to world space
     points = transform_points_to_world(points, volume_transform, scene_bounds)
 
@@ -220,14 +242,31 @@ def initialize_gaussians(
     # Initialize max 2D radii
     model.max_radii2D = torch.zeros(num_points, device=device)
 
-    # Initialize SH features if needed
+    # Store intensity values (not learnable parameters)
+    model.intensities = intensities
+    print(f"Initialized {num_points} Gaussians with intensity values")
+
+    # Initialize feature tensors - always create them even for volume-only training
     if model.max_sh_degree > 0:
+        # For RGB training, use full SH feature tensors
         model.num_sh_channels = (model.max_sh_degree + 1) ** 2 * 3
+        # Use intensity values for all RGB channels to create grayscale
         model._features_dc = nn.Parameter(
-            torch.full((num_points, 3), 0.5, device=device).contiguous().requires_grad_(True)
-        )  # Mid-gray
+            torch.cat([intensities, intensities, intensities], dim=1)
+            .contiguous()
+            .requires_grad_(True)
+        )
         model._features_rest = nn.Parameter(
             torch.zeros(num_points, model.num_sh_channels - 3, device=device).contiguous().requires_grad_(True)
+        )
+    else:
+        # For volume-only training, create minimal tensors but don't use None
+        # Create empty tensors that still participate in optimization but don't affect rendering
+        model._features_dc = nn.Parameter(
+            torch.zeros((num_points, 1, 3), device=device).contiguous().requires_grad_(True)
+        )
+        model._features_rest = nn.Parameter(
+            torch.zeros((num_points, 0, 3), device=device).contiguous().requires_grad_(True)
         )
 
     return model

@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -25,6 +25,23 @@ class VolumeScene:
         self.loaded_iter = None
         self.gaussians = gaussians
         self.extent = 1.0  # Default extent for volume space
+
+        # Store reference to volume for intensity updates
+        self.reference_volume = None
+        if hasattr(args, "volume_path") and args.volume_path:
+            from gaussian_splatting.data.volume_loader import VolumeLoader
+            import torch
+
+            # Load reference volume for intensity sampling
+            volume_shape = tuple(
+                args.volume_shape if hasattr(args, "volume_shape") else [64, 64, 64]
+            )
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            loader = VolumeLoader(volume_shape, device)
+            self.reference_volume = loader.load_volume(args.volume_path)
+
+            # Store in gaussians for intensity updates
+            self.gaussians.reference_volume = self.reference_volume
 
         if load_iteration:
             if load_iteration == -1:

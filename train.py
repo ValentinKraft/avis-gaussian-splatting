@@ -122,6 +122,12 @@ def training(
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
 
+        # Initialize intensity values if they don't exist
+        if not hasattr(gaussians, "intensities") or gaussians.intensities.numel() == 0:
+            num_points = gaussians._xyz.shape[1]
+            gaussians.intensities = torch.ones((num_points, 1), device="cuda") * 0.5
+            print(f"Initialized {num_points} intensity values to 0.5")
+
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
