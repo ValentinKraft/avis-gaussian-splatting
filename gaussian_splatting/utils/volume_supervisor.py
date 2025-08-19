@@ -30,6 +30,7 @@ class VolumeSupervisor:
     def __init__(self,
                  volume_path: str,
                  volume_shape: Tuple[int, int, int] = (64, 64, 64),
+                 mask_path: Optional[str] = None,
                  loss_type: str = 'dice',
                  loss_weight: float = 1.0,
                  device: torch.device = torch.device('cuda')):
@@ -37,6 +38,7 @@ class VolumeSupervisor:
         Args:
             volume_path: Path to ground truth volume
             volume_shape: Target shape for volume optimization
+            mask_path: Optional path to mask volume for opacity values
             loss_type: Type of volume loss ('mse', 'dice', 'tversky', 'kl')
             loss_weight: Weight for volume loss term
             device: Device to use for computations
@@ -51,6 +53,12 @@ class VolumeSupervisor:
 
         # Load ground truth volume
         self.volume_gt = self.loader.load_volume(volume_path)
+        
+        # Load mask volume if provided
+        self.mask_volume = None
+        if mask_path:
+            self.mask_volume = self.loader.load_volume(mask_path)
+            print(f"Loaded mask volume with range [{self.mask_volume.min().item():.4f}, {self.mask_volume.max().item():.4f}]")
 
         # Initialize metrics tracking
         self.metrics = {
@@ -91,21 +99,38 @@ class VolumeSupervisor:
         if gaussians.reference_volume is None:
             # Store the reference volume for future updates
             gaussians.reference_volume = self.volume_gt
+            
+        # Check if we need to initialize/update opacities
+        if hasattr(self, 'mask_volume') and self.mask_volume is not None:
+            # Initialize opacities buffer if needed
+            if not hasattr(gaussians, 'opacities') or gaussians.opacities.shape[0] != xyz.shape[1]:
+                gaussians.opacities = torch.ones((xyz.shape[1], 1), device=xyz.device) * 0.5
 
-        # Update intensity values every 10 iterations or when they're not initialized
+        # Update values every 10 iterations or when they're not initialized
         iteration = getattr(self, "iteration", 0)
         if iteration % 10 == 0 or gaussians.intensities[0, 0] == 0.5:
-            gaussians.update_intensities(self.volume_gt)
+            # Check if we have a mask for opacity
+            if hasattr(self, 'mask_volume') and self.mask_volume is not None:
+                # Update both intensities and opacities
+                gaussians.update_intensities_and_opacities(self.volume_gt, self.mask_volume)
+            else:
+                # Just update intensities
+                gaussians.update_intensities(self.volume_gt)
         self.iteration = iteration + 1
 
         # Convert gaussians to volume using intensity values
+        # Use non-learnable opacities if they exist, otherwise use the opacity parameter
+        use_opacity = opacity
+        if hasattr(gaussians, 'opacities') and gaussians.opacities.numel() > 0:
+            use_opacity = gaussians.opacities
+            
         volume_pred = splat_to_volume(
             xyz,  # Will be transposed in splat_to_volume
             self.volume_shape,
             None,  # Skip covariances for now
             scale=0.05,
             scaling=scaling,
-            opacity=opacity,
+            opacity=use_opacity,
             intensities=gaussians.intensities,
         )
 

@@ -55,6 +55,7 @@ class GaussianModel:
         self._features_rest = torch.empty(0)
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
+        # Store opacity as a regular tensor, not a Parameter that requires gradients
         self._opacity = torch.empty(0)
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
@@ -62,10 +63,12 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
-        # Add intensity values for volume-based rendering (not learnable parameters)
+        # Add non-learnable attributes for volume-based rendering
         self.intensities = torch.empty(0)
-        # Store reference volume for intensity updates
+        self.opacities = torch.empty(0)  # Raw opacity values (not Parameters)
+        # Store reference volumes for updates
         self.reference_volume = None
+        self.reference_mask = None
         self.setup_functions()
 
     def capture(self):
@@ -153,7 +156,12 @@ class GaussianModel:
 
     @property
     def get_opacity(self):
-        return self.opacity_activation(self._opacity)
+        # Use stored opacity values instead of parameters with activation
+        if hasattr(self, "opacities") and self.opacities.numel() > 0:
+            return self.opacities
+        else:
+            # Fallback for backward compatibility
+            return self.opacity_activation(self._opacity)
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -215,24 +223,47 @@ class GaussianModel:
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
-        # Initialize optimizer parameters list
-        l = [
-            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"}
-        ]
-        
+        # Initialize empty optimizer parameters list
+        l = []
+
         # Only add feature parameters if they exist (for volume-only training they might be None)
         if self._features_dc is not None:
             l.append({'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"})
-        
+
         if self._features_rest is not None:
             l.append({'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"})
-        
-        # Always add these parameters
-        l.extend([
-            {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
-            {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
-        ])
+
+        # Add position, scaling and rotation parameters - these are always optimized
+        l.extend(
+            [
+                {
+                    "params": [self._xyz],
+                    "lr": training_args.position_lr_init * self.spatial_lr_scale,
+                    "name": "xyz",
+                },
+                {
+                    "params": [self._scaling],
+                    "lr": training_args.scaling_lr,
+                    "name": "scaling",
+                },
+                {
+                    "params": [self._rotation],
+                    "lr": training_args.rotation_lr,
+                    "name": "rotation",
+                },
+            ]
+        )
+
+        # Only add opacity if it's a learnable parameter (not using volume-based opacity)
+        # Check if opacities tensor exists and has elements
+        if not (hasattr(self, "opacities") and self.opacities.numel() > 0):
+            l.append(
+                {
+                    "params": [self._opacity],
+                    "lr": training_args.opacity_lr,
+                    "name": "opacity",
+                }
+            )
 
         if self.optimizer_type == "default":
             self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -622,6 +653,43 @@ class GaussianModel:
             self.intensities = update_intensities(
                 self.get_xyz, volume, self.get_scaling
             )
+
+        print(
+            f"Updated intensities: range [{self.intensities.min().item():.4f}, {self.intensities.max().item():.4f}]"
+        )
+
+    def update_intensities_and_opacities(self, volume, mask=None):
+        """
+        Update both intensity and opacity values for all Gaussians based on their current positions.
+        This should be called when positions or scales change significantly.
+
+        Args:
+            volume: Reference volume with intensity values
+            mask: Optional reference mask volume with opacity values [0,1]
+        """
+        if volume is None:
+            return
+
+        # Store reference volume for future updates
+        self.reference_volume = volume
+
+        from gaussian_splatting.utils.intensity_sampler import (
+            update_intensities_and_opacities,
+        )
+
+        # Update both intensities and opacities based on current positions and scales
+        with torch.no_grad():  # No gradients needed for this operation
+            intensities, opacities = update_intensities_and_opacities(
+                self.get_xyz, volume, mask, self.get_scaling
+            )
+
+            self.intensities = intensities
+
+            if opacities is not None:
+                self.opacities = opacities
+                print(
+                    f"Updated opacities: range [{self.opacities.min().item():.4f}, {self.opacities.max().item():.4f}]"
+                )
 
         print(
             f"Updated intensities: range [{self.intensities.min().item():.4f}, {self.intensities.max().item():.4f}]"

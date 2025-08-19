@@ -201,14 +201,17 @@ def initialize_gaussians(
 
     # Sample intensity values from the volume if available
     intensities = None
+    mask_volume = None
+    from gaussian_splatting.data.volume_loader import VolumeLoader
+    loader = VolumeLoader(device=device)
+    
+    # Load intensity volume if available
     if volume_path:
-        from gaussian_splatting.data.volume_loader import VolumeLoader
         from gaussian_splatting.utils.intensity_sampler import (
             sample_intensities_from_volume,
         )
 
         # Load volume for intensity sampling
-        loader = VolumeLoader(device=device)
         volume = loader.load_volume(volume_path)
 
         # Sample intensities at point locations
@@ -220,6 +223,23 @@ def initialize_gaussians(
     else:
         # Default mid-gray if no volume is provided
         intensities = torch.full((points.shape[0], 1), 0.5, device=device)
+        
+    # Load mask for opacity sampling if available
+    opacity_values = None
+    if mask_path:
+        from gaussian_splatting.utils.intensity_sampler import (
+            sample_opacities_from_mask,
+        )
+        
+        # Load mask for opacity sampling (use the same mask used for point sampling)
+        mask_volume = loader.load_volume(mask_path)
+        
+        # Sample opacity values from the mask
+        print("Sampling opacity values from mask...")
+        opacity_values = sample_opacities_from_mask(points, mask_volume, scales)
+        print(
+            f"Opacity range: [{opacity_values.min().item():.4f}, {opacity_values.max().item():.4f}]"
+        )
 
     # Transform to world space
     points = transform_points_to_world(points, volume_transform, scene_bounds)
@@ -232,7 +252,17 @@ def initialize_gaussians(
     # Initialize all model tensors with proper nn.Parameters
     model._xyz = nn.Parameter(points.T.contiguous().requires_grad_(True))  # Convert [N, 3] -> [3, N]
     model._scaling = nn.Parameter(torch.log(scales).contiguous().requires_grad_(True))  # [N, 3], model expects log-scales
-    model._opacity = nn.Parameter(torch.log(opacities).contiguous().requires_grad_(True))  # [N, 1], model expects log-opacity
+    
+    # Initialize opacity based on whether we're using volume-based opacity or not
+    if opacity_values is not None:
+        # Store non-learnable opacity values from the mask
+        model.opacities = opacity_values
+        # Also keep the _opacity parameter but without gradients (for backward compatibility)
+        model._opacity = nn.Parameter(torch.log(opacities).detach().contiguous().requires_grad_(False))
+        print(f"Using non-learnable opacities from mask")
+    else:
+        # Use traditional learnable opacity parameters
+        model._opacity = nn.Parameter(torch.log(opacities).contiguous().requires_grad_(True))  # [N, 1], model expects log-opacity
 
     # Initialize rotation quaternions to identity
     rotations = torch.zeros((num_points, 4), device=device)

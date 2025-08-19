@@ -105,6 +105,8 @@ def training(
             volume_shape=tuple(
                 args.volume_shape if hasattr(args, "volume_shape") else opt.volume_shape
             ),
+            # Pass mask path if available - use the same mask for both initialization and opacity
+            mask_path=args.mask_path if hasattr(args, "mask_path") else None,
             loss_type=(
                 args.volume_loss_type
                 if hasattr(args, "volume_loss_type")
