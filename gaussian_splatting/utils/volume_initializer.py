@@ -202,9 +202,11 @@ def initialize_gaussians(
     # Sample intensity values from the volume if available
     intensities = None
     mask_volume = None
+    volume_min = 0.0
+    volume_max = 1.0
     from gaussian_splatting.data.volume_loader import VolumeLoader
     loader = VolumeLoader(device=device)
-    
+
     # Load intensity volume if available
     if volume_path:
         from gaussian_splatting.utils.intensity_sampler import (
@@ -214,32 +216,41 @@ def initialize_gaussians(
         # Load volume for intensity sampling
         volume = loader.load_volume(volume_path)
 
-        # Sample intensities at point locations
+        # Sample intensities at point locations (keeping raw values, not normalized)
         print("Sampling intensity values from volume...")
-        intensities = sample_intensities_from_volume(points, volume, scales)
-        print(
-            f"Intensity range: [{intensities.min().item():.4f}, {intensities.max().item():.4f}]"
+        intensities, volume_min, volume_max = sample_intensities_from_volume(
+            points, volume, scales, normalize=False
         )
+        print(
+            f"Raw intensity range: [{intensities.min().item():.4f}, {intensities.max().item():.4f}]"
+        )
+        print(f"Volume global range: [{volume_min:.4f}, {volume_max:.4f}]")
     else:
         # Default mid-gray if no volume is provided
         intensities = torch.full((points.shape[0], 1), 0.5, device=device)
-        
+
     # Load mask for opacity sampling if available
     opacity_values = None
+    mask_min = 0.0
+    mask_max = 1.0
     if mask_path:
         from gaussian_splatting.utils.intensity_sampler import (
-            sample_opacities_from_mask,
+            update_opacities,
         )
-        
+
         # Load mask for opacity sampling (use the same mask used for point sampling)
         mask_volume = loader.load_volume(mask_path)
-        
+
         # Sample opacity values from the mask
         print("Sampling opacity values from mask...")
-        opacity_values = sample_opacities_from_mask(points, mask_volume, scales)
+        opacity_values_tuple = update_opacities(points, mask_volume, scales)
+        opacity_values = opacity_values_tuple[0]  # Extract just the tensor
+        mask_min = opacity_values_tuple[1]
+        mask_max = opacity_values_tuple[2]
         print(
             f"Opacity range: [{opacity_values.min().item():.4f}, {opacity_values.max().item():.4f}]"
         )
+        print(f"Mask global range: [{mask_min:.4f}, {mask_max:.4f}]")
 
     # Transform to world space
     points = transform_points_to_world(points, volume_transform, scene_bounds)
@@ -252,7 +263,7 @@ def initialize_gaussians(
     # Initialize all model tensors with proper nn.Parameters
     model._xyz = nn.Parameter(points.T.contiguous().requires_grad_(True))  # Convert [N, 3] -> [3, N]
     model._scaling = nn.Parameter(torch.log(scales).contiguous().requires_grad_(True))  # [N, 3], model expects log-scales
-    
+
     # Initialize opacity based on whether we're using volume-based opacity or not
     if opacity_values is not None:
         # Store non-learnable opacity values from the mask
@@ -272,17 +283,37 @@ def initialize_gaussians(
     # Initialize max 2D radii
     model.max_radii2D = torch.zeros(num_points, device=device)
 
-    # Store intensity values (not learnable parameters)
+    # Store intensity values and volume range (not learnable parameters)
     model.intensities = intensities
+    model.volume_min = volume_min
+    model.volume_max = volume_max
     print(f"Initialized {num_points} Gaussians with intensity values")
+    print(f"Stored volume min/max values: [{volume_min:.4f}, {volume_max:.4f}]")
 
     # Initialize feature tensors - always create them even for volume-only training
     if model.max_sh_degree > 0:
         # For RGB training, use full SH feature tensors
         model.num_sh_channels = (model.max_sh_degree + 1) ** 2 * 3
         # Use intensity values for all RGB channels to create grayscale
+        # Normalize based on global min/max values
+        normalized_intensities = intensities.clone()
+        if volume_max > volume_min:
+            normalized_intensities = (intensities - volume_min) / (
+                volume_max - volume_min
+            )
+            print(
+                f"Normalized intensities using global min/max: [{normalized_intensities.min().item():.4f}, {normalized_intensities.max().item():.4f}]"
+            )
+
         model._features_dc = nn.Parameter(
-            torch.cat([intensities, intensities, intensities], dim=1)
+            torch.cat(
+                [
+                    normalized_intensities,
+                    normalized_intensities,
+                    normalized_intensities,
+                ],
+                dim=1,
+            )
             .contiguous()
             .requires_grad_(True)
         )
@@ -290,11 +321,40 @@ def initialize_gaussians(
             torch.zeros(num_points, model.num_sh_channels - 3, device=device).contiguous().requires_grad_(True)
         )
     else:
-        # For volume-only training, create minimal tensors but don't use None
-        # Create empty tensors that still participate in optimization but don't affect rendering
-        model._features_dc = nn.Parameter(
-            torch.zeros((num_points, 1, 3), device=device).contiguous().requires_grad_(True)
-        )
+        # For volume-only training, create feature tensors from intensity values
+        # Use intensity values directly for DC features (colors)
+        if intensities is not None:
+            # Create RGB features - repeat intensity for all channels to get grayscale
+            # Use global min/max values for consistent normalization
+            intensity_tensor = intensities.clone()  # shape [N, 1]
+
+            # Normalize using global volume min/max for proper mapping from original values
+            if volume_max > volume_min:
+                intensity_tensor = (intensity_tensor - volume_min) / (
+                    volume_max - volume_min
+                )
+
+            # Expand to RGB channels and reshape
+            intensity_tensor = intensity_tensor.expand(-1, 3)  # shape [N, 3]
+            intensity_tensor = intensity_tensor.unsqueeze(1)  # shape [N, 1, 3]
+
+            print(
+                f"Creating feature_dc from normalized intensities: shape {intensity_tensor.shape}, range [{intensity_tensor.min().item():.4f}, {intensity_tensor.max().item():.4f}]"
+            )
+            print(f"First 5 RGB values: {intensity_tensor[:5, 0, :].cpu().numpy()}")
+
+            model._features_dc = nn.Parameter(
+                intensity_tensor.contiguous().requires_grad_(True)
+            )
+        else:
+            # Default mid-gray if no intensities
+            model._features_dc = nn.Parameter(
+                (torch.ones((num_points, 1, 3), device=device) * 0.5)
+                .contiguous()
+                .requires_grad_(True)
+            )
+
+        # Create empty rest features
         model._features_rest = nn.Parameter(
             torch.zeros((num_points, 0, 3), device=device).contiguous().requires_grad_(True)
         )

@@ -308,8 +308,7 @@ class GaussianModel:
             for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
                 l.append('f_rest_{}'.format(i))
 
-        # Always add intensity value for volume-based models
-        l.append("intensity")
+        # Don't add intensity as a separate attribute - we'll use it for RGB values
 
         l.append('opacity')
 
@@ -342,17 +341,75 @@ class GaussianModel:
         # Create normals
         normals = np.zeros_like(xyz)
 
-        # Handle empty feature tensors for volume-only training
-        if self._features_dc is not None and self._features_dc.numel() > 0:
-            f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        # Handle features for proper colors in PLY file
+        print(
+            f"Feature tensors: _features_dc shape: {self._features_dc.shape if self._features_dc is not None else 'None'}, numel: {self._features_dc.numel() if self._features_dc is not None else 0}"
+        )
+
+        # Always prefer using _features_dc if it contains non-zero values
+        if (
+            self._features_dc is not None
+            and self._features_dc.numel() > 0
+            and torch.sum(torch.abs(self._features_dc)) > 0
+        ):
+            print("Using provided features for volume rendering.")
+            features_tensor = self._features_dc.detach()
+            print(
+                f"Features DC shape before transpose: {features_tensor.shape}, range: [{features_tensor.min().item():.4f}, {features_tensor.max().item():.4f}]"
+            )
+            features_tensor = features_tensor.transpose(
+                1, 2
+            )  # Change from [N, 1, 3] to [N, 3, 1]
+            print(f"Features DC shape after transpose: {features_tensor.shape}")
+            features_tensor = features_tensor.flatten(start_dim=1)  # Change to [N, 3]
+            print(f"Features DC shape after flatten: {features_tensor.shape}")
+            f_dc = features_tensor.contiguous().cpu().numpy()
+            print(
+                f"Final f_dc shape: {f_dc.shape}, range: [{f_dc.min():.4f}, {f_dc.max():.4f}]"
+            )
+            print(f"RGB value examples (from features): {f_dc[:5]}")
         else:
-            # Create dummy features for volume-only model using intensity values if available
+            # Create colors from intensity values for volume-based rendering
             if hasattr(self, "intensities") and self.intensities.numel() > 0:
-                # Repeat intensity values for RGB channels to create grayscale
+                print("Creating colors from intensities.")
+                # Get raw intensity values
                 intensity_values = self.intensities.detach().cpu().numpy()
-                f_dc = np.repeat(intensity_values, 3, axis=1)
+                print(
+                    f"Raw intensity shape: {intensity_values.shape}, range: [{intensity_values.min():.4f}, {intensity_values.max():.4f}]"
+                )
+
+                # Normalize intensities using global volume min/max if available
+                if hasattr(self, "volume_min") and hasattr(self, "volume_max"):
+                    volume_min = self.volume_min
+                    volume_max = self.volume_max
+                    if volume_max > volume_min:
+                        intensity_values = (intensity_values - volume_min) / (
+                            volume_max - volume_min
+                        )
+                        print(
+                            f"Normalized intensity using global min/max [{volume_min:.4f}, {volume_max:.4f}]"
+                        )
+                # Fall back to local normalization if no global values available
+                elif intensity_values.max() > intensity_values.min():
+                    intensity_values = (intensity_values - intensity_values.min()) / (
+                        intensity_values.max() - intensity_values.min()
+                    )
+                    print(
+                        f"Normalized intensity using local min/max: [{intensity_values.min():.4f}, {intensity_values.max():.4f}]"
+                    )
+
+                # Create grayscale RGB values from intensities
+                # Simply repeat the same intensity value for R, G, and B channels
+                f_dc = np.zeros((num_points, 3))
+                f_dc[:, 0] = intensity_values[:, 0]  # Red
+                f_dc[:, 1] = intensity_values[:, 0]  # Green
+                f_dc[:, 2] = intensity_values[:, 0]  # Blue
+
+                # Print out some values for debugging
+                print(f"RGB value examples (from intensities): {f_dc[:5]}")
             else:
                 # Default to mid-gray if no intensities available
+                print("Could not find intensity values, using default mid-gray.")
                 f_dc = np.ones((num_points, 3)) * 0.5
 
         if self._features_rest is not None and self._features_rest.numel() > 0:
@@ -399,7 +456,7 @@ class GaussianModel:
         all_attributes.append(f_dc)         # [N, 3]
         if f_rest.shape[1] > 0:
             all_attributes.append(f_rest)   # [N, F-3]
-        all_attributes.append(intensity_values)  # [N, 1] - Intensity values
+        # Don't include intensity_values as a separate attribute - they're already mapped to f_dc
         all_attributes.append(opacities)    # [N, 1]
         all_attributes.append(scale)        # [N, 3]
         all_attributes.append(rotation)     # [N, 4]
@@ -679,16 +736,44 @@ class GaussianModel:
 
         # Update both intensities and opacities based on current positions and scales
         with torch.no_grad():  # No gradients needed for this operation
-            intensities, opacities = update_intensities_and_opacities(
-                self.get_xyz, volume, mask, self.get_scaling
+            intensities, opacities, volume_min, volume_max = (
+                update_intensities_and_opacities(
+                    self.get_xyz, volume, mask, self.get_scaling, normalize=False
+                )
             )
 
             self.intensities = intensities
+
+            # Store global min/max values for consistent normalization
+            self.volume_min = volume_min
+            self.volume_max = volume_max
+            print(f"Volume global range: [{volume_min:.4f}, {volume_max:.4f}]")
 
             if opacities is not None:
                 self.opacities = opacities
                 print(
                     f"Updated opacities: range [{self.opacities.min().item():.4f}, {self.opacities.max().item():.4f}]"
+                )
+
+            # Also update features_dc with intensities to ensure proper colors in PLY export
+            if self._features_dc is not None:
+                # Normalize intensity values using global min/max for proper mapping
+                intensity_tensor = intensities.clone()  # shape [N, 1]
+
+                # Use global volume min/max for normalization
+                if volume_max > volume_min:
+                    intensity_tensor = (intensity_tensor - volume_min) / (
+                        volume_max - volume_min
+                    )
+
+                # Expand to RGB channels and reshape
+                intensity_tensor = intensity_tensor.expand(-1, 3)  # shape [N, 3]
+                intensity_tensor = intensity_tensor.unsqueeze(1)  # shape [N, 1, 3]
+
+                # Replace the existing features_dc with the new intensity-based colors
+                self._features_dc.copy_(intensity_tensor)
+                print(
+                    f"Updated features_dc with intensities: range [{intensity_tensor.min().item():.4f}, {intensity_tensor.max().item():.4f}]"
                 )
 
         print(

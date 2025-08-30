@@ -14,28 +14,40 @@ from torch import Tensor
 import torch.nn.functional as F
 from typing import Optional, Tuple
 
+
 def sample_intensities_from_volume(
     points: Tensor,
     volume: Tensor,
     scale: Optional[Tensor] = None,
-    radius_scale: float = 2.0
-) -> Tensor:
+    radius_scale: float = 2.0,
+    normalize: bool = False,
+) -> Tuple[Tensor, float, float]:
     """
     Sample intensity values from a volume for each point position.
     Computes a mean intensity within the Gaussian's influence region.
-    
+
     Args:
         points: Point coordinates in normalized [0,1] space, shape [N, 3]
         volume: Input volume tensor with intensity values, shape [D, H, W]
         scale: Optional scale parameters for each point, shape [N, 3] or [N]
         radius_scale: How many standard deviations to consider for intensity computation
-        
+        normalize: Whether to normalize intensity values to [0,1] range
+
     Returns:
-        Intensity values for each point, shape [N, 1]
+        Tuple of:
+            - Intensity values for each point, shape [N, 1]
+            - Global minimum intensity value in volume
+            - Global maximum intensity value in volume
     """
     device = points.device
     D, H, W = volume.shape
     N = points.shape[0]
+
+    # Get global min/max values from the volume for consistent normalization
+    volume_min = float(volume.min().item())
+    volume_max = float(volume.max().item())
+
+    print(f"Volume intensity range: [{volume_min:.4f}, {volume_max:.4f}]")
 
     # Convert normalized coordinates [0,1] to volume indices
     point_indices = points.clone()
@@ -117,7 +129,14 @@ def sample_intensities_from_volume(
         # Store batch results
         intensities[start_idx:end_idx] = torch.tensor(batch_intensities, device=device).unsqueeze(-1)
 
-    return intensities
+    # Optionally normalize intensities to [0,1] based on global min/max
+    if normalize and volume_max > volume_min:
+        intensities = (intensities - volume_min) / (volume_max - volume_min)
+        print(
+            f"Normalized intensities to [0,1] range: [{intensities.min().item():.4f}, {intensities.max().item():.4f}]"
+        )
+
+    return intensities, volume_min, volume_max
 
 
 def sample_opacities_from_mask(
@@ -127,7 +146,7 @@ def sample_opacities_from_mask(
     radius_scale: float = 2.0,
     min_opacity: float = 0.05,
     max_opacity: float = 0.95,
-) -> Tensor:
+) -> Tuple[Tensor, float, float]:
     """
     Sample opacity values from a mask volume for each point position.
     Computes mean opacity within the Gaussian's influence region.
@@ -141,33 +160,43 @@ def sample_opacities_from_mask(
         max_opacity: Maximum opacity value to prevent complete occlusion
 
     Returns:
-        Opacity values for each point, shape [N, 1]
+        Tuple of:
+            - Opacity values for each point, shape [N, 1]
+            - Global minimum mask value
+            - Global maximum mask value
     """
     # Use the same sampling approach as intensity but with opacity range constraints
-    raw_opacities = sample_intensities_from_volume(points, mask, scale, radius_scale)
+    raw_opacities, mask_min, mask_max = sample_intensities_from_volume(
+        points, mask, scale, radius_scale
+    )
 
     # Apply opacity range limits
     opacities = min_opacity + raw_opacities * (max_opacity - min_opacity)
 
-    return opacities
+    return opacities, mask_min, mask_max
 
 
 def update_intensities(
-    points: Tensor, 
-    volume: Tensor, 
-    scale: Optional[Tensor] = None
-) -> Tensor:
+    points: Tensor,
+    volume: Tensor,
+    scale: Optional[Tensor] = None,
+    normalize: bool = False,
+) -> Tuple[Tensor, float, float]:
     """
     Update intensity values for points based on their current positions.
     Should be called whenever point positions or scales change significantly.
-    
+
     Args:
         points: Point coordinates, shape [3, N] or [N, 3]
         volume: Reference volume with intensity values
         scale: Scale parameters for points
-        
+        normalize: Whether to normalize intensities to [0,1] range
+
     Returns:
-        Updated intensity values, shape [N, 1]
+        Tuple of:
+            - Updated intensity values, shape [N, 1]
+            - Global minimum intensity value in volume
+            - Global maximum intensity value in volume
     """
     # Handle different point formats
     if points.shape[0] == 3 and points.shape[0] != points.shape[1]:
@@ -187,12 +216,12 @@ def update_intensities(
         points_n3[:, 1] /= (H - 1)
         points_n3[:, 2] /= (D - 1)
 
-    return sample_intensities_from_volume(points_n3, volume, scale)
+    return sample_intensities_from_volume(points_n3, volume, scale, normalize)
 
 
 def update_opacities(
     points: Tensor, mask: Tensor, scale: Optional[Tensor] = None
-) -> Tensor:
+) -> Tuple[Tensor, float, float]:
     """
     Update opacity values for points based on their current positions.
     Should be called whenever point positions or scales change significantly.
@@ -203,7 +232,10 @@ def update_opacities(
         scale: Scale parameters for points
 
     Returns:
-        Updated opacity values, shape [N, 1]
+        Tuple of:
+            - Updated opacity values, shape [N, 1]
+            - Minimum mask value (usually 0)
+            - Maximum mask value (usually 1)
     """
     # Handle different point formats
     if points.shape[0] == 3 and points.shape[0] != points.shape[1]:
@@ -216,6 +248,10 @@ def update_opacities(
     D, H, W = mask.shape
     device = points.device
 
+    # Get global min/max of the mask
+    mask_min = float(mask.min().item())
+    mask_max = float(mask.max().item())
+
     # Normalize points to [0,1] if they're in volume index space
     if points_n3.max() > 1.0:
         points_n3 = points_n3.clone()
@@ -223,33 +259,45 @@ def update_opacities(
         points_n3[:, 1] /= H - 1
         points_n3[:, 2] /= D - 1
 
-    return sample_opacities_from_mask(points_n3, mask, scale)
+    # Get opacity values
+    opacities, _, _ = sample_opacities_from_mask(points_n3, mask, scale)
+
+    return opacities, mask_min, mask_max
+
 
 def update_intensities_and_opacities(
     points: Tensor,
     volume: Tensor,
     mask: Optional[Tensor] = None,
-    scale: Optional[Tensor] = None
-) -> Tuple[Tensor, Optional[Tensor]]:
+    scale: Optional[Tensor] = None,
+    normalize: bool = False,
+) -> Tuple[Tensor, Optional[Tensor], float, float]:
     """
     Update both intensity and opacity values for points based on their current positions.
     Should be called whenever point positions or scales change significantly.
-    
+
     Args:
         points: Point coordinates, shape [3, N] or [N, 3]
         volume: Reference volume with intensity values
         mask: Optional reference mask with opacity values
         scale: Scale parameters for points
-        
+        normalize: Whether to normalize intensities to [0,1] range
+
     Returns:
-        Tuple of (intensities, opacities)
+        Tuple of:
+            - Intensity values, shape [N, 1]
+            - Opacity values, shape [N, 1] or None
+            - Global minimum intensity value in volume
+            - Global maximum intensity value in volume
     """
-    # Update intensities
-    intensities = update_intensities(points, volume, scale)
-    
+    # Update intensities and get global min/max
+    intensities, volume_min, volume_max = update_intensities(
+        points, volume, scale, normalize
+    )
+
     # Update opacities if mask is provided
     opacities = None
     if mask is not None:
-        opacities = update_opacities(points, mask, scale)
-        
-    return intensities, opacities
+        opacities, _, _ = update_opacities(points, mask, scale)
+
+    return intensities, opacities, volume_min, volume_max
