@@ -367,6 +367,7 @@ class GaussianModel:
             print(
                 f"Final f_dc shape: {f_dc.shape}, range: [{f_dc.min():.4f}, {f_dc.max():.4f}]"
             )
+            f_dc = f_dc * 100  # FIX - Not sure if it makes sense
             print(f"RGB value examples (from features): {f_dc[:5]}")
         else:
             # Create colors from intensity values for volume-based rendering

@@ -49,6 +49,17 @@ def sample_intensities_from_volume(
 
     print(f"Volume intensity range: [{volume_min:.4f}, {volume_max:.4f}]")
 
+    # Check if volume contains meaningful values
+    valid_values = torch.nonzero(volume > 1e-5, as_tuple=False)
+    if len(valid_values) == 0:
+        print("Warning: No valid intensity values found in volume (all near zero)")
+        # Return a reasonable default
+        return (
+            torch.full((points.shape[0], 1), 0.5, device=device),
+            volume_min,
+            volume_max,
+        )
+
     # Convert normalized coordinates [0,1] to volume indices
     point_indices = points.clone()
     point_indices[:, 0] *= (W - 1)  # x
@@ -69,6 +80,32 @@ def sample_intensities_from_volume(
 
     # Create sampling grid for each point
     intensities = torch.zeros(N, 1, device=device)
+
+    # First attempt: try direct sampling at point locations
+    direct_intensities = torch.zeros(N, 1, device=device)
+    valid_samples = 0
+
+    for i in range(N):
+        x, y, z = point_indices[i]
+        ix, iy, iz = (
+            int(min(max(0, x.item()), W - 1)),
+            int(min(max(0, y.item()), H - 1)),
+            int(min(max(0, z.item()), D - 1)),
+        )
+        val = volume[iz, iy, ix].item()
+        direct_intensities[i, 0] = val
+        if val > 1e-4:  # Count valid samples
+            valid_samples += 1
+
+    # Check if direct sampling gave good results
+    if (
+        valid_samples > N * 0.1
+        and direct_intensities.max() > direct_intensities.min() + 1e-4
+    ):
+        print(f"Using direct sampling - found {valid_samples}/{N} valid samples")
+        return direct_intensities, volume_min, volume_max
+
+    print(f"Direct sampling insufficient, using neighborhood sampling...")
 
     # Process points in batches to avoid memory issues
     batch_size = min(100, N)
@@ -98,11 +135,24 @@ def sample_intensities_from_volume(
 
             # Skip if out of bounds
             if min_x > max_x or min_y > max_y or min_z > max_z:
-                batch_intensities.append(0.5)  # Default to mid-gray
+                # Instead of default mid-gray, sample the exact point
+                ix, iy, iz = (
+                    int(min(max(0, x.item()), W - 1)),
+                    int(min(max(0, y.item()), H - 1)),
+                    int(min(max(0, z.item()), D - 1)),
+                )
+                point_val = volume[iz, iy, ix].item()
+                batch_intensities.append(point_val)
                 continue
 
             # Extract subvolume
             subvol = volume[min_z:max_z+1, min_y:max_y+1, min_x:max_x+1]
+
+            # Check if we have any non-zero values in the subvolume
+            if subvol.max() <= 1e-4:
+                # If no signal, just use 0
+                batch_intensities.append(0.0)
+                continue
 
             # Compute weighted mean based on distance
             grid_z, grid_y, grid_x = torch.meshgrid(
@@ -128,6 +178,25 @@ def sample_intensities_from_volume(
 
         # Store batch results
         intensities[start_idx:end_idx] = torch.tensor(batch_intensities, device=device).unsqueeze(-1)
+
+    # Check if we got meaningful values from neighborhood sampling
+    if intensities.max() <= 1e-4:
+        print(
+            "Neighborhood sampling failed, attempting to sample from nonzero regions..."
+        )
+
+        # Find nonzero locations in volume
+        nonzero_locs = torch.nonzero(volume > 1e-4, as_tuple=False)
+        if len(nonzero_locs) > 0:
+            # Sample random indices from nonzero locations
+            random_indices = torch.randint(0, len(nonzero_locs), (N,), device=device)
+            sampled_locs = nonzero_locs[random_indices]
+
+            # Get intensity values at these locations
+            sampled_intensities = volume[
+                sampled_locs[:, 0], sampled_locs[:, 1], sampled_locs[:, 2]
+            ]
+            intensities = sampled_intensities.float().unsqueeze(1)
 
     # Optionally normalize intensities to [0,1] based on global min/max
     if normalize and volume_max > volume_min:

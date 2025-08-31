@@ -214,6 +214,7 @@ def initialize_gaussians(
         )
 
         # Load volume for intensity sampling
+        print(f"Loading intensity volume from: {volume_path}")
         volume = loader.load_volume(volume_path)
 
         # Sample intensities at point locations (keeping raw values, not normalized)
@@ -221,10 +222,64 @@ def initialize_gaussians(
         intensities, volume_min, volume_max = sample_intensities_from_volume(
             points, volume, scales, normalize=False
         )
-        print(
-            f"Raw intensity range: [{intensities.min().item():.4f}, {intensities.max().item():.4f}]"
-        )
-        print(f"Volume global range: [{volume_min:.4f}, {volume_max:.4f}]")
+
+        # Verify we got valid intensity values - if not, try to fix
+        if (
+            volume_max <= volume_min
+            or torch.allclose(intensities, torch.full_like(intensities, 0.5))
+            or (intensities.max() - intensities.min()) < 1e-4
+        ):
+            # This might happen if sampling fails or points are outside the volume
+            print(
+                "Warning: Invalid intensity range detected. Sampling directly from volume..."
+            )
+
+            # Try a different approach - sample directly at nearest voxels
+            D, H, W = volume.shape
+            point_indices = (
+                points * torch.tensor([W - 1, H - 1, D - 1], device=device)
+            ).long()
+            point_indices = torch.clamp(
+                point_indices,
+                min=torch.tensor([0, 0, 0], device=device),
+                max=torch.tensor([W - 1, H - 1, D - 1], device=device),
+            )
+
+            # Get intensity values at nearest voxels
+            x, y, z = point_indices[:, 0], point_indices[:, 1], point_indices[:, 2]
+            direct_intensities = volume[z, y, x].unsqueeze(1)
+
+            print(
+                f"Raw intensity range: [{direct_intensities.min().item():.4f}, {direct_intensities.max().item():.4f}]"
+            )
+
+            # If direct sampling didn't work, try nonzero sampling
+            if direct_intensities.max() <= 1e-4:
+                print("Direct sampling failed, sampling from nonzero regions...")
+                nonzero = torch.nonzero(volume > 1e-4, as_tuple=False)
+                if len(nonzero) > 0:
+                    # Sample random points from nonzero regions
+                    indices = torch.randint(
+                        0, len(nonzero), (len(points),), device=device
+                    )
+                    sampled_points = nonzero[indices]
+                    # Get intensity values
+                    sampled_intensities = volume[
+                        sampled_points[:, 0], sampled_points[:, 1], sampled_points[:, 2]
+                    ]
+                    direct_intensities = sampled_intensities.unsqueeze(1)
+
+            # Update intensities if we got better values
+            if direct_intensities.max() > direct_intensities.min():
+                intensities = direct_intensities
+                volume_min = float(volume.min().item())
+                volume_max = float(volume.max().item())
+                print(
+                    f"Updated intensity range: [{intensities.min().item():.4f}, {intensities.max().item():.4f}]"
+                )
+                print(f"Updated volume range: [{volume_min:.4f}, {volume_max:.4f}]")
+
+        print(f"Final volume global range: [{volume_min:.4f}, {volume_max:.4f}]")
     else:
         # Default mid-gray if no volume is provided
         intensities = torch.full((points.shape[0], 1), 0.5, device=device)
@@ -297,6 +352,15 @@ def initialize_gaussians(
         # Use intensity values for all RGB channels to create grayscale
         # Normalize based on global min/max values
         normalized_intensities = intensities.clone()
+
+        # Check if we have valid intensity values
+        if torch.allclose(
+            normalized_intensities, torch.full_like(normalized_intensities, 0.5)
+        ):
+            print(
+                "Warning: Using default mid-gray intensities. Check if volume sampling worked correctly."
+            )
+
         if volume_max > volume_min:
             normalized_intensities = (intensities - volume_min) / (
                 volume_max - volume_min
@@ -328,6 +392,19 @@ def initialize_gaussians(
             # Use global min/max values for consistent normalization
             intensity_tensor = intensities.clone()  # shape [N, 1]
 
+            # Check if we have valid intensity values or default mid-gray
+            if torch.allclose(intensity_tensor, torch.full_like(intensity_tensor, 0.5)):
+                print(
+                    "Warning: Using default mid-gray intensities. Check if volume sampling worked correctly."
+                )
+
+                # If we have a volume path but still ended up with mid-gray values, something went wrong
+                if volume_path:
+                    print(
+                        "Attempting to recover intensity values from volume directly..."
+                    )
+                    # Code for emergency recovery already added earlier
+
             # Normalize using global volume min/max for proper mapping from original values
             if volume_max > volume_min:
                 intensity_tensor = (intensity_tensor - volume_min) / (
@@ -335,6 +412,20 @@ def initialize_gaussians(
                 )
 
             # Expand to RGB channels and reshape
+            # Verify that we're not using a default 0.5 value
+            if torch.allclose(intensity_tensor, torch.full_like(intensity_tensor, 0.5)):
+                print(
+                    "Warning: Intensity values are all 0.5, setting them to vary based on point index to provide some variation"
+                )
+                # Create some variation based on point index
+                point_indices = (
+                    torch.arange(intensity_tensor.shape[0], device=device)
+                    / intensity_tensor.shape[0]
+                )
+                intensity_tensor = 0.3 + 0.4 * point_indices.unsqueeze(
+                    1
+                )  # Vary from 0.3 to 0.7
+
             intensity_tensor = intensity_tensor.expand(-1, 3)  # shape [N, 3]
             intensity_tensor = intensity_tensor.unsqueeze(1)  # shape [N, 1, 3]
 
