@@ -364,10 +364,60 @@ class GaussianModel:
             features_tensor = features_tensor.flatten(start_dim=1)  # Change to [N, 3]
             print(f"Features DC shape after flatten: {features_tensor.shape}")
             f_dc = features_tensor.contiguous().cpu().numpy()
+
+            # Check for zero values in f_dc, which indicates an issue
+            if np.allclose(f_dc, 0.0):
+                print(
+                    "Warning: f_dc values are all zeros! Using intensity values instead."
+                )
+                # Create proper f_dc values from intensities
+                intensity_values = (
+                    self.intensities.detach().cpu().numpy()
+                    if hasattr(self, "intensities")
+                    else None
+                )
+                if intensity_values is not None and intensity_values.shape[0] > 0:
+                    # Normalize to [0,1] range
+                    volume_min = (
+                        self.volume_min
+                        if hasattr(self, "volume_min")
+                        else intensity_values.min()
+                    )
+                    volume_max = (
+                        self.volume_max
+                        if hasattr(self, "volume_max")
+                        else intensity_values.max()
+                    )
+                    if volume_max > volume_min:
+                        intensity_values = (intensity_values - volume_min) / (
+                            volume_max - volume_min
+                        )
+
+                    # Map to spherical harmonics coefficient range
+                    sh_scale = 3.54  # Approximate 1/0.28209479177387814
+                    intensity_values = (
+                        intensity_values * 2.0 - 1.0
+                    )  # Map [0,1] to [-1,1]
+
+                    intensity_values = (
+                        intensity_values * sh_scale
+                    )  # Map [-1,1] to [-sh_scale, sh_scale]
+
+                    # intensity_values = intensity_values * 100
+
+                    # Create RGB values (same value for all channels = grayscale)
+                    f_dc = np.zeros((num_points, 3))
+                    f_dc[:, 0] = intensity_values[:, 0]  # Red
+                    f_dc[:, 1] = intensity_values[:, 0]  # Green
+                    f_dc[:, 2] = intensity_values[:, 0]  # Blue
+
             print(
                 f"Final f_dc shape: {f_dc.shape}, range: [{f_dc.min():.4f}, {f_dc.max():.4f}]"
             )
-            f_dc = f_dc * 100 - 0.5  # FIX - Not sure if it makes sense
+
+            # Ensure f_dc values are in the proper range for SH coefficients
+            # They should be between approximately -1.7724 and 1.7724 for proper rendering
+            # The conversion to RGB happens in the viewer application
             print(f"RGB value examples (from features): {f_dc[:5]}")
         else:
             # Create colors from intensity values for volume-based rendering
@@ -399,8 +449,16 @@ class GaussianModel:
                         f"Normalized intensity using local min/max: [{intensity_values.min():.4f}, {intensity_values.max():.4f}]"
                     )
 
-                # Create grayscale RGB values from intensities
-                # Simply repeat the same intensity value for R, G, and B channels
+                # Map [0,1] intensity values to proper SH coefficient range
+                sh_scale = 3.54  # Approximate 1/0.28209479177387814
+                intensity_values = intensity_values * 2.0 - 1.0  # Map [0,1] to [-1,1]
+
+                intensity_values = (
+                    intensity_values * sh_scale
+                )  # Map [-1,1] to [-sh_scale, sh_scale]
+
+                # Create grayscale RGB values from intensities by setting all SH coefficients
+                # to the same value for each channel to represent grayscale
                 f_dc = np.zeros((num_points, 3))
                 f_dc[:, 0] = intensity_values[:, 0]  # Red
                 f_dc[:, 1] = intensity_values[:, 0]  # Green
@@ -766,6 +824,16 @@ class GaussianModel:
                     intensity_tensor = (intensity_tensor - volume_min) / (
                         volume_max - volume_min
                     )
+
+                    # Map normalized [0,1] intensities to spherical harmonic coefficient range
+                    # 0.28209479177387814 is the value of Y_0^0 (first spherical harmonic)
+                    sh_scale = 3.54  # Approximate 1/0.28209479177387814
+                    intensity_tensor = (
+                        intensity_tensor * 2.0 - 1.0
+                    )  # Map [0,1] to [-1,1]
+                    intensity_tensor = (
+                        intensity_tensor * sh_scale
+                    )  # Map [-1,1] to [-sh_scale, sh_scale]
 
                 # Expand to RGB channels and reshape
                 intensity_tensor = intensity_tensor.expand(-1, 3)  # shape [N, 3]

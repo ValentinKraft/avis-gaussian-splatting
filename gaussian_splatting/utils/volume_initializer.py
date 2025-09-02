@@ -365,8 +365,19 @@ def initialize_gaussians(
             normalized_intensities = (intensities - volume_min) / (
                 volume_max - volume_min
             )
+
+            # Map normalized [0,1] intensities to spherical harmonic coefficient range
+            # 0.28209479177387814 is the value of Y_0^0 (first spherical harmonic)
+            sh_scale = 3.54  # Approximate 1/0.28209479177387814
+            normalized_intensities = (
+                normalized_intensities * 2.0 - 1.0
+            )  # Map [0,1] to [-1,1]
+            normalized_intensities = (
+                normalized_intensities * sh_scale
+            )  # Map [-1,1] to [-sh_scale, sh_scale]
+
             print(
-                f"Normalized intensities using global min/max: [{normalized_intensities.min().item():.4f}, {normalized_intensities.max().item():.4f}]"
+                f"Mapped intensities to SH coefficient range: [{normalized_intensities.min().item():.4f}, {normalized_intensities.max().item():.4f}]"
             )
 
         model._features_dc = nn.Parameter(
@@ -411,20 +422,33 @@ def initialize_gaussians(
                     volume_max - volume_min
                 )
 
-            # Expand to RGB channels and reshape
+            # Map normalized [0,1] intensities to spherical harmonic coefficient range
+            # 0.28209479177387814 is the value of Y_0^0 (first spherical harmonic)
+            # In the renderer: rgb_lin = 0.5 + C0 * f_dc where C0 = 0.28209479177387814
+            # So to get the full [0,1] range, f_dc should be in [-1.77, 1.77] range
+            # Where 1.77 ~= 1/0.28209479177387814 = 3.54
+            sh_scale = 3.54  # Approximate 1/0.28209479177387814
+            intensity_tensor = intensity_tensor * 2.0 - 1.0  # Map [0,1] to [-1,1]
+            intensity_tensor = (
+                intensity_tensor * sh_scale
+            )  # Map [-1,1] to [-sh_scale, sh_scale]
+
+            print(
+                f"Mapped intensities to SH coefficient range: [{intensity_tensor.min().item():.4f}, {intensity_tensor.max().item():.4f}]"
+            )
+
             # Verify that we're not using a default 0.5 value
-            if torch.allclose(intensity_tensor, torch.full_like(intensity_tensor, 0.5)):
+            if torch.allclose(intensity_tensor, torch.zeros_like(intensity_tensor)):
                 print(
-                    "Warning: Intensity values are all 0.5, setting them to vary based on point index to provide some variation"
+                    "Warning: Intensity values are all zero, setting them to vary based on point index to provide some variation"
                 )
                 # Create some variation based on point index
                 point_indices = (
                     torch.arange(intensity_tensor.shape[0], device=device)
                     / intensity_tensor.shape[0]
                 )
-                intensity_tensor = 0.3 + 0.4 * point_indices.unsqueeze(
-                    1
-                )  # Vary from 0.3 to 0.7
+                # Map to range [-1.0, 1.0] * sh_scale
+                intensity_tensor = (point_indices.unsqueeze(1) * 2.0 - 1.0) * sh_scale
 
             intensity_tensor = intensity_tensor.expand(-1, 3)  # shape [N, 3]
             intensity_tensor = intensity_tensor.unsqueeze(1)  # shape [N, 1, 3]
