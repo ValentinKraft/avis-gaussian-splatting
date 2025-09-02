@@ -23,18 +23,166 @@ from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
 try:
-    from diff_gaussian_rasterization import SparseGaussianAdam
+    from gaussian_rasterization import SparseGaussianAdam
 except:
     pass
 
 class GaussianModel:
 
+    def _map_intensities_to_sh_coefficients(
+        self, intensity_values, volume_min=None, volume_max=None
+    ):
+        """
+        Maps intensity values to spherical harmonic coefficients range for proper visualization.
+
+        Parameters:
+        intensity_values (Tensor): Raw intensity values from volume
+        volume_min (float, optional): Global minimum value for normalization
+        volume_max (float, optional): Global maximum value for normalization
+
+        Returns:
+        Tensor: Intensity values mapped to proper SH coefficient range
+        """
+        # Make a copy to avoid modifying the input
+        intensity_tensor = intensity_values.clone()
+
+        # Use provided min/max or compute from the tensor
+        if volume_min is None:
+            volume_min = intensity_tensor.min()
+        if volume_max is None:
+            volume_max = intensity_tensor.max()
+
+        # Normalize to [0,1] range if possible
+        if volume_max > volume_min:
+            intensity_tensor = (intensity_tensor - volume_min) / (
+                volume_max - volume_min
+            )
+
+            # Map normalized [0,1] intensities to spherical harmonic coefficient range
+            sh_scale = 3.54  # Approximate 1/0.28209479177387814
+            intensity_tensor = intensity_tensor * 2.0 - 1.0  # Map [0,1] to [-1,1]
+            intensity_tensor = (
+                intensity_tensor * sh_scale
+            )  # Map [-1,1] to [-sh_scale, sh_scale]
+
+        return intensity_tensor
+
+    def _prepare_colors_for_ply(self, num_points):
+        """
+        Prepares color values for PLY file export.
+
+        Parameters:
+        num_points (int): Number of points in the model
+
+        Returns:
+        numpy.ndarray: Array of color values in appropriate format for PLY export
+        """
+        # Check if we have valid feature tensors
+        if (
+            self._features_dc is not None
+            and self._features_dc.numel() > 0
+            and torch.sum(torch.abs(self._features_dc)) > 0
+        ):
+
+            print("Using provided features for volume rendering.")
+            features_tensor = self._features_dc.detach()
+            print(
+                f"Features DC shape before transpose: {features_tensor.shape}, range: [{features_tensor.min().item():.4f}, {features_tensor.max().item():.4f}]"
+            )
+            features_tensor = features_tensor.transpose(
+                1, 2
+            )  # Change from [N, 1, 3] to [N, 3, 1]
+            print(f"Features DC shape after transpose: {features_tensor.shape}")
+            features_tensor = features_tensor.flatten(start_dim=1)  # Change to [N, 3]
+            print(f"Features DC shape after flatten: {features_tensor.shape}")
+            f_dc = features_tensor.contiguous().cpu().numpy()
+
+            # Check for zero values in f_dc, which indicates an issue
+            if np.allclose(f_dc, 0.0):
+                print(
+                    "Warning: f_dc values are all zeros! Using intensity values instead."
+                )
+                f_dc = self._create_colors_from_intensities(num_points)
+
+        else:
+            # Create colors from intensity values
+            f_dc = self._create_colors_from_intensities(num_points)
+
+        print(
+            f"Final f_dc shape: {f_dc.shape}, range: [{f_dc.min():.4f}, {f_dc.max():.4f}]"
+        )
+        print(f"RGB value examples (from features): {f_dc[:5]}")
+
+        return f_dc
+
+    def _create_colors_from_intensities(self, num_points):
+        """
+        Creates color values from intensity values for PLY export.
+
+        Parameters:
+        num_points (int): Number of points in the model
+
+        Returns:
+        numpy.ndarray: Array of color values derived from intensities
+        """
+        if hasattr(self, "intensities") and self.intensities.numel() > 0:
+            print("Creating colors from intensities.")
+            # Get raw intensity values
+            intensity_values = self.intensities.detach().cpu().numpy()
+            print(
+                f"Raw intensity shape: {intensity_values.shape}, range: [{intensity_values.min():.4f}, {intensity_values.max():.4f}]"
+            )
+
+            # Use the class method to map intensities to SH coefficients
+            if hasattr(self, "volume_min") and hasattr(self, "volume_max"):
+                volume_min = self.volume_min
+                volume_max = self.volume_max
+                print(
+                    f"Normalized intensity using global min/max [{volume_min:.4f}, {volume_max:.4f}]"
+                )
+
+                # Convert numpy array to tensor for processing
+                intensity_tensor = torch.from_numpy(intensity_values).to(
+                    self._xyz.device
+                )
+                sh_values = (
+                    self._map_intensities_to_sh_coefficients(
+                        intensity_tensor, volume_min, volume_max
+                    )
+                    .cpu()
+                    .numpy()
+                )
+            else:
+                # Use numpy operations directly if we don't have global min/max
+                if intensity_values.max() > intensity_values.min():
+                    intensity_values = (intensity_values - intensity_values.min()) / (
+                        intensity_values.max() - intensity_values.min()
+                    )
+                    sh_scale = 3.54
+                    intensity_values = intensity_values * 2.0 - 1.0
+                    sh_values = intensity_values * sh_scale
+                else:
+                    sh_values = intensity_values
+
+            # Create grayscale RGB values
+            f_dc = np.zeros((num_points, 3))
+            f_dc[:, 0] = sh_values[:, 0]  # Red
+            f_dc[:, 1] = sh_values[:, 0]  # Green
+            f_dc[:, 2] = sh_values[:, 0]  # Blue
+
+        else:
+            # Default to mid-gray if no intensities available
+            print("Could not find intensity values, using default mid-gray.")
+            f_dc = np.ones((num_points, 3)) * 0.5
+
+        return f_dc
+
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
-            L = build_scaling_rotation(scaling_modifier * scaling, rotation)
+            L = build_scaling_rotation(scaling, rotation)
             actual_covariance = L @ L.transpose(1, 2)
             symm = strip_symmetric(actual_covariance)
-            return symm
+            return symm * scaling_modifier
 
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
@@ -85,7 +233,7 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
-            self.intensities,  # Store intensity values
+            self.intensities,
         )
 
     def restore(self, model_args, training_args):
@@ -109,9 +257,7 @@ class GaussianModel:
         if len(extra_args) > 0:
             self.intensities = extra_args[0]
         else:
-            # Create default intensities if not available (for backward compatibility)
-            num_points = self._xyz.shape[1]
-            self.intensities = torch.full((num_points, 1), 0.5, device=self._xyz.device)
+            self.intensities = torch.empty(0)
 
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
@@ -128,16 +274,6 @@ class GaussianModel:
 
     @property
     def get_xyz(self):
-        # Make sure _xyz is a Parameter and requires_grad is properly set
-        if not isinstance(self._xyz, nn.Parameter):
-            print("WARNING: _xyz is not a Parameter, converting it")
-            self._xyz = nn.Parameter(self._xyz.clone().detach().requires_grad_(True))
-
-        # If _xyz doesn't require gradients, force it
-        if not self._xyz.requires_grad:
-            print("WARNING: _xyz doesn't require gradients, enabling them")
-            self._xyz.requires_grad_(True)
-
         return self._xyz
 
     @property
@@ -156,12 +292,7 @@ class GaussianModel:
 
     @property
     def get_opacity(self):
-        # Use stored opacity values instead of parameters with activation
-        if hasattr(self, "opacities") and self.opacities.numel() > 0:
-            return self.opacities
-        else:
-            # Fallback for backward compatibility
-            return self.opacity_activation(self._opacity)
+        return self.opacity_activation(self._opacity)
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -234,48 +365,38 @@ class GaussianModel:
             l.append({'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"})
 
         # Add position, scaling and rotation parameters - these are always optimized
-        l.extend(
-            [
-                {
-                    "params": [self._xyz],
-                    "lr": training_args.position_lr_init * self.spatial_lr_scale,
-                    "name": "xyz",
-                },
-                {
-                    "params": [self._scaling],
-                    "lr": training_args.scaling_lr,
-                    "name": "scaling",
-                },
-                {
-                    "params": [self._rotation],
-                    "lr": training_args.rotation_lr,
-                    "name": "rotation",
-                },
-            ]
+        l.append(
+            {
+                "params": [self._xyz],
+                "lr": training_args.position_lr_init * self.spatial_lr_scale,
+                "name": "xyz",
+            }
+        )
+        l.append(
+            {
+                "params": [self._opacity],
+                "lr": training_args.opacity_lr,
+                "name": "opacity",
+            }
+        )
+        l.append(
+            {
+                "params": [self._scaling],
+                "lr": training_args.scaling_lr,
+                "name": "scaling",
+            }
+        )
+        l.append(
+            {
+                "params": [self._rotation],
+                "lr": training_args.rotation_lr,
+                "name": "rotation",
+            }
         )
 
-        # Only add opacity if it's a learnable parameter (not using volume-based opacity)
-        # Check if opacities tensor exists and has elements
-        if not (hasattr(self, "opacities") and self.opacities.numel() > 0):
-            l.append(
-                {
-                    "params": [self._opacity],
-                    "lr": training_args.opacity_lr,
-                    "name": "opacity",
-                }
-            )
-
-        if self.optimizer_type == "default":
-            self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        elif self.optimizer_type == "sparse_adam":
-            try:
-                self.optimizer = SparseGaussianAdam(l, lr=0.0, eps=1e-15)
-            except:
-                # A special version of the rasterizer is required to enable sparse adam
-                self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-
-        # No exposure optimization for volume-only supervision
-        self.exposure_optimizer = None
+        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        if self.optimizer_type == "adam_as_sgd":
+            self.optimizer = SparseGaussianAdam(l, lr=0.0, eps=1e-15)
 
         self.xyz_scheduler_args = get_expon_lr_func(
             lr_init=training_args.position_lr_init * self.spatial_lr_scale,
@@ -341,135 +462,13 @@ class GaussianModel:
         # Create normals
         normals = np.zeros_like(xyz)
 
-        # Handle features for proper colors in PLY file
+        # Prepare color values using our helper method
         print(
             f"Feature tensors: _features_dc shape: {self._features_dc.shape if self._features_dc is not None else 'None'}, numel: {self._features_dc.numel() if self._features_dc is not None else 0}"
         )
 
-        # Always prefer using _features_dc if it contains non-zero values
-        if (
-            self._features_dc is not None
-            and self._features_dc.numel() > 0
-            and torch.sum(torch.abs(self._features_dc)) > 0
-        ):
-            print("Using provided features for volume rendering.")
-            features_tensor = self._features_dc.detach()
-            print(
-                f"Features DC shape before transpose: {features_tensor.shape}, range: [{features_tensor.min().item():.4f}, {features_tensor.max().item():.4f}]"
-            )
-            features_tensor = features_tensor.transpose(
-                1, 2
-            )  # Change from [N, 1, 3] to [N, 3, 1]
-            print(f"Features DC shape after transpose: {features_tensor.shape}")
-            features_tensor = features_tensor.flatten(start_dim=1)  # Change to [N, 3]
-            print(f"Features DC shape after flatten: {features_tensor.shape}")
-            f_dc = features_tensor.contiguous().cpu().numpy()
-
-            # Check for zero values in f_dc, which indicates an issue
-            if np.allclose(f_dc, 0.0):
-                print(
-                    "Warning: f_dc values are all zeros! Using intensity values instead."
-                )
-                # Create proper f_dc values from intensities
-                intensity_values = (
-                    self.intensities.detach().cpu().numpy()
-                    if hasattr(self, "intensities")
-                    else None
-                )
-                if intensity_values is not None and intensity_values.shape[0] > 0:
-                    # Normalize to [0,1] range
-                    volume_min = (
-                        self.volume_min
-                        if hasattr(self, "volume_min")
-                        else intensity_values.min()
-                    )
-                    volume_max = (
-                        self.volume_max
-                        if hasattr(self, "volume_max")
-                        else intensity_values.max()
-                    )
-                    if volume_max > volume_min:
-                        intensity_values = (intensity_values - volume_min) / (
-                            volume_max - volume_min
-                        )
-
-                    # Map to spherical harmonics coefficient range
-                    sh_scale = 3.54  # Approximate 1/0.28209479177387814
-                    intensity_values = (
-                        intensity_values * 2.0 - 1.0
-                    )  # Map [0,1] to [-1,1]
-
-                    intensity_values = (
-                        intensity_values * sh_scale
-                    )  # Map [-1,1] to [-sh_scale, sh_scale]
-
-                    # intensity_values = intensity_values * 100
-
-                    # Create RGB values (same value for all channels = grayscale)
-                    f_dc = np.zeros((num_points, 3))
-                    f_dc[:, 0] = intensity_values[:, 0]  # Red
-                    f_dc[:, 1] = intensity_values[:, 0]  # Green
-                    f_dc[:, 2] = intensity_values[:, 0]  # Blue
-
-            print(
-                f"Final f_dc shape: {f_dc.shape}, range: [{f_dc.min():.4f}, {f_dc.max():.4f}]"
-            )
-
-            # Ensure f_dc values are in the proper range for SH coefficients
-            # They should be between approximately -1.7724 and 1.7724 for proper rendering
-            # The conversion to RGB happens in the viewer application
-            print(f"RGB value examples (from features): {f_dc[:5]}")
-        else:
-            # Create colors from intensity values for volume-based rendering
-            if hasattr(self, "intensities") and self.intensities.numel() > 0:
-                print("Creating colors from intensities.")
-                # Get raw intensity values
-                intensity_values = self.intensities.detach().cpu().numpy()
-                print(
-                    f"Raw intensity shape: {intensity_values.shape}, range: [{intensity_values.min():.4f}, {intensity_values.max():.4f}]"
-                )
-
-                # Normalize intensities using global volume min/max if available
-                if hasattr(self, "volume_min") and hasattr(self, "volume_max"):
-                    volume_min = self.volume_min
-                    volume_max = self.volume_max
-                    if volume_max > volume_min:
-                        intensity_values = (intensity_values - volume_min) / (
-                            volume_max - volume_min
-                        )
-                        print(
-                            f"Normalized intensity using global min/max [{volume_min:.4f}, {volume_max:.4f}]"
-                        )
-                # Fall back to local normalization if no global values available
-                elif intensity_values.max() > intensity_values.min():
-                    intensity_values = (intensity_values - intensity_values.min()) / (
-                        intensity_values.max() - intensity_values.min()
-                    )
-                    print(
-                        f"Normalized intensity using local min/max: [{intensity_values.min():.4f}, {intensity_values.max():.4f}]"
-                    )
-
-                # Map [0,1] intensity values to proper SH coefficient range
-                sh_scale = 3.54  # Approximate 1/0.28209479177387814
-                intensity_values = intensity_values * 2.0 - 1.0  # Map [0,1] to [-1,1]
-
-                intensity_values = (
-                    intensity_values * sh_scale
-                )  # Map [-1,1] to [-sh_scale, sh_scale]
-
-                # Create grayscale RGB values from intensities by setting all SH coefficients
-                # to the same value for each channel to represent grayscale
-                f_dc = np.zeros((num_points, 3))
-                f_dc[:, 0] = intensity_values[:, 0]  # Red
-                f_dc[:, 1] = intensity_values[:, 0]  # Green
-                f_dc[:, 2] = intensity_values[:, 0]  # Blue
-
-                # Print out some values for debugging
-                print(f"RGB value examples (from intensities): {f_dc[:5]}")
-            else:
-                # Default to mid-gray if no intensities available
-                print("Could not find intensity values, using default mid-gray.")
-                f_dc = np.ones((num_points, 3)) * 0.5
+        # Use the refactored helper method to get colors
+        f_dc = self._prepare_colors_for_ply(num_points)
 
         if self._features_rest is not None and self._features_rest.numel() > 0:
             f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
@@ -537,55 +536,156 @@ class GaussianModel:
         Returns:
             Path to the saved PLY file
         """
-        mkdir_p(output_dir)
-        path = os.path.join(output_dir, f"{prefix}_{iteration:06d}.ply")
+        # Create the ply_sequence directory if it doesn't exist
+        ply_dir = os.path.join(output_dir, "ply_sequence")
+        mkdir_p(ply_dir)
+
+        # Create the path to save the PLY file
+        path = os.path.join(ply_dir, f"{prefix}_{iteration:06d}.ply")
         self.save_ply(path)
+
+        print(f"[ITER {iteration}] Saved model as PLY: {path}")
         return path
 
     def reset_opacity(self):
-        opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
+        opacities_new = self.inverse_opacity_activation(
+            torch.ones_like(self._opacity) * 0.01
+        )
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
     def load_ply(self, path, use_train_test_exp = False):
         plydata = PlyData.read(path)
-        xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
-                        np.asarray(plydata.elements[0]["y"]),
-                        np.asarray(plydata.elements[0]["z"])),  axis=1)
-        opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
 
-        features_dc = np.zeros((xyz.shape[0], 3, 1))
-        features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
-        features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
-        features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
+        # Extract xyz coordinates
+        xyz = np.stack(
+            (
+                np.asarray(plydata.elements[0]["x"]),
+                np.asarray(plydata.elements[0]["y"]),
+                np.asarray(plydata.elements[0]["z"]),
+            ),
+            axis=1,
+        )
+        if use_train_test_exp:
+            # The expected rows is 29060
+            xyz = xyz[:29060, :]
 
-        extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
-        extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
-        assert len(extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
-        features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
-        for idx, attr_name in enumerate(extra_f_names):
-            features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
-        features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
+        # Extract features_dc
+        features_dc = []
+        i = 0
+        while True:
+            key = f"f_dc_{i}"
+            if key in plydata.elements[0].data.dtype.names:
+                features_dc.append(np.asarray(plydata.elements[0][key]))
+                i += 1
+            else:
+                break
 
-        scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
-        scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
-        scales = np.zeros((xyz.shape[0], len(scale_names)))
-        for idx, attr_name in enumerate(scale_names):
-            scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        if len(features_dc) > 0:
+            features_dc = np.stack(features_dc, axis=1)
+            if use_train_test_exp:
+                # The expected rows is 29060
+                features_dc = features_dc[:29060, :]
 
-        rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
-        rot_names = sorted(rot_names, key = lambda x: int(x.split('_')[-1]))
-        rots = np.zeros((xyz.shape[0], len(rot_names)))
-        for idx, attr_name in enumerate(rot_names):
-            rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
+            # Reshape features_dc from [N, 3] to [N, 1, 3] for compatibility
+            features_dc = features_dc.reshape(-1, 1, 3)
+
+        # Extract features_rest
+        features_rest = []
+        i = 0
+        while True:
+            key = f"f_rest_{i}"
+            if key in plydata.elements[0].data.dtype.names:
+                features_rest.append(np.asarray(plydata.elements[0][key]))
+                i += 1
+            else:
+                break
+
+        if len(features_rest) > 0:
+            features_rest = np.stack(features_rest, axis=1)
+
+            if use_train_test_exp:
+                # The expected rows is 29060
+                features_rest = features_rest[:29060, :]
+
+            # Check if features_rest is divisible by 3 (RGB)
+            num_rest_feats = features_rest.shape[1] // 3
+            features_rest = features_rest.reshape(-1, num_rest_feats, 3)
+
+        # Extract opacity
+        opacity = np.asarray(plydata.elements[0]["opacity"]).reshape(-1, 1)
+        if use_train_test_exp:
+            opacity = opacity[:29060, :]
+
+        # Extract scale
+        scale = []
+        i = 0
+        while True:
+            key = f"scale_{i}"
+            if key in plydata.elements[0].data.dtype.names:
+                scale.append(np.asarray(plydata.elements[0][key]))
+                i += 1
+            else:
+                break
+
+        assert i == 3, "Expected scale to have 3 components"
+        scale = np.stack(scale, axis=1)
+        if use_train_test_exp:
+            scale = scale[:29060, :]
+
+        # Extract rotation
+        rot = []
+        i = 0
+        while True:
+            key = f"rot_{i}"
+            if key in plydata.elements[0].data.dtype.names:
+                rot.append(np.asarray(plydata.elements[0][key]))
+                i += 1
+            else:
+                break
+
+        assert i == 4, "Expected rotation to have 4 components"
+        rot = np.stack(rot, axis=1)
+        if use_train_test_exp:
+            rot = rot[:29060, :]
 
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
-        self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
-        self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
+
+        if len(features_dc) > 0:
+            self._features_dc = nn.Parameter(
+                torch.tensor(features_dc, dtype=torch.float, device="cuda")
+                .contiguous()
+                .requires_grad_(True)
+            )
+        else:
+            self._features_dc = nn.Parameter(
+                torch.zeros(
+                    (xyz.shape[0], 1, 3), dtype=torch.float, device="cuda"
+                ).requires_grad_(True)
+            )
+
+        if len(features_rest) > 0:
+            self._features_rest = nn.Parameter(
+                torch.tensor(features_rest, dtype=torch.float, device="cuda")
+                .contiguous()
+                .requires_grad_(True)
+            )
+        else:
+            self._features_rest = nn.Parameter(
+                torch.zeros(
+                    (xyz.shape[0], 0, 3), dtype=torch.float, device="cuda"
+                ).requires_grad_(True)
+            )
+
+        self._opacity = nn.Parameter(
+            torch.tensor(opacity, dtype=torch.float, device="cuda").requires_grad_(True)
+        )
+        self._scaling = nn.Parameter(
+            torch.tensor(scale, dtype=torch.float, device="cuda").requires_grad_(True)
+        )
+        self._rotation = nn.Parameter(
+            torch.tensor(rot, dtype=torch.float, device="cuda").requires_grad_(True)
+        )
 
         self.active_sh_degree = self.max_sh_degree
 
@@ -593,7 +693,7 @@ class GaussianModel:
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == name:
-                stored_state = self.optimizer.state.get(group['params'][0], None)
+                stored_state = self.optimizer.state.get(group["params"][0])
                 stored_state["exp_avg"] = torch.zeros_like(tensor)
                 stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
 
@@ -607,7 +707,7 @@ class GaussianModel:
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
-            stored_state = self.optimizer.state.get(group['params'][0], None)
+            stored_state = self.optimizer.state.get(group["params"][0])
             if stored_state is not None:
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]
                 stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
@@ -637,14 +737,20 @@ class GaussianModel:
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
-        self.tmp_radii = self.tmp_radii[valid_points_mask]
+
+        # Update intensities and opacities for volume-only training
+        if hasattr(self, "intensities") and self.intensities.numel() > 0:
+            self.intensities = self.intensities[valid_points_mask]
+
+        if hasattr(self, "opacities") and self.opacities.numel() > 0:
+            self.opacities = self.opacities[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             assert len(group["params"]) == 1
             extension_tensor = tensors_dict[group["name"]]
-            stored_state = self.optimizer.state.get(group['params'][0], None)
+            stored_state = self.optimizer.state.get(group["params"][0])
             if stored_state is not None:
 
                 stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0)
@@ -677,10 +783,17 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        self.tmp_radii = torch.cat((self.tmp_radii, new_tmp_radii))
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+        # Densification should update intensities and opacities for volume-only training
+        if hasattr(self, "intensities") and self.intensities.numel() > 0:
+            # Create zeros tensor for new points (to be filled in later during a volume query)
+            new_intensities = torch.zeros(
+                (new_xyz.shape[0], 1), device=self.intensities.device
+            )
+            self.intensities = torch.cat([self.intensities, new_intensities], dim=0)
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
@@ -690,6 +803,9 @@ class GaussianModel:
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask, torch.min(self.get_scaling, dim=1).values > 0.0
+        )
 
         stds = self.get_scaling[selected_pts_mask].repeat(N,1)
         means =torch.zeros((stds.size(0), 3),device="cuda")
@@ -699,13 +815,26 @@ class GaussianModel:
         new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
-        new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
+        new_features_rest = (
+            self._features_rest[selected_pts_mask].repeat(N, 1, 1)
+            if self._features_rest.shape[0] > 0
+            else torch.zeros((0, 0, 0), device="cuda")
+        )
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
-        new_tmp_radii = self.tmp_radii[selected_pts_mask].repeat(N)
+        new_tmp_radii = torch.zeros((N * selected_pts_mask.sum()), device="cuda")
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_tmp_radii)
 
-        prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
+        prune_filter = torch.cat(
+            (
+                torch.ones_like(selected_pts_mask),
+                torch.zeros_like(selected_pts_mask).repeat(N),
+            ),
+            dim=0,
+        )
+        prune_filter = torch.where(
+            prune_filter == 1, selected_pts_mask.repeat(N + 1), False
+        )
         self.prune_points(prune_filter)
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
@@ -713,15 +842,21 @@ class GaussianModel:
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask, torch.min(self.get_scaling, dim=1).values > 0.0
+        )
 
         new_xyz = self._xyz[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
-        new_features_rest = self._features_rest[selected_pts_mask]
+        new_features_rest = (
+            self._features_rest[selected_pts_mask]
+            if self._features_rest.shape[0] > 0
+            else torch.zeros((0, 0, 0), device="cuda")
+        )
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
-
-        new_tmp_radii = self.tmp_radii[selected_pts_mask]
+        new_tmp_radii = torch.zeros(new_xyz.shape[0], device="cuda")
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii)
 
@@ -729,7 +864,6 @@ class GaussianModel:
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        self.tmp_radii = radii
         self.densify_and_clone(grads, max_grad, extent)
         self.densify_and_split(grads, max_grad, extent)
 
@@ -739,10 +873,10 @@ class GaussianModel:
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         self.prune_points(prune_mask)
-        tmp_radii = self.tmp_radii
-        self.tmp_radii = None
 
-        torch.cuda.empty_cache()
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
@@ -750,8 +884,8 @@ class GaussianModel:
 
     def update_intensities(self, volume):
         """
-        Update intensity values for all Gaussians based on their current positions in the volume.
-        This should be called when positions or scales change significantly.
+        Update intensity values for all Gaussians based on their current positions.
+        This should be called when positions change significantly.
 
         Args:
             volume: Reference volume with intensity values
@@ -816,33 +950,19 @@ class GaussianModel:
 
             # Also update features_dc with intensities to ensure proper colors in PLY export
             if self._features_dc is not None:
-                # Normalize intensity values using global min/max for proper mapping
-                intensity_tensor = intensities.clone()  # shape [N, 1]
-
-                # Use global volume min/max for normalization
-                if volume_max > volume_min:
-                    intensity_tensor = (intensity_tensor - volume_min) / (
-                        volume_max - volume_min
-                    )
-
-                    # Map normalized [0,1] intensities to spherical harmonic coefficient range
-                    # 0.28209479177387814 is the value of Y_0^0 (first spherical harmonic)
-                    sh_scale = 3.54  # Approximate 1/0.28209479177387814
-                    intensity_tensor = (
-                        intensity_tensor * 2.0 - 1.0
-                    )  # Map [0,1] to [-1,1]
-                    intensity_tensor = (
-                        intensity_tensor * sh_scale
-                    )  # Map [-1,1] to [-sh_scale, sh_scale]
+                # Map intensities to SH coefficient range using our helper method
+                sh_intensities = self._map_intensities_to_sh_coefficients(
+                    intensities.clone(), volume_min, volume_max
+                )
 
                 # Expand to RGB channels and reshape
-                intensity_tensor = intensity_tensor.expand(-1, 3)  # shape [N, 3]
-                intensity_tensor = intensity_tensor.unsqueeze(1)  # shape [N, 1, 3]
+                sh_intensities = sh_intensities.expand(-1, 3)  # shape [N, 3]
+                sh_intensities = sh_intensities.unsqueeze(1)  # shape [N, 1, 3]
 
                 # Replace the existing features_dc with the new intensity-based colors
-                self._features_dc.copy_(intensity_tensor)
+                self._features_dc.copy_(sh_intensities)
                 print(
-                    f"Updated features_dc with intensities: range [{intensity_tensor.min().item():.4f}, {intensity_tensor.max().item():.4f}]"
+                    f"Updated features_dc with intensities: range [{sh_intensities.min().item():.4f}, {sh_intensities.max().item():.4f}]"
                 )
 
         print(
