@@ -18,6 +18,12 @@ import torch.nn.functional as F
 from pathlib import Path
 
 from scene.gaussian_model import GaussianModel
+from gaussian_splatting.data.volume_loader import VolumeLoader
+from gaussian_splatting.utils.intensity_sampler import (
+    sample_intensities_from_volume,
+    update_opacities,
+    update_intensities,
+)
 
 def initialize_from_volume(
     mask_path: str,
@@ -172,6 +178,222 @@ def transform_points_to_world(
     return points
 
 
+def _setup_model_parameters(
+    model: GaussianModel,
+    points: Tensor,
+    scales: Tensor,
+    opacities: Tensor,
+    opacity_values: Optional[Tensor] = None,
+) -> None:
+    """
+    Set up core model parameters (positions, scales, rotations, opacities).
+
+    Args:
+        model: The Gaussian model to initialize
+        points: Point positions [N, 3]
+        scales: Scale values [N, 3]
+        opacities: Default opacity values [N, 1]
+        opacity_values: Optional volume-derived opacity values [N, 1]
+    """
+    # Get shapes and device
+    num_points = points.shape[0]
+    device = points.device
+
+    # Initialize all model tensors with proper nn.Parameters
+    model._xyz = nn.Parameter(
+        points.T.contiguous().requires_grad_(True)
+    )  # Convert [N, 3] -> [3, N]
+    model._scaling = nn.Parameter(
+        torch.log(scales).contiguous().requires_grad_(True)
+    )  # [N, 3], model expects log-scales
+
+    # Initialize opacity based on whether we're using volume-based opacity or not
+    if opacity_values is not None:
+        # Store non-learnable opacity values from the mask
+        model.opacities = opacity_values
+        # Also keep the _opacity parameter but without gradients (for backward compatibility)
+        model._opacity = nn.Parameter(
+            torch.log(opacities).detach().contiguous().requires_grad_(False)
+        )
+        print("Using non-learnable opacities from mask")
+    else:
+        # Use traditional learnable opacity parameters
+        model._opacity = nn.Parameter(
+            torch.log(opacities).contiguous().requires_grad_(True)
+        )
+
+    # Initialize rotation quaternions to identity
+    rotations = torch.zeros((num_points, 4), device=device)
+    rotations[..., 0] = 1  # w=1, x=y=z=0 for identity rotation
+    model._rotation = nn.Parameter(rotations.contiguous().requires_grad_(True))
+
+    # Initialize max 2D radii
+    model.max_radii2D = torch.zeros(num_points, device=device)
+
+
+def _setup_feature_tensors(
+    model: GaussianModel,
+    intensities: Tensor,
+    volume_min: float,
+    volume_max: float,
+) -> None:
+    """
+    Set up feature tensors based on intensity values.
+
+    Args:
+        model: The Gaussian model to initialize
+        intensities: Intensity values [N, 1]
+        volume_min: Global minimum intensity value
+        volume_max: Global maximum intensity value
+    """
+    num_points = intensities.shape[0]
+    device = intensities.device
+
+    # Store intensity values and volume range (not learnable parameters)
+    model.intensities = intensities
+    model.volume_min = volume_min
+    model.volume_max = volume_max
+
+    print(f"Initialized {num_points} Gaussians with intensity values")
+    print(f"Stored volume min/max values: [{volume_min:.4f}, {volume_max:.4f}]")
+
+    # Map intensity values to spherical harmonic coefficients
+    normalized_intensities = model._map_intensities_to_sh_coefficients(
+        intensities, volume_min, volume_max
+    )
+
+    # Check if we have valid intensity values
+    if torch.allclose(normalized_intensities, torch.zeros_like(normalized_intensities)):
+        print(
+            "Warning: Using default mid-gray intensities. Check if volume sampling worked correctly."
+        )
+
+    # Initialize feature tensors based on SH degree
+    if model.max_sh_degree > 0:
+        # For RGB training, use full SH feature tensors
+        model.num_sh_channels = (model.max_sh_degree + 1) ** 2 * 3
+
+        # Create RGB features by repeating intensity for all channels (grayscale)
+        model._features_dc = nn.Parameter(
+            torch.cat([normalized_intensities] * 3, dim=1)  # Repeat for R, G, B
+            .contiguous()
+            .requires_grad_(True)
+        )
+
+        # Initialize higher-order SH coefficients to zero
+        model._features_rest = nn.Parameter(
+            torch.zeros(num_points, model.num_sh_channels - 3, device=device)
+            .contiguous()
+            .requires_grad_(True)
+        )
+    else:
+        # For volume-only training with no SH
+        # Expand intensities to RGB and reshape for DC features
+        intensity_tensor = normalized_intensities.expand(-1, 3)  # [N, 3]
+        intensity_tensor = intensity_tensor.unsqueeze(1)  # [N, 1, 3]
+
+        print(
+            f"Creating feature_dc from normalized intensities: shape {intensity_tensor.shape}, "
+            f"range [{intensity_tensor.min().item():.4f}, {intensity_tensor.max().item():.4f}]"
+        )
+
+        if num_points > 0:
+            print(
+                f"First 5 RGB values: {intensity_tensor[:min(5, num_points), 0, :].cpu().numpy()}"
+            )
+
+        model._features_dc = nn.Parameter(
+            intensity_tensor.contiguous().requires_grad_(True)
+        )
+
+        # Create empty rest features
+        model._features_rest = nn.Parameter(
+            torch.zeros((num_points, 0, 3), device=device)
+            .contiguous()
+            .requires_grad_(True)
+        )
+
+
+def _is_valid_sampling(intensities: Tensor) -> bool:
+    """
+    Check if sampled intensities have valid range.
+
+    Args:
+        intensities: Sampled intensity values
+
+    Returns:
+        bool: True if intensities are valid, False otherwise
+    """
+    # Check common failure cases
+    if (
+        intensities.max() <= intensities.min()
+        or torch.allclose(intensities, torch.full_like(intensities, 0.5))
+        or (intensities.max() - intensities.min()) < 1e-4
+    ):
+        return False
+    return True
+
+
+def _sample_fallback_intensities(
+    points: Tensor, volume: Tensor, device: torch.device
+) -> Tuple[Tensor, float, float]:
+    """
+    Fallback method for sampling intensities directly from volume.
+
+    Args:
+        points: Point positions in normalized [0,1] coordinates
+        volume: Volume tensor
+        device: Torch device
+
+    Returns:
+        Tuple of:
+            - Sampled intensities
+            - Volume min value
+            - Volume max value
+    """
+    D, H, W = volume.shape
+    # Convert normalized points to indices
+    point_indices = (points * torch.tensor([W - 1, H - 1, D - 1], device=device)).long()
+    point_indices = torch.clamp(
+        point_indices,
+        min=torch.tensor([0, 0, 0], device=device),
+        max=torch.tensor([W - 1, H - 1, D - 1], device=device),
+    )
+
+    # Get intensity values at nearest voxels
+    x, y, z = point_indices[:, 0], point_indices[:, 1], point_indices[:, 2]
+    direct_intensities = volume[z, y, x].unsqueeze(1)
+
+    print(
+        f"Raw intensity range: [{direct_intensities.min().item():.4f}, {direct_intensities.max().item():.4f}]"
+    )
+
+    # If direct sampling didn't work, try nonzero sampling
+    if direct_intensities.max() <= 1e-4:
+        print("Direct sampling failed, sampling from nonzero regions...")
+        nonzero = torch.nonzero(volume > 1e-4, as_tuple=False)
+        if len(nonzero) > 0:
+            # Sample random points from nonzero regions
+            indices = torch.randint(0, len(nonzero), (len(points),), device=device)
+            sampled_points = nonzero[indices]
+            # Get intensity values
+            sampled_intensities = volume[
+                sampled_points[:, 0], sampled_points[:, 1], sampled_points[:, 2]
+            ]
+            direct_intensities = sampled_intensities.unsqueeze(1)
+
+    # Get global min/max
+    volume_min = float(volume.min().item())
+    volume_max = float(volume.max().item())
+
+    print(
+        f"Updated intensity range: [{direct_intensities.min().item():.4f}, {direct_intensities.max().item():.4f}]"
+    )
+    print(f"Updated volume range: [{volume_min:.4f}, {volume_max:.4f}]")
+
+    return direct_intensities, volume_min, volume_max
+
+
 def initialize_gaussians(
     model: GaussianModel,
     n_points: int = 5000,
@@ -179,7 +401,7 @@ def initialize_gaussians(
     scene_bounds: Optional[Tuple[Tensor, Tensor]] = None,
     volume_path: Optional[str] = None,
     mask_path: Optional[str] = None,
-    **kwargs
+    **kwargs,
 ):
     """
     Initialize a Gaussian model from a volume or mask.
@@ -204,80 +426,30 @@ def initialize_gaussians(
     mask_volume = None
     volume_min = 0.0
     volume_max = 1.0
-    from gaussian_splatting.data.volume_loader import VolumeLoader
     loader = VolumeLoader(device=device)
 
-    # Load intensity volume if available
+    # Load and sample intensities from volume if provided
     if volume_path:
-        from gaussian_splatting.utils.intensity_sampler import (
-            sample_intensities_from_volume,
-        )
-
         # Load volume for intensity sampling
         print(f"Loading intensity volume from: {volume_path}")
         volume = loader.load_volume(volume_path)
 
-        # Sample intensities at point locations (keeping raw values, not normalized)
+        # Sample intensities using the utility function
         print("Sampling intensity values from volume...")
-        intensities, volume_min, volume_max = sample_intensities_from_volume(
+        intensities, volume_min, volume_max = update_intensities(
             points, volume, scales, normalize=False
         )
 
-        # Verify we got valid intensity values - if not, try to fix
-        if (
-            volume_max <= volume_min
-            or torch.allclose(intensities, torch.full_like(intensities, 0.5))
-            or (intensities.max() - intensities.min()) < 1e-4
-        ):
-            # This might happen if sampling fails or points are outside the volume
+        # Check if sampling was successful
+        if not _is_valid_sampling(intensities):
             print(
-                "Warning: Invalid intensity range detected. Sampling directly from volume..."
+                "Warning: Invalid intensity range detected. Trying alternative sampling..."
             )
 
-            # Try a different approach - sample directly at nearest voxels
-            D, H, W = volume.shape
-            point_indices = (
-                points * torch.tensor([W - 1, H - 1, D - 1], device=device)
-            ).long()
-            point_indices = torch.clamp(
-                point_indices,
-                min=torch.tensor([0, 0, 0], device=device),
-                max=torch.tensor([W - 1, H - 1, D - 1], device=device),
+            # Try direct sampling at nearest voxels
+            intensities, volume_min, volume_max = _sample_fallback_intensities(
+                points, volume, device
             )
-
-            # Get intensity values at nearest voxels
-            x, y, z = point_indices[:, 0], point_indices[:, 1], point_indices[:, 2]
-            direct_intensities = volume[z, y, x].unsqueeze(1)
-
-            print(
-                f"Raw intensity range: [{direct_intensities.min().item():.4f}, {direct_intensities.max().item():.4f}]"
-            )
-
-            # If direct sampling didn't work, try nonzero sampling
-            if direct_intensities.max() <= 1e-4:
-                print("Direct sampling failed, sampling from nonzero regions...")
-                nonzero = torch.nonzero(volume > 1e-4, as_tuple=False)
-                if len(nonzero) > 0:
-                    # Sample random points from nonzero regions
-                    indices = torch.randint(
-                        0, len(nonzero), (len(points),), device=device
-                    )
-                    sampled_points = nonzero[indices]
-                    # Get intensity values
-                    sampled_intensities = volume[
-                        sampled_points[:, 0], sampled_points[:, 1], sampled_points[:, 2]
-                    ]
-                    direct_intensities = sampled_intensities.unsqueeze(1)
-
-            # Update intensities if we got better values
-            if direct_intensities.max() > direct_intensities.min():
-                intensities = direct_intensities
-                volume_min = float(volume.min().item())
-                volume_max = float(volume.max().item())
-                print(
-                    f"Updated intensity range: [{intensities.min().item():.4f}, {intensities.max().item():.4f}]"
-                )
-                print(f"Updated volume range: [{volume_min:.4f}, {volume_max:.4f}]")
 
         print(f"Final volume global range: [{volume_min:.4f}, {volume_max:.4f}]")
     else:
@@ -286,22 +458,15 @@ def initialize_gaussians(
 
     # Load mask for opacity sampling if available
     opacity_values = None
-    mask_min = 0.0
-    mask_max = 1.0
     if mask_path:
-        from gaussian_splatting.utils.intensity_sampler import (
-            update_opacities,
-        )
-
         # Load mask for opacity sampling (use the same mask used for point sampling)
         mask_volume = loader.load_volume(mask_path)
 
         # Sample opacity values from the mask
         print("Sampling opacity values from mask...")
-        opacity_values_tuple = update_opacities(points, mask_volume, scales)
-        opacity_values = opacity_values_tuple[0]  # Extract just the tensor
-        mask_min = opacity_values_tuple[1]
-        mask_max = opacity_values_tuple[2]
+        opacity_values, mask_min, mask_max = update_opacities(
+            points, mask_volume, scales
+        )
         print(
             f"Opacity range: [{opacity_values.min().item():.4f}, {opacity_values.max().item():.4f}]"
         )
@@ -310,168 +475,8 @@ def initialize_gaussians(
     # Transform to world space
     points = transform_points_to_world(points, volume_transform, scene_bounds)
 
-    # Update model parameters
-    # Get shapes and device
-    num_points = points.shape[0]  # points is [N, 3]
-    device = points.device
-
-    # Initialize all model tensors with proper nn.Parameters
-    model._xyz = nn.Parameter(points.T.contiguous().requires_grad_(True))  # Convert [N, 3] -> [3, N]
-    model._scaling = nn.Parameter(torch.log(scales).contiguous().requires_grad_(True))  # [N, 3], model expects log-scales
-
-    # Initialize opacity based on whether we're using volume-based opacity or not
-    if opacity_values is not None:
-        # Store non-learnable opacity values from the mask
-        model.opacities = opacity_values
-        # Also keep the _opacity parameter but without gradients (for backward compatibility)
-        model._opacity = nn.Parameter(torch.log(opacities).detach().contiguous().requires_grad_(False))
-        print(f"Using non-learnable opacities from mask")
-    else:
-        # Use traditional learnable opacity parameters
-        model._opacity = nn.Parameter(torch.log(opacities).contiguous().requires_grad_(True))  # [N, 1], model expects log-opacity
-
-    # Initialize rotation quaternions to identity
-    rotations = torch.zeros((num_points, 4), device=device)
-    rotations[..., 0] = 1  # w=1, x=y=z=0 for identity rotation
-    model._rotation = nn.Parameter(rotations.contiguous().requires_grad_(True))
-
-    # Initialize max 2D radii
-    model.max_radii2D = torch.zeros(num_points, device=device)
-
-    # Store intensity values and volume range (not learnable parameters)
-    model.intensities = intensities
-    model.volume_min = volume_min
-    model.volume_max = volume_max
-    print(f"Initialized {num_points} Gaussians with intensity values")
-    print(f"Stored volume min/max values: [{volume_min:.4f}, {volume_max:.4f}]")
-
-    # Initialize feature tensors - always create them even for volume-only training
-    if model.max_sh_degree > 0:
-        # For RGB training, use full SH feature tensors
-        model.num_sh_channels = (model.max_sh_degree + 1) ** 2 * 3
-        # Use intensity values for all RGB channels to create grayscale
-        # Normalize based on global min/max values
-        normalized_intensities = intensities.clone()
-
-        # Check if we have valid intensity values
-        if torch.allclose(
-            normalized_intensities, torch.full_like(normalized_intensities, 0.5)
-        ):
-            print(
-                "Warning: Using default mid-gray intensities. Check if volume sampling worked correctly."
-            )
-
-        if volume_max > volume_min:
-            normalized_intensities = (intensities - volume_min) / (
-                volume_max - volume_min
-            )
-
-            # Map normalized [0,1] intensities to spherical harmonic coefficient range
-            # 0.28209479177387814 is the value of Y_0^0 (first spherical harmonic)
-            sh_scale = 3.54  # Approximate 1/0.28209479177387814
-            normalized_intensities = (
-                normalized_intensities * 2.0 - 1.0
-            )  # Map [0,1] to [-1,1]
-            normalized_intensities = (
-                normalized_intensities * sh_scale
-            )  # Map [-1,1] to [-sh_scale, sh_scale]
-
-            print(
-                f"Mapped intensities to SH coefficient range: [{normalized_intensities.min().item():.4f}, {normalized_intensities.max().item():.4f}]"
-            )
-
-        model._features_dc = nn.Parameter(
-            torch.cat(
-                [
-                    normalized_intensities,
-                    normalized_intensities,
-                    normalized_intensities,
-                ],
-                dim=1,
-            )
-            .contiguous()
-            .requires_grad_(True)
-        )
-        model._features_rest = nn.Parameter(
-            torch.zeros(num_points, model.num_sh_channels - 3, device=device).contiguous().requires_grad_(True)
-        )
-    else:
-        # For volume-only training, create feature tensors from intensity values
-        # Use intensity values directly for DC features (colors)
-        if intensities is not None:
-            # Create RGB features - repeat intensity for all channels to get grayscale
-            # Use global min/max values for consistent normalization
-            intensity_tensor = intensities.clone()  # shape [N, 1]
-
-            # Check if we have valid intensity values or default mid-gray
-            if torch.allclose(intensity_tensor, torch.full_like(intensity_tensor, 0.5)):
-                print(
-                    "Warning: Using default mid-gray intensities. Check if volume sampling worked correctly."
-                )
-
-                # If we have a volume path but still ended up with mid-gray values, something went wrong
-                if volume_path:
-                    print(
-                        "Attempting to recover intensity values from volume directly..."
-                    )
-                    # Code for emergency recovery already added earlier
-
-            # Normalize using global volume min/max for proper mapping from original values
-            if volume_max > volume_min:
-                intensity_tensor = (intensity_tensor - volume_min) / (
-                    volume_max - volume_min
-                )
-
-            # Map normalized [0,1] intensities to spherical harmonic coefficient range
-            # 0.28209479177387814 is the value of Y_0^0 (first spherical harmonic)
-            # In the renderer: rgb_lin = 0.5 + C0 * f_dc where C0 = 0.28209479177387814
-            # So to get the full [0,1] range, f_dc should be in [-1.77, 1.77] range
-            # Where 1.77 ~= 1/0.28209479177387814 = 3.54
-            sh_scale = 3.54  # Approximate 1/0.28209479177387814
-            intensity_tensor = intensity_tensor * 2.0 - 1.0  # Map [0,1] to [-1,1]
-            intensity_tensor = (
-                intensity_tensor * sh_scale
-            )  # Map [-1,1] to [-sh_scale, sh_scale]
-
-            print(
-                f"Mapped intensities to SH coefficient range: [{intensity_tensor.min().item():.4f}, {intensity_tensor.max().item():.4f}]"
-            )
-
-            # Verify that we're not using a default 0.5 value
-            if torch.allclose(intensity_tensor, torch.zeros_like(intensity_tensor)):
-                print(
-                    "Warning: Intensity values are all zero, setting them to vary based on point index to provide some variation"
-                )
-                # Create some variation based on point index
-                point_indices = (
-                    torch.arange(intensity_tensor.shape[0], device=device)
-                    / intensity_tensor.shape[0]
-                )
-                # Map to range [-1.0, 1.0] * sh_scale
-                intensity_tensor = (point_indices.unsqueeze(1) * 2.0 - 1.0) * sh_scale
-
-            intensity_tensor = intensity_tensor.expand(-1, 3)  # shape [N, 3]
-            intensity_tensor = intensity_tensor.unsqueeze(1)  # shape [N, 1, 3]
-
-            print(
-                f"Creating feature_dc from normalized intensities: shape {intensity_tensor.shape}, range [{intensity_tensor.min().item():.4f}, {intensity_tensor.max().item():.4f}]"
-            )
-            print(f"First 5 RGB values: {intensity_tensor[:5, 0, :].cpu().numpy()}")
-
-            model._features_dc = nn.Parameter(
-                intensity_tensor.contiguous().requires_grad_(True)
-            )
-        else:
-            # Default mid-gray if no intensities
-            model._features_dc = nn.Parameter(
-                (torch.ones((num_points, 1, 3), device=device) * 0.5)
-                .contiguous()
-                .requires_grad_(True)
-            )
-
-        # Create empty rest features
-        model._features_rest = nn.Parameter(
-            torch.zeros((num_points, 0, 3), device=device).contiguous().requires_grad_(True)
-        )
+    # Set up model parameters and feature tensors
+    _setup_model_parameters(model, points, scales, opacities, opacity_values)
+    _setup_feature_tensors(model, intensities, volume_min, volume_max)
 
     return model

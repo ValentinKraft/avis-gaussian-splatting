@@ -27,6 +27,11 @@ try:
 except:
     pass
 
+
+# sh_scale = 3.54  # Approximate 1/0.28209479177387814
+sh_scale = 1.77
+
+
 class GaussianModel:
 
     def _map_intensities_to_sh_coefficients(
@@ -59,7 +64,6 @@ class GaussianModel:
             )
 
             # Map normalized [0,1] intensities to spherical harmonic coefficient range
-            sh_scale = 3.54  # Approximate 1/0.28209479177387814
             intensity_tensor = intensity_tensor * 2.0 - 1.0  # Map [0,1] to [-1,1]
             intensity_tensor = (
                 intensity_tensor * sh_scale
@@ -158,7 +162,6 @@ class GaussianModel:
                     intensity_values = (intensity_values - intensity_values.min()) / (
                         intensity_values.max() - intensity_values.min()
                     )
-                    sh_scale = 3.54
                     intensity_values = intensity_values * 2.0 - 1.0
                     sh_values = intensity_values * sh_scale
                 else:
@@ -477,11 +480,11 @@ class GaussianModel:
             f_rest = np.zeros((num_points, 0))
 
         # Get intensity values
-        if hasattr(self, "intensities") and self.intensities.numel() > 0:
-            intensity_values = self.intensities.detach().cpu().numpy()
-        else:
-            # Default intensity values if not available
-            intensity_values = np.ones((num_points, 1)) * 0.5
+        # if hasattr(self, "intensities") and self.intensities.numel() > 0:
+        #     intensity_values = self.intensities.detach().cpu().numpy()
+        # else:
+        #     # Default intensity values if not available
+        #     intensity_values = np.ones((num_points, 1)) * 0.5
 
         # Handle other attributes
         opacities = self._opacity.detach().cpu().numpy()
