@@ -32,6 +32,7 @@ except:
 # Define constants at the module level for better maintainability
 SH_C0 = 0.28209479177387814  # Value of Y_0^0 (first spherical harmonic)
 SH_SCALE = 1.77  # Approximate 1/(2*SH_C0)
+INTENSITY_SCALE = 50.0  # Scale factor to improve visibility (only for debugging)
 
 
 class GaussianModel:
@@ -578,7 +579,9 @@ class GaussianModel:
             )
 
             # Map normalized [0,1] intensities to spherical harmonic coefficient range
-            intensity_tensor = intensity_tensor * 2.0 - 1.0  # Map [0,1] to [-1,1]
+            intensity_tensor = (
+                intensity_tensor * 2.0 * INTENSITY_SCALE - 1.0
+            )  # Map [0,1] to [-1,1]
             intensity_tensor = (
                 intensity_tensor * SH_SCALE
             )  # Map [-1,1] to [-SH_SCALE, SH_SCALE]
@@ -676,7 +679,7 @@ class GaussianModel:
                     intensity_values = (intensity_values - intensity_values.min()) / (
                         intensity_values.max() - intensity_values.min()
                     )
-                    intensity_values = intensity_values * 2.0 - 1.0
+                    intensity_values = intensity_values * 2.0 * INTENSITY_SCALE - 1.0
                     sh_values = intensity_values * SH_SCALE
                 else:
                     sh_values = intensity_values
