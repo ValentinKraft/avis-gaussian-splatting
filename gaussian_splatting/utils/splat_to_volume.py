@@ -31,7 +31,8 @@ def gaussian_kernel_3d(
     points: Tensor,
     means: Tensor,
     covs: Optional[Tensor] = None,
-    scale: float = 1.0
+    scale: float = 1.0,
+    scaling: Optional[Tensor] = None  # Add scaling parameter
 ) -> Tensor:
     """
     Compute batched 3D Gaussian kernel values for multiple centers.
@@ -41,6 +42,7 @@ def gaussian_kernel_3d(
         means: Gaussian centers (N, 3)
         covs: Optional covariance matrices (N, 3, 3)  
         scale: Scale factor for isotropic Gaussian
+        scaling: Optional per-point scaling factors (N, 3)
     
     Returns:
         Combined kernel values at each point (D, H, W)
@@ -60,10 +62,18 @@ def gaussian_kernel_3d(
     # diff: (D, H, W, N, 3)
     diff = points_exp - means_exp
 
-    if covs is None:
+    if covs is None and scaling is None:
         # Use isotropic Gaussian for all centers
         sq_dist = torch.sum(diff * diff, dim=-1)  # (D, H, W, N)
         kernels = torch.exp(-0.5 * sq_dist / (scale ** 2))  # (D, H, W, N)
+    elif scaling is not None:
+        # Use anisotropic Gaussian with per-axis scaling
+        # Reshape scaling for broadcasting
+        scaling_exp = scaling.reshape(1, 1, 1, N, 3)
+        # Apply per-axis scaling
+        scaled_diff = diff / (scaling_exp + 1e-6)
+        sq_dist = torch.sum(scaled_diff * scaled_diff, dim=-1)  # (D, H, W, N)
+        kernels = torch.exp(-0.5 * sq_dist)
     else:
         # Use full covariance matrices
         # covs: (N, 3, 3)
@@ -247,9 +257,11 @@ def splat_to_volume(
             point_scale = scale
             if batch_scales is not None:
                 if batch_scales.shape[1] == 3:  # (N, 3) shape
-                    point_scale = batch_scales[j].mean().item() * (1.0 if small_shape == volume_shape else 0.5)  # Adjust scale for smaller grid
+                    # FIX: Keep gradients flowing by not using .item()
+                    point_scale = batch_scales[j].mean() * (1.0 if small_shape == volume_shape else 0.5)  # Adjust scale for smaller grid
                 else:  # (N,) shape
-                    point_scale = batch_scales[j].item() * (1.0 if small_shape == volume_shape else 0.5)  # Adjust scale for smaller grid
+                    # FIX: Keep gradients flowing by not using .item()
+                    point_scale = batch_scales[j] * (1.0 if small_shape == volume_shape else 0.5)  # Adjust scale for smaller grid
             elif small_shape != volume_shape:
                 # Adjust default scale for smaller grid
                 point_scale = scale * 0.5
@@ -257,31 +269,45 @@ def splat_to_volume(
             # Release any intermediate tensors before creating new ones
             torch.cuda.empty_cache() if device.type == 'cuda' else None
             
-            # Calculate Gaussian kernel more efficiently with broadcasting
-            diff = small_grid_points - center.view(1, 1, 1, 3)
-            sq_dist = torch.sum(diff * diff, dim=-1)
-            kernel = torch.exp(-0.5 * sq_dist / (point_scale**2))
-
-            # Apply opacity and intensity in one step to save memory
-            kernel_factor = 1.0
-            if batch_opacities is not None:
-                kernel_factor *= batch_opacities[j].item()
-            if batch_intensities is not None:
-                kernel_factor *= batch_intensities[j].item()
+            # Calculate Gaussian kernel using anisotropic scaling if available
+            if batch_scales is not None and batch_scales.shape[1] == 3:
+                # Use anisotropic Gaussian with per-point scaling
+                point_scaling = batch_scales[j]
                 
-            if kernel_factor != 1.0:
-                kernel = kernel * kernel_factor
+                # Apply scaling adjustment for smaller grid if needed
+                if small_shape != volume_shape:
+                    point_scaling = point_scaling * 0.5
+                    
+                # Use the improved gaussian_kernel_3d with scaling
+                kernel = gaussian_kernel_3d(
+                    small_grid_points,
+                    center.view(1, 3),  # Add batch dimension
+                    scaling=point_scaling.view(1, 3)  # Add batch dimension
+                ).squeeze(-1)  # Remove extra dimension
+            else:
+                # Use simple isotropic Gaussian as before
+                diff = small_grid_points - center.view(1, 1, 1, 3)
+                sq_dist = torch.sum(diff * diff, dim=-1)
+                kernel = torch.exp(-0.5 * sq_dist / (point_scale**2))
+                
+                # Clean up intermediate variables to save memory
+                del diff, sq_dist
 
-            # Add contribution and free memory
-            batch_contribution = batch_contribution + kernel
-            # Force immediate cleanup of the kernel tensor
-            del kernel, diff, sq_dist
-            
-            # Only clear CUDA cache occasionally to avoid performance penalty
-            if j % 20 == 0 and device.type == 'cuda':
-                torch.cuda.empty_cache()
+                # Apply opacity and intensity in one step to save memory
+                # FIX: Keep gradient flow by not using .item()
+                if batch_opacities is not None:
+                    kernel = kernel * batch_opacities[j]
+                if batch_intensities is not None:
+                    kernel = kernel * batch_intensities[j]
 
-        # Add the batch contribution to the working volume
+                # Add contribution and free memory
+                batch_contribution = batch_contribution + kernel
+                # Force immediate cleanup of the kernel tensor
+                del kernel
+                
+                # Only clear CUDA cache occasionally to avoid performance penalty
+                if j % 20 == 0 and device.type == 'cuda':
+                    torch.cuda.empty_cache()        # Add the batch contribution to the working volume
         small_volume = small_volume + batch_contribution
         
         # Free memory

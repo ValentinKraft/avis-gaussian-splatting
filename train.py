@@ -16,6 +16,7 @@ import numpy as np
 from scene.gaussian_model import GaussianModel
 from scene.volume_scene import VolumeScene
 from utils.general_utils import safe_state, get_expon_lr_func
+from utils.parameter_monitoring import ParameterMonitor, add_parameter_regularization_loss
 import uuid
 from tqdm import tqdm
 from argparse import ArgumentParser, Namespace
@@ -55,6 +56,9 @@ def training(
     gaussians = GaussianModel(
         0, opt.optimizer_type
     )  # Use degree 0 for volume-only training
+    
+    # Initialize parameter monitoring
+    parameter_monitor = ParameterMonitor(args.model_path)
 
     # Create scene for volume-based training
     scene = VolumeScene(args, gaussians)
@@ -166,44 +170,63 @@ def training(
         # Volume supervision loss
         volume_loss = 0.0
         if volume_supervisor is not None:
-            # Ensure model has proper requires_grad set
-            print(f"Before compute_loss: xyz requires_grad: {gaussians._xyz.requires_grad}")
-
             # Compute the volume loss
             vol_loss, vol_metrics = volume_supervisor.compute_loss(gaussians)
             volume_loss = vol_loss.item()
             loss = vol_loss
-
-            # Check the loss gradient status
-            print(f"After compute_loss: loss requires_grad: {vol_loss.requires_grad}, loss: {vol_loss.item()}")
+            
+            # Add regularization loss to encourage scaling and rotation diversity
+            reg_loss = add_parameter_regularization_loss(
+                gaussians, 
+                scaling_weight=0.001,
+                rotation_weight=0.001
+            )
+            loss = loss + reg_loss
+            
+            # Track scaling and rotation parameters
+            if iteration % 100 == 0 or iteration == 1:
+                parameter_monitor.update(iteration, gaussians)
 
             # Log volume metrics
             if tb_writer and iteration % 10 == 0:
                 for name, value in vol_metrics.items():
                     tb_writer.add_scalar(f"volume/{name}", value, iteration)
+                # Log regularization loss
+                tb_writer.add_scalar("loss/regularization", reg_loss.item(), iteration)
 
-        # Make sure the loss requires gradients before calling backward
+            # Make sure the loss requires gradients before calling backward
         if loss.requires_grad:
-            print("Loss requires gradients, calling backward...")
             loss.backward()
         else:
-            print("ERROR: Loss does not require gradients! Check gradient chain.")
-            # Try to create a dummy loss with gradients
+            # This should no longer happen with the fixed gradient chain
+            print("WARNING: Loss does not require gradients! Check gradient chain.")
             dummy_loss = (gaussians._xyz.sum() * 0) + loss
-            print(f"Created dummy loss with requires_grad: {dummy_loss.requires_grad}")
             dummy_loss.backward()
-
+            
         iter_end.record()
 
         with torch.no_grad():
             # Progress bar
+            # Update EMA loss values
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_vol_loss_for_log = 0.4 * volume_loss + 0.6 * ema_vol_loss_for_log
+            
+            # Get scaling and rotation stats for logging
+            with torch.no_grad():
+                scaling = gaussians.get_scaling
+                scaling_mean = scaling.mean().item()
+                scaling_std = scaling.std().item()
+                
+                rotation = gaussians.get_rotation
+                # Simple approximation of rotation "magnitude"
+                rotation_magnitude = torch.norm(rotation[:, 1:], dim=1).mean().item()
 
             if iteration % 10 == 0:
                 postfix = {
                     "Loss": f"{ema_loss_for_log:.{7}f}",
                     "Vol": f"{ema_vol_loss_for_log:.{7}f}",
+                    "Scale": f"{scaling_mean:.{4}f}±{scaling_std:.{4}f}",
+                    "Rot": f"{rotation_magnitude:.{4}f}"
                 }
                 progress_bar.set_postfix(postfix)
                 progress_bar.update(10)
@@ -218,6 +241,11 @@ def training(
                     "timing/iter_ms", iter_start.elapsed_time(iter_end), iteration
                 )
                 tb_writer.add_scalar("model/points", gaussians._xyz.shape[1], iteration)
+                
+                # Log parameter statistics
+                tb_writer.add_scalar("parameters/scaling_mean", scaling_mean, iteration)
+                tb_writer.add_scalar("parameters/scaling_std", scaling_std, iteration) 
+                tb_writer.add_scalar("parameters/rotation_magnitude", rotation_magnitude, iteration)
 
             # Save PLY file at specified iterations
             save_ply_every = (
