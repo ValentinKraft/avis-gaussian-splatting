@@ -102,51 +102,56 @@ def gaussian_kernel_3d(
 
 
 def splat_to_volume(
-    splats: Tensor,
-    volume_shape: Tuple[int, int, int],
+    points: Tensor,
+    point_scales: Optional[Tensor] = None,
+    point_rotations: Optional[Tensor] = None,
+    point_opacities: Optional[Tensor] = None,
+    point_intensities: Optional[Tensor] = None,
+    volume_shape: Tuple[int, int, int] = (64, 64, 64),
     covariances: Optional[Tensor] = None,
     scale: float = 0.1,
-    batch_size: int = 100,  # Process points in batches to save memory
-    scaling: Optional[Tensor] = None,  # Optional per-point scale factors
-    opacity: Optional[Tensor] = None,  # Optional per-point opacity values
-    intensities: Optional[Tensor] = None,  # Optional per-point intensity values
+    batch_size: int = 50,  # Process points in batches to save memory
+    device: Optional[torch.device] = None,
 ) -> Tensor:
     """
     Convert 3D Gaussian splats to a volumetric representation.
 
     Args:
-        splats: Tensor of splat centers (3, N) or (N, 3)
+        points: Tensor of point centers (3, N) or (N, 3)
+        point_scales: Optional per-point scaling factors (N, 3) or (N,)
+        point_rotations: Optional per-point rotation quaternions (N, 4)
+        point_opacities: Optional per-point opacity values (N, 1) or (N,)
+        point_intensities: Optional per-point intensity values (N, 1) or (N,)
         volume_shape: Output volume shape (depth, height, width)
         covariances: Optional covariance matrices (N, 3, 3)
-        scale: Scale factor for isotropic Gaussians when covariances not provided
+        scale: Default scale factor for isotropic Gaussians when point_scales not provided
         batch_size: Number of points to process at once to manage memory
-        scaling: Optional per-point scaling factors (N, 3) or (N,)
-        opacity: Optional per-point opacity values (N, 1) or (N,)
+        device: Device to use for computation
 
     Returns:
         Volume tensor (D, H, W)
     """
-    device = splats.device
+    device = points.device if device is None else device
 
     # Print input tensor info for debugging
-    print(f"Input splats shape: {splats.shape}, requires_grad: {splats.requires_grad}")
+    print(f"Input points shape: {points.shape}, requires_grad: {points.requires_grad}")
 
     # Check if input requires gradients - if not, force it to require gradients
-    if not splats.requires_grad:
+    if not points.requires_grad:
         print(
             "WARNING: Input tensor does not require gradients - forcing requires_grad=True"
         )
         # Create a differentiable copy
-        splats = splats.clone().detach().requires_grad_(True)
+        points = points.clone().detach().requires_grad_(True)
 
     # Handle different input formats WITHOUT detaching - we need to keep the computation graph
-    if splats.shape[0] == 3:
+    if points.shape[0] == 3:
         # Convert from (3, N) to (N, 3) without breaking gradient chain
-        print(f"Converting splats from shape {splats.shape} to (N, 3)")
-        points_n3 = splats.permute(1, 0)  # Use permute instead of T to maintain gradient connections
+        print(f"Converting splats from shape {points.shape} to (N, 3)")
+        points_n3 = points.permute(1, 0)  # Use permute instead of T to maintain gradient connections
     else:
         # Keep the tensor as is
-        points_n3 = splats
+        points_n3 = points
 
     total_points = points_n3.shape[0]
     print(f"Splatting {total_points} points to volume of shape {volume_shape}")
@@ -176,31 +181,11 @@ def splat_to_volume(
     # Create a small working volume for accumulating results
     small_volume = torch.zeros(small_shape, device=device, requires_grad=True)
     
-    # If we have scaling information, prepare it
-    point_scales = None
-    if scaling is not None:
-        if scaling.shape[0] == 3 and len(scaling.shape) == 2:
-            # Convert from (3, N) to (N, 3)
-            point_scales = scaling.permute(1, 0)
-        else:
-            point_scales = scaling
-
-    # Prepare opacity values if provided
-    point_opacities = None
-    if opacity is not None:
-        if len(opacity.shape) == 2 and opacity.shape[1] == 1:
-            point_opacities = opacity.squeeze(1)  # Convert (N, 1) to (N,)
-        else:
-            point_opacities = opacity
-
-    # Prepare intensity values if provided
-    point_intensities = None
-    if intensities is not None:
-        if len(intensities.shape) == 2 and intensities.shape[1] == 1:
-            point_intensities = intensities.squeeze(1)  # Convert (N, 1) to (N,)
-        else:
-            point_intensities = intensities
-    else:
+    # Handle scaling parameters
+    # point_scales, point_opacities, point_intensities already passed as parameters
+    
+    # Use default intensity values if not provided
+    if point_intensities is None:
         # Default to 1.0 intensity if not provided
         point_intensities = torch.ones(total_points, device=device)
         
@@ -344,7 +329,7 @@ def splat_to_volume(
     if not volume.requires_grad:
         print("WARNING: Volume doesn't require gradients after computation")
         # Create a proper connection to the input
-        volume = volume + (splats[0, 0] * 0)
+        volume = volume + (points[0, 0] * 0)
 
     # No threshold - let the gradients flow naturally
     # volume = torch.sigmoid((volume - 0.1) * 10)

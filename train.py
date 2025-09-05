@@ -16,11 +16,15 @@ import numpy as np
 from scene.gaussian_model import GaussianModel
 from scene.volume_scene import VolumeScene
 from utils.general_utils import safe_state, get_expon_lr_func
-from utils.parameter_monitoring import ParameterMonitor, add_parameter_regularization_loss
 import uuid
 from tqdm import tqdm
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from gaussian_splatting.utils.parameter_monitor import (
+    ParameterMonitor,
+    add_parameter_regularization_loss,
+)
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -56,7 +60,7 @@ def training(
     gaussians = GaussianModel(
         0, opt.optimizer_type
     )  # Use degree 0 for volume-only training
-    
+
     # Initialize parameter monitoring
     parameter_monitor = ParameterMonitor(args.model_path)
 
@@ -174,18 +178,20 @@ def training(
             vol_loss, vol_metrics = volume_supervisor.compute_loss(gaussians)
             volume_loss = vol_loss.item()
             loss = vol_loss
-            
+
             # Add regularization loss to encourage scaling and rotation diversity
             reg_loss = add_parameter_regularization_loss(
-                gaussians, 
-                scaling_weight=0.001,
-                rotation_weight=0.001
+                gaussians,
+                loss,
+                scale_diversity_weight=0.01,  # Higher weight for more diversity
+                rotation_diversity_weight=0.01,  # Higher weight for more diversity
             )
-            loss = loss + reg_loss
-            
+            loss = reg_loss  # Use the regularized loss
+
             # Track scaling and rotation parameters
-            if iteration % 100 == 0 or iteration == 1:
-                parameter_monitor.update(iteration, gaussians)
+            param_stats = parameter_monitor.update(
+                iteration, gaussians._xyz, gaussians.get_scaling, gaussians.get_rotation
+            )
 
             # Log volume metrics
             if tb_writer and iteration % 10 == 0:
@@ -202,7 +208,7 @@ def training(
             print("WARNING: Loss does not require gradients! Check gradient chain.")
             dummy_loss = (gaussians._xyz.sum() * 0) + loss
             dummy_loss.backward()
-            
+
         iter_end.record()
 
         with torch.no_grad():
@@ -210,23 +216,33 @@ def training(
             # Update EMA loss values
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_vol_loss_for_log = 0.4 * volume_loss + 0.6 * ema_vol_loss_for_log
-            
+
             # Get scaling and rotation stats for logging
             with torch.no_grad():
                 scaling = gaussians.get_scaling
                 scaling_mean = scaling.mean().item()
                 scaling_std = scaling.std().item()
-                
+
                 rotation = gaussians.get_rotation
                 # Simple approximation of rotation "magnitude"
                 rotation_magnitude = torch.norm(rotation[:, 1:], dim=1).mean().item()
 
+                # Calculate changes from previous iterations if we have parameter stats
+                scale_change = (
+                    param_stats.get("scale_change_rate", 0.0) if param_stats else 0.0
+                )
+                rot_change = (
+                    param_stats.get("rot_change_rate", 0.0) if param_stats else 0.0
+                )
+
             if iteration % 10 == 0:
                 postfix = {
-                    "Loss": f"{ema_loss_for_log:.{7}f}",
-                    "Vol": f"{ema_vol_loss_for_log:.{7}f}",
-                    "Scale": f"{scaling_mean:.{4}f}±{scaling_std:.{4}f}",
-                    "Rot": f"{rotation_magnitude:.{4}f}"
+                    "Loss": f"{ema_loss_for_log:.{5}f}",
+                    "Vol": f"{ema_vol_loss_for_log:.{5}f}",
+                    "Scale": f"{scaling_mean:.{3}f}±{scaling_std:.{3}f}",
+                    "Rot": f"{rotation_magnitude:.{3}f}",
+                    "Δs": f"{scale_change:.{3}f}",
+                    "Δr": f"{rot_change:.{3}f}",
                 }
                 progress_bar.set_postfix(postfix)
                 progress_bar.update(10)
@@ -241,7 +257,7 @@ def training(
                     "timing/iter_ms", iter_start.elapsed_time(iter_end), iteration
                 )
                 tb_writer.add_scalar("model/points", gaussians._xyz.shape[1], iteration)
-                
+
                 # Log parameter statistics
                 tb_writer.add_scalar("parameters/scaling_mean", scaling_mean, iteration)
                 tb_writer.add_scalar("parameters/scaling_std", scaling_std, iteration) 
@@ -290,6 +306,14 @@ def training(
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+
+            # Generate parameter report on last iteration
+            if iteration == opt.iterations:
+                parameter_monitor.final_report()
+                print(
+                    "\nParameter monitoring report saved to:",
+                    os.path.join(args.model_path, "parameter_stats"),
+                )
 
 
 def prepare_output_and_logger(args):    

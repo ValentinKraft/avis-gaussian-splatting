@@ -53,7 +53,7 @@ class VolumeSupervisor:
 
         # Load ground truth volume
         self.volume_gt = self.loader.load_volume(volume_path)
-        
+
         # Load mask volume if provided
         self.mask_volume = None
         if mask_path:
@@ -81,8 +81,9 @@ class VolumeSupervisor:
         print(f"xyz requires_grad: {xyz.requires_grad}")
         print(f"xyz shape: {xyz.shape}")
 
-        # Get scaling and opacity values
+        # Get scaling, rotation, and opacity values
         scaling = gaussians.get_scaling
+        rotation = gaussians.get_rotation
         opacity = gaussians.get_opacity
 
         # Check if intensity values need updating
@@ -99,7 +100,7 @@ class VolumeSupervisor:
         if gaussians.reference_volume is None:
             # Store the reference volume for future updates
             gaussians.reference_volume = self.volume_gt
-            
+
         # Check if we need to initialize/update opacities
         if hasattr(self, 'mask_volume') and self.mask_volume is not None:
             # Initialize opacities buffer if needed
@@ -123,19 +124,21 @@ class VolumeSupervisor:
         use_opacity = opacity
         if hasattr(gaussians, 'opacities') and gaussians.opacities.numel() > 0:
             use_opacity = gaussians.opacities
-            
+
+        # Make sure all inputs maintain gradients
         volume_pred = splat_to_volume(
-            xyz,  # Will be transposed in splat_to_volume
-            self.volume_shape,
-            None,  # Skip covariances for now
-            scale=0.05,
-            scaling=scaling,
-            opacity=use_opacity,
-            intensities=gaussians.intensities,
+            points=xyz,  # Will be transposed in splat_to_volume
+            point_scales=scaling,  # Use proper scaling parameters for anisotropic kernels
+            point_rotations=rotation,  # Include rotation information
+            point_opacities=use_opacity,
+            point_intensities=gaussians.intensities,
+            volume_shape=self.volume_shape,
+            device=xyz.device,
         )
 
-        # Verify volume_pred has gradients
-        print(f"volume_pred requires_grad: {volume_pred.requires_grad}")
+        # Debug if needed
+        if hasattr(self, "verbose") and self.verbose:
+            print(f"volume_pred requires_grad: {volume_pred.requires_grad}")
 
         # Store predicted volume for visualization (use clone to avoid breaking gradient chain)
         self.volume_pred = volume_pred.detach().clone()
@@ -144,8 +147,9 @@ class VolumeSupervisor:
         self.volume_gt = self.volume_gt.to(volume_pred.device)
         loss = self.criterion(volume_pred, self.volume_gt)
 
-        # Verify loss has gradients
-        print(f"loss requires_grad: {loss.requires_grad}")
+        # Scale loss by weight
+        if self.loss_weight != 1.0:
+            loss = loss * self.loss_weight
 
         # Update metrics
         with torch.no_grad():
