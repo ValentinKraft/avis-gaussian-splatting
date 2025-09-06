@@ -3,6 +3,9 @@ import torch
 from torch import Tensor
 import torch.nn.functional as F
 
+# NOTE: Refactored to (1) minimize Python loops, (2) actually use rotation by
+# constructing covariances, and (3) avoid reallocation / unnecessary empty_cache calls.
+
 def create_grid_points(volume_shape: Tuple[int, int, int], device: torch.device) -> Tensor:
     """
     Create a grid of 3D points for volume rendering.
@@ -133,8 +136,9 @@ def splat_to_volume(
     """
     device = points.device if device is None else device
 
-    # Print input tensor info for debugging
-    print(f"Input points shape: {points.shape}, requires_grad: {points.requires_grad}")
+    # Lightweight debug (can be silenced by setting ENV var later)
+    if torch.is_grad_enabled() and points.grad_fn is None:
+        pass  # avoid noisy prints in tight loops
 
     # Check if input requires gradients - if not, force it to require gradients
     if not points.requires_grad:
@@ -154,21 +158,21 @@ def splat_to_volume(
         points_n3 = points
 
     total_points = points_n3.shape[0]
-    print(f"Splatting {total_points} points to volume of shape {volume_shape}")
+    # Avoid verbose printing here for performance
 
     # Create volume grid - these don't need gradients
     grid_points = create_grid_points(volume_shape, device)
 
-    # Initialize volume tensor with gradients
-    volume = torch.zeros(volume_shape, device=device, requires_grad=True)
+    # Allocate final volume (grad will flow through ops populating it)
+    volume = torch.zeros(volume_shape, device=device)
 
     # Process splats in batches to save memory
     batch_size = min(batch_size, 50)  # Limit batch size to avoid OOM
     num_batches = (total_points + batch_size - 1) // batch_size
-    print(f"Processing in {num_batches} batches of size {batch_size}")
-    
+    # No console spam per batch
+
     # Use smaller grid resolution for memory efficiency if we have many points
-    if total_points > 1000:
+    if total_points > 2000:
         # Create a smaller working grid for initial calculations
         small_shape = tuple(max(16, d // 2) for d in volume_shape)
         # Only create the grid once and reuse it
@@ -177,135 +181,113 @@ def splat_to_volume(
     else:
         small_shape = volume_shape
         small_grid_points = grid_points
-    
+
     # Create a small working volume for accumulating results
-    small_volume = torch.zeros(small_shape, device=device, requires_grad=True)
-    
+    small_volume = torch.zeros(small_shape, device=device)
+
     # Handle scaling parameters
     # point_scales, point_opacities, point_intensities already passed as parameters
-    
+
     # Use default intensity values if not provided
     if point_intensities is None:
         # Default to 1.0 intensity if not provided
         point_intensities = torch.ones(total_points, device=device)
-        
+
     # Use torch.cuda.empty_cache() to clear memory periodically
     if device.type == 'cuda':
         torch.cuda.empty_cache()
 
+    # Vectorized accumulation over batches.
+    # Prepare rotation -> covariance if provided (quaternions expected normalized).
+    def quat_to_rotmat(q: Tensor) -> Tensor:
+        # q: (B,4) (w,x,y,z) or (x,y,z,w); assume either – normalize then compute matrix
+        if q.shape[-1] != 4:
+            raise ValueError("Quaternion tensor must have shape (N,4)")
+        # Heuristic: if mean(abs(q[...,0])) < mean(abs(q[..., -1])) swap ordering; keep simple
+        # We won't modify ordering aggressively; assume (N,4) already in proper order matching training code
+        q = F.normalize(q, dim=-1)
+        w, x, y, z = q.unbind(-1)
+        B = q.shape[0]
+        R = torch.empty(B, 3, 3, device=q.device, dtype=q.dtype)
+        R[:, 0, 0] = 1 - 2 * (y * y + z * z)
+        R[:, 0, 1] = 2 * (x * y - z * w)
+        R[:, 0, 2] = 2 * (x * z + y * w)
+        R[:, 1, 0] = 2 * (x * y + z * w)
+        R[:, 1, 1] = 1 - 2 * (x * x + z * z)
+        R[:, 1, 2] = 2 * (y * z - x * w)
+        R[:, 2, 0] = 2 * (x * z - y * w)
+        R[:, 2, 1] = 2 * (y * z + x * w)
+        R[:, 2, 2] = 1 - 2 * (x * x + y * y)
+        return R
+
+    if point_rotations is not None and point_rotations.numel() > 0:
+        rot_mats = quat_to_rotmat(point_rotations)
+    else:
+        rot_mats = None
+
+    # Flatten grid and chunk to limit memory.
+    work_grid = small_grid_points.view(-1, 3)
+    G = work_grid.shape[0]
+    grid_chunk = 32768  # tune if still OOM
+
     for i in range(num_batches):
-        start_idx = i * batch_size
-        end_idx = min((i + 1) * batch_size, total_points)
+        s = i * batch_size
+        e = min((i + 1) * batch_size, total_points)
+        bp = points_n3[s:e]
+        Bcur = bp.shape[0]
+        if Bcur == 0:
+            continue
 
-        # Get current batch of points
-        batch_points = points_n3[start_idx:end_idx]
-        
-        # Scale points to match the small grid if we're using it
-        if small_shape != volume_shape:
-            # Ensure we match the working grid dimensions
-            batch_points_scaled = batch_points.clone()
+        # Scales to (B,3)
+        if point_scales is None:
+            scales_batch = torch.full((Bcur, 3), scale, device=device, dtype=bp.dtype)
         else:
-            batch_points_scaled = batch_points
-
-        # Get batch-specific scales and opacity if available
-        batch_scales = None
-        if point_scales is not None:
-            batch_scales = point_scales[start_idx:end_idx]
-
-        batch_opacities = None
-        if point_opacities is not None:
-            batch_opacities = point_opacities[start_idx:end_idx]
-
-        batch_intensities = None
-        if point_intensities is not None:
-            batch_intensities = point_intensities[start_idx:end_idx]
-
-        # Process batch and accumulate results
-        if (i+1) % 5 == 0:
-            print(f"Processing batch {i+1}/{num_batches}")
-            # Release memory periodically
-            if device.type == 'cuda':
-                torch.cuda.empty_cache()
-
-        # Process all points in the batch at once if possible
-        batch_contribution = torch.zeros_like(small_volume)
-        
-        # Use smaller working buffers to save memory
-        # Calculate distances for all points in the batch at once, then process one by one
-        # to avoid OOM with large batch sizes or volume dimensions
-        
-        # Use the single-point version in a loop for memory efficiency
-        for j in range(batch_points_scaled.shape[0]):
-            center = batch_points_scaled[j]
-
-            # Use point-specific scale if available, otherwise use global scale
-            point_scale = scale
-            if batch_scales is not None:
-                if batch_scales.shape[1] == 3:  # (N, 3) shape
-                    # FIX: Keep gradients flowing by not using .item()
-                    point_scale = batch_scales[j].mean() * (1.0 if small_shape == volume_shape else 0.5)  # Adjust scale for smaller grid
-                else:  # (N,) shape
-                    # FIX: Keep gradients flowing by not using .item()
-                    point_scale = batch_scales[j] * (1.0 if small_shape == volume_shape else 0.5)  # Adjust scale for smaller grid
-            elif small_shape != volume_shape:
-                # Adjust default scale for smaller grid
-                point_scale = scale * 0.5
-            
-            # Release any intermediate tensors before creating new ones
-            torch.cuda.empty_cache() if device.type == 'cuda' else None
-            
-            # Calculate Gaussian kernel using anisotropic scaling if available
-            if batch_scales is not None and batch_scales.shape[1] == 3:
-                # Use anisotropic Gaussian with per-point scaling
-                point_scaling = batch_scales[j]
-                
-                # Apply scaling adjustment for smaller grid if needed
-                if small_shape != volume_shape:
-                    point_scaling = point_scaling * 0.5
-                    
-                # Use the improved gaussian_kernel_3d with scaling
-                kernel = gaussian_kernel_3d(
-                    small_grid_points,
-                    center.view(1, 3),  # Add batch dimension
-                    scaling=point_scaling.view(1, 3)  # Add batch dimension
-                ).squeeze(-1)  # Remove extra dimension
+            sb = point_scales[s:e]
+            if sb.ndim == 2 and sb.shape[1] == 3:
+                scales_batch = sb
             else:
-                # Use simple isotropic Gaussian as before
-                diff = small_grid_points - center.view(1, 1, 1, 3)
-                sq_dist = torch.sum(diff * diff, dim=-1)
-                kernel = torch.exp(-0.5 * sq_dist / (point_scale**2))
-                
-                # Clean up intermediate variables to save memory
-                del diff, sq_dist
+                scales_batch = sb.view(-1, 1).repeat(1, 3)
+        if small_shape != volume_shape:
+            scales_batch = scales_batch * 0.5
 
-                # Apply opacity and intensity in one step to save memory
-                # FIX: Keep gradient flow by not using .item()
-                if batch_opacities is not None:
-                    kernel = kernel * batch_opacities[j]
-                if batch_intensities is not None:
-                    kernel = kernel * batch_intensities[j]
+        if rot_mats is not None:
+            rb = rot_mats[s:e]  # (B,3,3)
+        else:
+            rb = None
 
-                # Add contribution and free memory
-                batch_contribution = batch_contribution + kernel
-                # Force immediate cleanup of the kernel tensor
-                del kernel
-                
-                # Only clear CUDA cache occasionally to avoid performance penalty
-                if j % 20 == 0 and device.type == 'cuda':
-                    torch.cuda.empty_cache()        # Add the batch contribution to the working volume
-        small_volume = small_volume + batch_contribution
-        
-        # Free memory
-        del batch_contribution
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
+        weight = torch.ones(Bcur, device=device, dtype=bp.dtype)
+        if point_opacities is not None:
+            weight = weight * point_opacities[s:e].view(-1)
+        if point_intensities is not None:
+            weight = weight * point_intensities[s:e].view(-1)
+
+        inv_scales = 1.0 / (scales_batch + 1e-6)  # (B,3)
+        contrib_flat = torch.zeros(G, device=device, dtype=bp.dtype)
+
+        for g0 in range(0, G, grid_chunk):
+            g1 = min(g0 + grid_chunk, G)
+            grid_chunk_pts = work_grid[g0:g1]  # (Cg,3)
+            diff = grid_chunk_pts.unsqueeze(1) - bp.unsqueeze(0)  # (Cg,B,3)
+            if rb is not None:
+                # Transform to local frame diff_local = diff @ R^T
+                diff_local = torch.einsum('g b d, b d e -> g b e', diff, rb.transpose(1, 2))
+            else:
+                diff_local = diff
+            diff_scaled = diff_local * inv_scales.unsqueeze(0)  # (Cg,B,3)
+            sq = (diff_scaled * diff_scaled).sum(-1)  # (Cg,B)
+            kern = torch.exp(-0.5 * sq) * weight.unsqueeze(0)  # (Cg,B)
+            contrib_flat[g0:g1] += kern.sum(dim=1)
+            del diff, diff_local, diff_scaled, sq, kern
+
+        small_volume = small_volume + contrib_flat.view(small_shape)
+        del contrib_flat
 
     # Normalize the working volume to [0, 1] - ensure we preserve gradient flow
     max_val = small_volume.max()
     if max_val > 0:
         # Use proper differentiable normalization
         small_volume = small_volume / (max_val + 1e-6)
-    
+
     # If we used a smaller working grid, upsample back to full resolution
     if small_shape != volume_shape:
         # Convert to 5D tensor for F.interpolate (batch, channels, D, H, W)
@@ -316,14 +298,13 @@ def splat_to_volume(
         volume = volume_5d.squeeze(0).squeeze(0)
     else:
         volume = small_volume
-        
+
     # Free memory
     del small_volume
     if device.type == 'cuda':
         torch.cuda.empty_cache()
 
-    print(f"Volume range: [{volume.min().item():.4f}, {volume.max().item():.4f}]")
-    print(f"Volume requires_grad: {volume.requires_grad}")
+    # Optional debug prints removed for performance; caller can inspect externally.
 
     # Ensure we have gradients flowing
     if not volume.requires_grad:

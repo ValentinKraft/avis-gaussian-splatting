@@ -1013,6 +1013,8 @@ class GaussianModel:
             Dictionary of updated parameters
         """
         optimizable_tensors = {}
+        # SAFETY: All concatenations create new nn.Parameter objects; optimizer state for
+        # existing portion is preserved, zeros initialized for new tail.
         for group in self.optimizer.param_groups:
             assert len(group["params"]) == 1
             extension_tensor = tensors_dict[group["name"]]
@@ -1082,6 +1084,8 @@ class GaussianModel:
 
         # Add new tensors to model parameters
         optimizable_tensors = self.cat_tensors_to_optimizer(new_tensors)
+        # Mark that parameter topology changed (can be used by outer training loop if needed)
+        self._param_topology_changed = True
         self._xyz = optimizable_tensors["xyz"]
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
@@ -1096,7 +1100,6 @@ class GaussianModel:
 
         # Update volume-specific attributes
         if hasattr(self, "intensities") and self.intensities.numel() > 0:
-            # Create zeros tensor for new points (to be filled in later during a volume query)
             new_intensities = torch.zeros(
                 (new_xyz.shape[0], 1), device=self.intensities.device
             )

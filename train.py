@@ -183,7 +183,7 @@ def training(
             vol_loss, vol_metrics, vol_gradients = volume_supervisor.compute_loss(
                 gaussians
             )
-            
+
             # CRITICAL: Don't call item() on the loss until after backward() is called!
             # This would break the computation graph
             loss = vol_loss
@@ -238,21 +238,21 @@ def training(
             # Make sure the loss requires gradients before calling backward
         if loss.requires_grad:
             # Make sure parameters require gradients BEFORE calling backward
-            if not gaussians._xyz.requires_grad:
-                print("CRITICAL: XYZ doesn't require gradients before backward! Creating differentiable copy.")
-                gaussians._xyz = gaussians._xyz.clone().detach().requires_grad_(True)
-                
-            if not gaussians._scaling.requires_grad:
-                print("CRITICAL: Scaling doesn't require gradients before backward! Creating differentiable copy.")
-                gaussians._scaling = gaussians._scaling.clone().detach().requires_grad_(True)
-                
-            if not gaussians._rotation.requires_grad:
-                print("CRITICAL: Rotation doesn't require gradients before backward! Creating differentiable copy.")
-                gaussians._rotation = gaussians._rotation.clone().detach().requires_grad_(True)
-            
+            # Ensure core parameters keep identity as nn.Parameter (never reassign tensor objects)
+            for name in ["_xyz", "_scaling", "_rotation"]:
+                p = getattr(gaussians, name, None)
+                if p is None or not isinstance(p, torch.nn.Parameter):
+                    # Skip silently if absent – initialization should have created them
+                    continue
+                if not p.requires_grad:
+                    print(
+                        f"WARNING: {name} had requires_grad=False – enabling in-place."
+                    )
+                    p.requires_grad_(True)
+
             # Call backward with create_graph=True to allow for higher order gradients
             loss.backward(create_graph=True)
-            
+
             # Debug gradients
             if iteration % 10 == 0:  # Check more frequently
                 # Check if gradients exist and what their magnitudes are
@@ -260,41 +260,20 @@ def training(
                     print(f"XYZ grad norm: {gaussians._xyz.grad.norm().item():.6f}")
                 else:
                     print("XYZ grad is None!")
-                
+
                 if gaussians._scaling.grad is not None:
                     print(f"Scaling grad norm: {gaussians._scaling.grad.norm().item():.6f}")
                 else:
                     print("Scaling grad is None!")
-                    
+
                 if gaussians._rotation.grad is not None:
                     print(f"Rotation grad norm: {gaussians._rotation.grad.norm().item():.6f}")
                 else:
                     print("Rotation grad is None!")
-                    
+
             # Add a manual gradient perturbation if gradients are zero
             # This is a drastic measure to force parameter updates
-            if iteration % 10 == 0:
-                # DIRECTLY update parameters without relying on optimizer
-                print("Directly updating parameters to test parameter updates")
-                
-                # Create small random changes
-                xyz_delta = torch.randn_like(gaussians._xyz) * 0.001
-                scale_delta = torch.randn_like(gaussians._scaling) * 0.0005
-                rot_delta = torch.randn_like(gaussians._rotation) * 0.001
-                
-                # Apply changes directly to parameters
-                with torch.no_grad():
-                    gaussians._xyz.add_(xyz_delta)
-                    gaussians._scaling.add_(scale_delta)
-                    gaussians._rotation.add_(rot_delta)
-                    
-                # Normalize rotation quaternions
-                gaussians._rotation.data = torch.nn.functional.normalize(gaussians._rotation.data, dim=1)
-                
-                # Print magnitudes
-                print(f"Applied direct updates - XYZ: {xyz_delta.abs().mean().item():.6f}, " 
-                      f"Scale: {scale_delta.abs().mean().item():.6f}, "
-                      f"Rot: {rot_delta.abs().mean().item():.6f}")
+            # REMOVE direct random parameter perturbations (they break true gradient-based optimization)
         else:
             # This should no longer happen with the fixed gradient chain
             print("WARNING: Loss does not require gradients! Check gradient chain.")

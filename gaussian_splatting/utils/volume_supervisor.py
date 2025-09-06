@@ -80,28 +80,28 @@ class VolumeSupervisor:
         xyz = gaussians.get_xyz
         print(f"xyz requires_grad: {xyz.requires_grad}")
         print(f"xyz shape: {xyz.shape}")
-        
+
         # Ensure parameters require gradients
         if not xyz.requires_grad:
-            print("WARNING: XYZ doesn't require gradients! Creating differentiable copy.")
-            # Create a differentiable copy and assign it back to the model
-            xyz_new = xyz.clone().detach().requires_grad_(True)
-            gaussians._xyz = xyz_new
-            xyz = xyz_new
+            print(
+                "WARNING: XYZ missing gradients – enabling in-place (no reassignment)."
+            )
+            # Enable requires_grad without breaking optimizer reference
+            gaussians._xyz.requires_grad_(True)
+            xyz = gaussians._xyz
 
         # Get scaling, rotation, and opacity values
         scaling = gaussians.get_scaling
         rotation = gaussians.get_rotation
         opacity = gaussians.get_opacity
 
-        # Check if intensity values need updating
+        # Check if intensity values need updating (match number of points = xyz.shape[0])
         if (
             not hasattr(gaussians, "intensities")
-            or gaussians.intensities.shape[0] != xyz.shape[1]
+            or gaussians.intensities.shape[0] != xyz.shape[0]
         ):
-            # Initialize with default intensity
             gaussians.intensities = (
-                torch.ones((xyz.shape[1], 1), device=xyz.device) * 0.5
+                torch.ones((xyz.shape[0], 1), device=xyz.device) * 0.5
             )
 
         # Update intensity values if reference volume is available
@@ -111,9 +111,14 @@ class VolumeSupervisor:
 
         # Check if we need to initialize/update opacities
         if hasattr(self, 'mask_volume') and self.mask_volume is not None:
-            # Initialize opacities buffer if needed
-            if not hasattr(gaussians, 'opacities') or gaussians.opacities.shape[0] != xyz.shape[1]:
-                gaussians.opacities = torch.ones((xyz.shape[1], 1), device=xyz.device) * 0.5
+            # Initialize opacities buffer if needed (match number of points)
+            if (
+                not hasattr(gaussians, "opacities")
+                or gaussians.opacities.shape[0] != xyz.shape[0]
+            ):
+                gaussians.opacities = (
+                    torch.ones((xyz.shape[0], 1), device=xyz.device) * 0.5
+                )
 
         # Update values every 10 iterations or when they're not initialized
         iteration = getattr(self, "iteration", 0)
@@ -133,23 +138,20 @@ class VolumeSupervisor:
         if hasattr(gaussians, 'opacities') and gaussians.opacities.numel() > 0:
             use_opacity = gaussians.opacities
 
-        # CRITICAL: Create differentiable copies of inputs to preserve gradient flow
-        xyz_diff = xyz.clone()  # This ensures we have a fresh tensor that requires gradients
-        
-        # Make sure all inputs maintain gradients
+        # Convert gaussians to volume (directly uses parameter tensors for gradient flow)
         volume_pred = splat_to_volume(
-            points=xyz_diff,  # Use our differentiable copy to ensure gradient flow
-            point_scales=scaling,  # Use proper scaling parameters for anisotropic kernels
-            point_rotations=rotation,  # Include rotation information
+            points=xyz,
+            point_scales=scaling,
+            point_rotations=rotation,
             point_opacities=use_opacity,
             point_intensities=gaussians.intensities,
             volume_shape=self.volume_shape,
             device=xyz.device,
         )
-        
-        # Manually connect the gradient from xyz_diff to xyz
-        # This is crucial - without this, the gradients won't flow back to the original parameters
-        xyz.retain_grad()  # Ensure the original tensor can receive gradients
+
+        # Optionally retain grad for debugging
+        if getattr(self, "debug", False):
+            xyz.retain_grad()
 
         # Debug if needed
         if hasattr(self, "verbose") and self.verbose:
@@ -166,25 +168,15 @@ class VolumeSupervisor:
         if self.loss_weight != 1.0:
             loss = loss * self.loss_weight
 
-        # Compute volume gradients if needed for rotation alignment
-        # Only compute gradients sometimes to save computation
+        # Optionally compute gradients of loss w.r.t. xyz periodically (for analysis/alignment)
+        volume_grads = None
         if hasattr(self, "iteration") and self.iteration % 10 == 0:
-            # Compute gradients of volume with respect to positions
-            if self.volume_gt.requires_grad:
-                volume_grads = None  # Already has gradients
-            else:
-                # We need to differentiate the loss with respect to positions
-                # Save a copy of predicted volume that requires gradients
-                vol_with_grad = volume_pred.detach().clone().requires_grad_(True)
-                # Compute loss
-                temp_loss = self.criterion(vol_with_grad, self.volume_gt)
-                # Compute gradients
-                temp_loss.backward(retain_graph=True)
-                # Store volume gradients for rotation alignment
-                volume_grads = vol_with_grad.grad
-                self.volume_gradients = volume_grads
+            grad_list = torch.autograd.grad(
+                loss, xyz, retain_graph=True, allow_unused=True
+            )
+            volume_grads = grad_list[0]
+            self.volume_gradients = volume_grads
         else:
-            # Reuse previously computed gradients
             volume_grads = getattr(self, "volume_gradients", None)
 
         # Update metrics

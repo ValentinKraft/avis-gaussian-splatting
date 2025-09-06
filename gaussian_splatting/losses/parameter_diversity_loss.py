@@ -215,60 +215,50 @@ def compute_parameter_diversity_losses(
         Dictionary of loss components and values
     """
     losses = {}
-    
+
     # Get scaling parameters
     if model._scaling is not None and model._scaling.numel() > 0:
-        # IMPORTANT: Ensure parameters require gradients before computing losses
         scaling = model.get_scaling
         if not scaling.requires_grad:
-            print("WARNING: Scaling parameters don't require gradients! Creating differentiable copy.")
-            scaling = scaling.clone().detach().requires_grad_(True)
-            # Update the model's parameters to ensure they're differentiable
-            model._scaling = scaling
-        
-        scale_loss = ScaleDiversityLoss(
-            variance_weight=scale_variance_weight,
-            orthogonality_weight=scale_diversity_weight/2,
-            target_range_weight=target_range_weight
-        )(scaling)
-        
-        # Apply weight to total scale loss
-        scale_loss["total"] = scale_loss["total"] * scale_diversity_weight
-        
-        # Add scale losses to results
-        for name, value in scale_loss.items():
-            losses[f"scale_{name}"] = value
+            print(
+                "WARNING: Scaling parameters lack gradients; diversity loss skipped to preserve optimizer state."
+            )
+            losses["scale_total"] = torch.tensor(0.0, device=model.get_xyz.device)
+        else:
+            scale_loss = ScaleDiversityLoss(
+                variance_weight=scale_variance_weight,
+                orthogonality_weight=scale_diversity_weight / 2,
+                target_range_weight=target_range_weight,
+            )(scaling)
+            scale_loss["total"] = scale_loss["total"] * scale_diversity_weight
+            for name, value in scale_loss.items():
+                losses[f"scale_{name}"] = value
     else:
         # No scale parameters
         losses["scale_total"] = torch.tensor(0.0, device=model.get_xyz.device)
-    
+
     # Get rotation parameters
     if model._rotation is not None and model._rotation.numel() > 0:
-        # IMPORTANT: Ensure parameters require gradients before computing losses
         rotation = model.get_rotation
         if not rotation.requires_grad:
-            print("WARNING: Rotation parameters don't require gradients! Creating differentiable copy.")
-            rotation = rotation.clone().detach().requires_grad_(True)
-            # Update the model's parameters to ensure they're differentiable
-            model._rotation = rotation
-            
-        rot_loss = RotationDiversityLoss(
-            dispersion_weight=dispersion_weight,
-            entropy_weight=rotation_diversity_weight/2,
-            alignment_weight=alignment_weight
-        )(rotation, volume_gradients)
-        
-        # Apply weight to total rotation loss
-        rot_loss["total"] = rot_loss["total"] * rotation_diversity_weight
-        
-        # Add rotation losses to results
-        for name, value in rot_loss.items():
-            losses[f"rotation_{name}"] = value
+            print(
+                "WARNING: Rotation parameters lack gradients; diversity loss skipped to preserve optimizer state."
+            )
+            losses["rotation_total"] = torch.tensor(0.0, device=model.get_xyz.device)
+        else:
+            rot_loss = RotationDiversityLoss(
+                dispersion_weight=dispersion_weight,
+                entropy_weight=rotation_diversity_weight / 2,
+                alignment_weight=alignment_weight,
+            )(rotation, volume_gradients)
+            rot_loss["total"] = rot_loss["total"] * rotation_diversity_weight
+            for name, value in rot_loss.items():
+                losses[f"rotation_{name}"] = value
     else:
         # No rotation parameters
         losses["rotation_total"] = torch.tensor(0.0, device=model.get_xyz.device)
-    
+
     # Compute combined loss
     losses["total"] = losses.get("scale_total", 0.0) + losses.get("rotation_total", 0.0)
-    
+
     return losses
