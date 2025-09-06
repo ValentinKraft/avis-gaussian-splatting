@@ -17,7 +17,7 @@ class ParameterMonitor:
         """
         self.output_dir = output_dir
         os.makedirs(os.path.join(output_dir, "parameter_stats"), exist_ok=True)
-        
+
         self.stats = {
             "iteration": [],
             "scaling_mean": [],
@@ -31,7 +31,7 @@ class ParameterMonitor:
             "position_delta_mean": [],
             "position_delta_std": []
         }
-        
+
         # Store initial positions for tracking movement
         self.initial_positions = None
         self.last_positions = None
@@ -39,15 +39,18 @@ class ParameterMonitor:
     def update(self, iteration, gaussian_model):
         """
         Update statistics with current Gaussian parameters.
-        
+
         Args:
             iteration: Current training iteration
             gaussian_model: The Gaussian model with parameters to monitor
+
+        Returns:
+            Dictionary of parameter statistics
         """
         with torch.no_grad():
             # Store iteration
             self.stats["iteration"].append(iteration)
-            
+
             # Get scaling statistics
             scaling = gaussian_model.get_scaling
             scaling_np = scaling.detach().cpu().numpy()
@@ -55,7 +58,7 @@ class ParameterMonitor:
             self.stats["scaling_std"].append(np.std(scaling_np))
             self.stats["scaling_min"].append(np.min(scaling_np))
             self.stats["scaling_max"].append(np.max(scaling_np))
-            
+
             # Get rotation statistics (convert to angles)
             rot = gaussian_model.get_rotation
             # Calculate rotation angle from quaternions
@@ -64,13 +67,13 @@ class ParameterMonitor:
             angles = 2 * np.arccos(np.abs(rot_np[:, 0]))  # Simple approximation from w component
             self.stats["rotation_mean_angle"].append(np.mean(angles))
             self.stats["rotation_std_angle"].append(np.std(angles))
-            
+
             # Get opacity statistics
             opacity = gaussian_model.get_opacity
             opacity_np = opacity.detach().cpu().numpy()
             self.stats["opacity_mean"].append(np.mean(opacity_np))
             self.stats["opacity_std"].append(np.std(opacity_np))
-            
+
             # Track position changes
             positions = gaussian_model.get_xyz
             if self.initial_positions is None:
@@ -80,14 +83,24 @@ class ParameterMonitor:
             else:
                 position_delta = positions - self.last_positions
                 self.last_positions = positions.detach().clone()
-                
+
             position_delta_np = position_delta.detach().cpu().numpy()
             self.stats["position_delta_mean"].append(np.mean(np.abs(position_delta_np)))
             self.stats["position_delta_std"].append(np.std(np.abs(position_delta_np)))
-            
+
             # Save stats periodically
             if iteration % 1000 == 0 or iteration == 1:
                 self.save_stats()
+
+            # Return current stats as a dictionary for logging
+            current_stats = {
+                "scaling_mean": np.mean(scaling_np),
+                "scaling_std": np.std(scaling_np),
+                "rotation_mean_angle": np.mean(angles),
+                "position_delta_mean": np.mean(np.abs(position_delta_np)),
+            }
+
+            return current_stats
 
     def save_stats(self):
         """
@@ -96,20 +109,20 @@ class ParameterMonitor:
         # Save raw statistics as numpy arrays
         stats_path = os.path.join(self.output_dir, "parameter_stats", "stats.npz")
         np.savez(stats_path, **{k: np.array(v) for k, v in self.stats.items()})
-        
+
         # Generate plots
         self._plot_parameter_evolution("scaling", 
                                       ["scaling_mean", "scaling_std", "scaling_min", "scaling_max"],
                                       "Scaling Parameter Evolution")
-        
+
         self._plot_parameter_evolution("rotation", 
                                       ["rotation_mean_angle", "rotation_std_angle"],
                                       "Rotation Parameter Evolution")
-        
+
         self._plot_parameter_evolution("opacity", 
                                       ["opacity_mean", "opacity_std"],
                                       "Opacity Parameter Evolution")
-        
+
         self._plot_parameter_evolution("position_delta", 
                                       ["position_delta_mean", "position_delta_std"],
                                       "Position Change Magnitude")
@@ -125,56 +138,82 @@ class ParameterMonitor:
         """
         plt.figure(figsize=(12, 6))
         iterations = self.stats["iteration"]
-        
+
         for key in stat_keys:
             if key in self.stats and len(self.stats[key]) == len(iterations):
                 plt.plot(iterations, self.stats[key], label=key.replace("_", " "))
-        
+
         plt.title(title)
         plt.xlabel("Iteration")
         plt.ylabel("Value")
         plt.legend()
         plt.grid(True, alpha=0.3)
-        
+
         # Save figure
         plt.savefig(os.path.join(self.output_dir, "parameter_stats", f"{name}_evolution.png"), dpi=150)
         plt.close()
 
-def add_parameter_regularization_loss(gaussian_model, scaling_weight=0.001, rotation_weight=0.001):
+
+def add_parameter_regularization_loss(
+    model,
+    loss: torch.Tensor = None,
+    scale_diversity_weight: float = 0.01,
+    rotation_diversity_weight: float = 0.01,
+    scale_variance_weight: float = 0.005,
+    target_range_weight: float = 0.005,
+    dispersion_weight: float = 0.01,
+    alignment_weight: float = 0.01,
+    volume_gradients: torch.Tensor = None,
+):
     """
-    Compute regularization loss to encourage diversity in scaling and rotation.
-    
+    Add regularization loss terms to encourage diversity in scaling and rotation.
+
     Args:
-        gaussian_model: The Gaussian model with parameters
-        scaling_weight: Weight for scaling regularization
-        rotation_weight: Weight for rotation regularization
-        
+        model: GaussianModel instance
+        loss: Current loss value (if None, returns only regularization loss)
+        scale_diversity_weight: Weight for scale diversity term
+        rotation_diversity_weight: Weight for rotation diversity term
+        scale_variance_weight: Weight for encouraging variance in scale
+        target_range_weight: Weight for target scale range
+        dispersion_weight: Weight for quaternion dispersion
+        alignment_weight: Weight for volume gradient alignment
+        volume_gradients: Optional tensor of volume gradients at point positions
+
     Returns:
-        Regularization loss (scalar tensor)
+        Modified loss with regularization terms
     """
-    # Get scaling parameters
-    scaling = gaussian_model.get_scaling
-    
-    # Encourage non-uniform scaling (anisotropy)
-    # For each point, compute variance across its 3 scaling values
-    scaling_reshaped = scaling.view(-1, 3)
-    scaling_var_per_point = torch.var(scaling_reshaped, dim=1)
-    # We want to maximize variance, so we minimize negative variance
-    scaling_reg = -torch.mean(scaling_var_per_point)
-    
-    # Get rotation parameters
-    rotation = gaussian_model.get_rotation
-    
-    # Encourage diverse rotations by penalizing similarity to identity rotation
-    # Identity quaternion is (1, 0, 0, 0)
-    identity_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=rotation.device)
-    # Compute dot product with identity quaternion
-    # When dot is close to 1, rotation is close to identity
-    dot_products = torch.sum(rotation * identity_quat, dim=1)
-    # We want to minimize dot product with identity (encourage rotation)
-    rotation_reg = torch.mean(dot_products * dot_products)
-    
-    # Combine regularization terms
-    reg_loss = scaling_weight * scaling_reg + rotation_weight * rotation_reg
-    
-    return reg_loss
+    from gaussian_splatting.losses.parameter_diversity_loss import (
+        compute_parameter_diversity_losses,
+    )
+
+    # Start with either the provided loss or zero
+    if loss is None:
+        device = model.get_xyz.device
+        modified_loss = torch.tensor(0.0, device=device, requires_grad=True)
+    else:
+        modified_loss = loss.clone()
+
+    # Compute diversity losses
+    diversity_losses = compute_parameter_diversity_losses(
+        model=model,
+        volume_gradients=volume_gradients,
+        scale_diversity_weight=scale_diversity_weight,
+        rotation_diversity_weight=rotation_diversity_weight,
+        scale_variance_weight=scale_variance_weight,
+        target_range_weight=target_range_weight,
+        dispersion_weight=dispersion_weight,
+        alignment_weight=alignment_weight
+    )
+
+    # Add to total loss
+    regularization_loss = diversity_losses["total"]
+    modified_loss = modified_loss + regularization_loss
+
+    # Verbose logging for debugging
+    print(
+        f"Parameter regularization: scale={diversity_losses.get('scale_total', 0.0):.6f}, "
+        f"rotation={diversity_losses.get('rotation_total', 0.0):.6f}, "
+        f"total={regularization_loss.item():.6f}"
+    )
+
+    return modified_loss

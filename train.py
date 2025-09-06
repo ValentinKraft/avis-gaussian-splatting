@@ -22,8 +22,8 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from gaussian_splatting.utils.parameter_monitor import (
     ParameterMonitor,
-    add_parameter_regularization_loss,
 )
+from utils.parameter_monitoring import add_parameter_regularization_loss
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -63,6 +63,11 @@ def training(
 
     # Initialize parameter monitoring
     parameter_monitor = ParameterMonitor(args.model_path)
+
+    # Initialize parameter update tracker
+    from utils.parameter_update_tracking import ParameterUpdateTracker
+
+    update_tracker = ParameterUpdateTracker()
 
     # Create scene for volume-based training
     scene = VolumeScene(args, gaussians)
@@ -174,35 +179,122 @@ def training(
         # Volume supervision loss
         volume_loss = 0.0
         if volume_supervisor is not None:
-            # Compute the volume loss
-            vol_loss, vol_metrics = volume_supervisor.compute_loss(gaussians)
-            volume_loss = vol_loss.item()
+            # Compute the volume loss and get volume gradients for parameter diversity loss
+            vol_loss, vol_metrics, vol_gradients = volume_supervisor.compute_loss(
+                gaussians
+            )
+            
+            # CRITICAL: Don't call item() on the loss until after backward() is called!
+            # This would break the computation graph
             loss = vol_loss
+            # Store value for logging only
+            volume_loss = vol_loss.detach().item()
 
-            # Add regularization loss to encourage scaling and rotation diversity
+            # Configure loss weights based on training stage
+            # Use stronger weights for parameter diversity to force gradient flow
+            # Temporarily increased for testing
+            scale_diversity_weight = 0.5
+            rotation_diversity_weight = 0.5
+
+            # Add parameter diversity losses to encourage scaling and rotation diversity
+            # This includes scale diversity, orthogonality, target range, quaternion dispersion,
+            # rotation entropy, and principal direction alignment
             reg_loss = add_parameter_regularization_loss(
-                gaussians,
-                loss,
-                scale_diversity_weight=0.01,  # Higher weight for more diversity
-                rotation_diversity_weight=0.01,  # Higher weight for more diversity
+                model=gaussians,
+                loss=loss,
+                scale_diversity_weight=scale_diversity_weight,
+                rotation_diversity_weight=rotation_diversity_weight,
+                scale_variance_weight=0.2,
+                target_range_weight=0.2,
+                dispersion_weight=0.2,
+                alignment_weight=0.2,
+                volume_gradients=vol_gradients,
             )
             loss = reg_loss  # Use the regularized loss
 
-            # Track scaling and rotation parameters
+            # Track parameter statistics for monitoring
             param_stats = parameter_monitor.update(
-                iteration, gaussians._xyz, gaussians.get_scaling, gaussians.get_rotation
+                iteration, 
+                gaussians._xyz,
+                gaussians.get_scaling,
+                gaussians.get_rotation
             )
 
             # Log volume metrics
             if tb_writer and iteration % 10 == 0:
                 for name, value in vol_metrics.items():
                     tb_writer.add_scalar(f"volume/{name}", value, iteration)
+
+                # Also log diversity loss components
+                tb_writer.add_scalar(
+                    "diversity/scale_weight", scale_diversity_weight, iteration
+                )
+                tb_writer.add_scalar(
+                    "diversity/rotation_weight", rotation_diversity_weight, iteration
+                )
                 # Log regularization loss
                 tb_writer.add_scalar("loss/regularization", reg_loss.item(), iteration)
 
             # Make sure the loss requires gradients before calling backward
         if loss.requires_grad:
-            loss.backward()
+            # Make sure parameters require gradients BEFORE calling backward
+            if not gaussians._xyz.requires_grad:
+                print("CRITICAL: XYZ doesn't require gradients before backward! Creating differentiable copy.")
+                gaussians._xyz = gaussians._xyz.clone().detach().requires_grad_(True)
+                
+            if not gaussians._scaling.requires_grad:
+                print("CRITICAL: Scaling doesn't require gradients before backward! Creating differentiable copy.")
+                gaussians._scaling = gaussians._scaling.clone().detach().requires_grad_(True)
+                
+            if not gaussians._rotation.requires_grad:
+                print("CRITICAL: Rotation doesn't require gradients before backward! Creating differentiable copy.")
+                gaussians._rotation = gaussians._rotation.clone().detach().requires_grad_(True)
+            
+            # Call backward with create_graph=True to allow for higher order gradients
+            loss.backward(create_graph=True)
+            
+            # Debug gradients
+            if iteration % 10 == 0:  # Check more frequently
+                # Check if gradients exist and what their magnitudes are
+                if gaussians._xyz.grad is not None:
+                    print(f"XYZ grad norm: {gaussians._xyz.grad.norm().item():.6f}")
+                else:
+                    print("XYZ grad is None!")
+                
+                if gaussians._scaling.grad is not None:
+                    print(f"Scaling grad norm: {gaussians._scaling.grad.norm().item():.6f}")
+                else:
+                    print("Scaling grad is None!")
+                    
+                if gaussians._rotation.grad is not None:
+                    print(f"Rotation grad norm: {gaussians._rotation.grad.norm().item():.6f}")
+                else:
+                    print("Rotation grad is None!")
+                    
+            # Add a manual gradient perturbation if gradients are zero
+            # This is a drastic measure to force parameter updates
+            if iteration % 10 == 0:
+                # DIRECTLY update parameters without relying on optimizer
+                print("Directly updating parameters to test parameter updates")
+                
+                # Create small random changes
+                xyz_delta = torch.randn_like(gaussians._xyz) * 0.001
+                scale_delta = torch.randn_like(gaussians._scaling) * 0.0005
+                rot_delta = torch.randn_like(gaussians._rotation) * 0.001
+                
+                # Apply changes directly to parameters
+                with torch.no_grad():
+                    gaussians._xyz.add_(xyz_delta)
+                    gaussians._scaling.add_(scale_delta)
+                    gaussians._rotation.add_(rot_delta)
+                    
+                # Normalize rotation quaternions
+                gaussians._rotation.data = torch.nn.functional.normalize(gaussians._rotation.data, dim=1)
+                
+                # Print magnitudes
+                print(f"Applied direct updates - XYZ: {xyz_delta.abs().mean().item():.6f}, " 
+                      f"Scale: {scale_delta.abs().mean().item():.6f}, "
+                      f"Rot: {rot_delta.abs().mean().item():.6f}")
         else:
             # This should no longer happen with the fixed gradient chain
             print("WARNING: Loss does not require gradients! Check gradient chain.")
@@ -262,6 +354,20 @@ def training(
                 tb_writer.add_scalar("parameters/scaling_mean", scaling_mean, iteration)
                 tb_writer.add_scalar("parameters/scaling_std", scaling_std, iteration) 
                 tb_writer.add_scalar("parameters/rotation_magnitude", rotation_magnitude, iteration)
+
+                # Track parameter updates to verify optimization is working
+                update_metrics = update_tracker.update(gaussians)
+                for name, value in update_metrics.items():
+                    tb_writer.add_scalar(f"updates/{name}", value, iteration)
+
+                # Log parameter update metrics to the console periodically
+                if iteration % 100 == 0:
+                    xyz_delta = update_metrics.get("xyz_delta_avg", 0)
+                    scale_delta = update_metrics.get("scaling_delta_avg", 0)
+                    rot_delta = update_metrics.get("rotation_delta_avg", 0)
+                    print(
+                        f"\n[ITER {iteration}] Parameter updates - XYZ: {xyz_delta:.5f}, Scale: {scale_delta:.5f}, Rot: {rot_delta:.5f}"
+                    )
 
             # Save PLY file at specified iterations
             save_ply_every = (
@@ -371,7 +477,7 @@ if __name__ == "__main__":
     volume_group.add_argument(
         "--volume_loss_type",
         type=str,
-        default="dice",
+        default="mse",
         choices=["mse", "dice", "tversky", "kl"],
         help="Type of volume supervision loss",
     )

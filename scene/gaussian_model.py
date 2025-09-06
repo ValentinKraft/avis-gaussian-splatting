@@ -99,6 +99,49 @@ class GaussianModel:
         self.inverse_opacity_activation = inverse_sigmoid
         self.rotation_activation = torch.nn.functional.normalize
 
+    def _verify_gradient_requirements(self):
+        """
+        Verify that all parameters have requires_grad=True.
+        This helps catch issues where parameters are not properly set up for optimization.
+        """
+        # Check core parameters
+        if not self._xyz.requires_grad:
+            print(
+                "WARNING: Position parameters do not require gradients. Setting requires_grad=True."
+            )
+            self._xyz.requires_grad_(True)
+
+        if self._scaling.numel() > 0 and not self._scaling.requires_grad:
+            print(
+                "WARNING: Scaling parameters do not require gradients. Setting requires_grad=True."
+            )
+            self._scaling.requires_grad_(True)
+
+        if self._rotation.numel() > 0 and not self._rotation.requires_grad:
+            print(
+                "WARNING: Rotation parameters do not require gradients. Setting requires_grad=True."
+            )
+            self._rotation.requires_grad_(True)
+
+        if self._opacity.numel() > 0 and not self._opacity.requires_grad:
+            print(
+                "WARNING: Opacity parameters do not require gradients. Setting requires_grad=True."
+            )
+            self._opacity.requires_grad_(True)
+
+        # Check intensity values for volume rendering
+        if hasattr(self, "intensities") and self.intensities.numel() > 0:
+            if not isinstance(self.intensities, nn.Parameter):
+                print(
+                    "WARNING: Intensity values are not nn.Parameter. Converting to nn.Parameter."
+                )
+                self.intensities = nn.Parameter(self.intensities)
+            if not self.intensities.requires_grad:
+                print(
+                    "WARNING: Intensity values do not require gradients. Setting requires_grad=True."
+                )
+                self.intensities.requires_grad_(True)
+
     # ===== Properties for accessing model parameters =====
 
     @property

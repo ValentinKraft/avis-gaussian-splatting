@@ -268,51 +268,108 @@ class ParameterMonitor:
                 f.write(f"  Total accumulated change: {total_pos_change:.6f}\n")
                 f.write(f"  Average change per step: {total_pos_change/len(self.position_history['delta_mean']):.6f}\n")
 
+
 def add_parameter_regularization_loss(
     model,
     loss: torch.Tensor,
-    scale_diversity_weight: float = 0.001,
-    rotation_diversity_weight: float = 0.001
-) -> torch.Tensor:
+    scale_diversity_weight: float = 0.01,
+    rotation_diversity_weight: float = 0.01,
+    scale_variance_weight: float = 0.005,
+    scale_range_weight: float = 0.002,
+    rotation_entropy_weight: float = 0.005,
+    volume_gt: Optional[torch.Tensor] = None,
+    principal_dir_weight: float = 0.0,
+    target_range_weight: float = 0.005,
+    dispersion_weight: float = 0.01,
+    alignment_weight: float = 0.01,
+    volume_gradients: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
-    Add regularization loss terms to encourage diversity in scaling and rotation.
-    
+    Add comprehensive regularization losses to encourage proper scaling and rotation.
+
     Args:
         model: GaussianModel instance
         loss: Current loss value
-        scale_diversity_weight: Weight for scale diversity term
-        rotation_diversity_weight: Weight for rotation diversity term
-        
+        scale_diversity_weight: Weight for scale diversity across dimensions (orthogonality)
+        rotation_diversity_weight: Weight for rotation deviation from identity (quaternion dispersion)
+        scale_variance_weight: Weight for encouraging scale variance across points
+        scale_range_weight: Weight for pushing scales toward target range
+        rotation_entropy_weight: Weight for encouraging diverse rotation distribution
+        volume_gt: Optional ground truth volume for gradient-based alignment
+        principal_dir_weight: Weight for principal direction alignment loss
+
     Returns:
-        Modified loss with regularization terms
+        Tuple of (modified_loss, loss_metrics_dict)
     """
+    loss_metrics = {}
     modified_loss = loss.clone()
-    
-    # Encourage diverse scaling along different axes (non-uniform scaling)
+
+    # ====================== SCALE DIVERSITY LOSSES ======================
     if hasattr(model, "_scaling") and model._scaling is not None and model._scaling.numel() > 0:
         scaling = model.get_scaling  # Get actual (non-log) scaling
-        
-        # Penalize similar scaling along different axes
+
         if scaling.shape[1] == 3:  # If we have per-axis scaling
+            # 1. Orthogonality Loss: Encourage differences between x,y,z scale components
+            # This makes the Gaussians more anisotropic (non-uniform scaling)
             scale_similarity = torch.abs(scaling[:, 0] - scaling[:, 1]) + \
                               torch.abs(scaling[:, 1] - scaling[:, 2]) + \
                               torch.abs(scaling[:, 0] - scaling[:, 2])
-            
+
             # We want to maximize differences, so we minimize the negative
-            scale_reg_loss = -scale_similarity.mean() * scale_diversity_weight
-            modified_loss = modified_loss + scale_reg_loss
-    
-    # Encourage non-identity rotations
-    if hasattr(model, "_rotation") and model._rotation is not None and model._rotation.numel() > 0:
-        # Identity quaternion is [1, 0, 0, 0]
-        # We want to encourage deviation from identity
+            orthogonality_loss = -scale_similarity.mean() * scale_diversity_weight
+            modified_loss = modified_loss + orthogonality_loss
+            loss_metrics["scale_orthogonality_loss"] = orthogonality_loss.item()
+
+            # 2. Variance Loss: Encourage variation between points' scales
+            # This creates diversity in the point cloud
+            scale_per_axis_var = torch.var(
+                scaling, dim=0
+            ).sum()  # Variance across points for each axis
+            variance_loss = -scale_per_axis_var * scale_variance_weight
+            modified_loss = modified_loss + variance_loss
+            loss_metrics["scale_variance_loss"] = variance_loss.item()
+
+            # 3. Target Scale Range Loss: Keep scales in reasonable range
+            # Prefer scales in range [0.01, 0.2] - values outside get penalized
+            min_scale = 0.01
+            max_scale = 0.2
+            too_small = torch.relu(min_scale - scaling).sum()
+            too_large = torch.relu(scaling - max_scale).sum()
+            range_loss = (too_small + too_large) * scale_range_weight
+            modified_loss = modified_loss + range_loss
+            loss_metrics["scale_range_loss"] = range_loss.item()
+
+    # ====================== ROTATION DIVERSITY LOSSES ======================
+    if (
+        hasattr(model, "_rotation")
+        and model._rotation is not None
+        and model._rotation.numel() > 0
+    ):
         rot = model.get_rotation
         if rot.shape[1] == 4:  # If we have quaternion rotations
-            identity_distance = torch.abs(rot[:, 0] - 1.0) + \
-                               torch.norm(rot[:, 1:], dim=1)
-                               
-            # We want to maximize distance from identity, so minimize negative
-            rot_reg_loss = -identity_distance.mean() * rotation_diversity_weight
-            modified_loss = modified_loss + rot_reg_loss
-    
-    return modified_loss
+            # 1. Quaternion Dispersion Loss: Encourage deviation from identity [1,0,0,0]
+            identity_distance = torch.abs(rot[:, 0] - 1.0) + torch.norm(
+                rot[:, 1:], dim=1
+            )
+            quaternion_loss = -identity_distance.mean() * rotation_diversity_weight
+            modified_loss = modified_loss + quaternion_loss
+            loss_metrics["quaternion_dispersion_loss"] = quaternion_loss.item()
+
+            # 2. Rotation Entropy Loss: Encourage diverse distribution of rotations
+            # Approximate entropy by encouraging variance in quaternion components
+            quat_var = torch.var(rot, dim=0).sum()
+            entropy_loss = -quat_var * rotation_entropy_weight
+            modified_loss = modified_loss + entropy_loss
+            loss_metrics["rotation_entropy_loss"] = entropy_loss.item()
+
+            # 3. Principal Direction Loss: Align with volume gradients if available
+            if volume_gt is not None and principal_dir_weight > 0:
+                # Compute volume gradients (simplified - in real implementation compute proper gradients)
+                if hasattr(model, "_xyz") and model._xyz is not None:
+                    # This is just a placeholder - actual implementation would need volume gradients
+                    # and proper conversion between quaternions and rotation matrices
+                    principal_dir_loss = torch.tensor(0.0, device=rot.device)
+                    modified_loss = modified_loss + principal_dir_loss
+                    loss_metrics["principal_dir_loss"] = principal_dir_loss.item()
+
+    return modified_loss, loss_metrics

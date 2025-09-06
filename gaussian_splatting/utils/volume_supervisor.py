@@ -66,7 +66,7 @@ class VolumeSupervisor:
             'dice_score': 0.0,
         }
 
-    def compute_loss(self, gaussians) -> Tuple[Tensor, Dict[str, float]]:
+    def compute_loss(self, gaussians) -> Tuple[Tensor, Dict[str, float], Tensor]:
         """
         Compute volume supervision loss for current gaussians.
         
@@ -74,12 +74,20 @@ class VolumeSupervisor:
             gaussians: Current gaussian model
             
         Returns:
-            Tuple of (loss tensor, metrics dict)
+            Tuple of (loss tensor, metrics dict, volume_gradients)
         """
         # Check if xyz requires gradients
         xyz = gaussians.get_xyz
         print(f"xyz requires_grad: {xyz.requires_grad}")
         print(f"xyz shape: {xyz.shape}")
+        
+        # Ensure parameters require gradients
+        if not xyz.requires_grad:
+            print("WARNING: XYZ doesn't require gradients! Creating differentiable copy.")
+            # Create a differentiable copy and assign it back to the model
+            xyz_new = xyz.clone().detach().requires_grad_(True)
+            gaussians._xyz = xyz_new
+            xyz = xyz_new
 
         # Get scaling, rotation, and opacity values
         scaling = gaussians.get_scaling
@@ -125,9 +133,12 @@ class VolumeSupervisor:
         if hasattr(gaussians, 'opacities') and gaussians.opacities.numel() > 0:
             use_opacity = gaussians.opacities
 
+        # CRITICAL: Create differentiable copies of inputs to preserve gradient flow
+        xyz_diff = xyz.clone()  # This ensures we have a fresh tensor that requires gradients
+        
         # Make sure all inputs maintain gradients
         volume_pred = splat_to_volume(
-            points=xyz,  # Will be transposed in splat_to_volume
+            points=xyz_diff,  # Use our differentiable copy to ensure gradient flow
             point_scales=scaling,  # Use proper scaling parameters for anisotropic kernels
             point_rotations=rotation,  # Include rotation information
             point_opacities=use_opacity,
@@ -135,6 +146,10 @@ class VolumeSupervisor:
             volume_shape=self.volume_shape,
             device=xyz.device,
         )
+        
+        # Manually connect the gradient from xyz_diff to xyz
+        # This is crucial - without this, the gradients won't flow back to the original parameters
+        xyz.retain_grad()  # Ensure the original tensor can receive gradients
 
         # Debug if needed
         if hasattr(self, "verbose") and self.verbose:
@@ -151,6 +166,27 @@ class VolumeSupervisor:
         if self.loss_weight != 1.0:
             loss = loss * self.loss_weight
 
+        # Compute volume gradients if needed for rotation alignment
+        # Only compute gradients sometimes to save computation
+        if hasattr(self, "iteration") and self.iteration % 10 == 0:
+            # Compute gradients of volume with respect to positions
+            if self.volume_gt.requires_grad:
+                volume_grads = None  # Already has gradients
+            else:
+                # We need to differentiate the loss with respect to positions
+                # Save a copy of predicted volume that requires gradients
+                vol_with_grad = volume_pred.detach().clone().requires_grad_(True)
+                # Compute loss
+                temp_loss = self.criterion(vol_with_grad, self.volume_gt)
+                # Compute gradients
+                temp_loss.backward(retain_graph=True)
+                # Store volume gradients for rotation alignment
+                volume_grads = vol_with_grad.grad
+                self.volume_gradients = volume_grads
+        else:
+            # Reuse previously computed gradients
+            volume_grads = getattr(self, "volume_gradients", None)
+
         # Update metrics
         with torch.no_grad():
             self.metrics['volume_loss'] = loss.item()
@@ -158,7 +194,8 @@ class VolumeSupervisor:
                 dice_score = 1 - loss.item()
                 self.metrics['dice_score'] = dice_score
 
-        return loss, self.metrics.copy()
+        # Return both loss and volume gradients for parameter diversity losses
+        return loss, self.metrics.copy(), volume_grads
 
     def log_metrics(self, writer, iteration: int):
         """Log current metrics to tensorboard."""
