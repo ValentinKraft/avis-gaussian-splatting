@@ -2,7 +2,15 @@
 
 ## 📝 Overview
 
-Extend the [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting) framework to optimize Gaussian splats directly from volumetric data instead of 2D images. This enables direct training from 3D medical imaging data (CT, MRI) or segmentation masks.
+This project extends the [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting) framework to optimize Gaussian splats directly from volumetric data instead of 2D images. This advancement enables direct training from 3D medical imaging data (CT, MRI) or segmentation masks without requiring 2D views.
+
+### Justification and Benefits
+
+- **Direct 3D Representation**: Traditional 3D Gaussian Splatting requires multi-view images, which are often unavailable for medical data
+- **Medical Application**: Enables working with CT, MRI, and other volumetric medical data formats
+- **Parameter Diversity**: Implements specialized techniques to ensure proper scaling and rotation diversity in 3D space
+- **Computational Efficiency**: Faster optimization compared to using artificial multi-view rendering for volumetric data
+- **Pipeline Integration**: Seamlessly integrates with existing medical imaging workflows
 
 ## 🔑 Key Components
 
@@ -115,6 +123,56 @@ model.max_radii2D = torch.zeros(num_points, device=device)
 - Maintain aspect ratio during resizing
 - Use float32 precision for masks/volumes
 
+### 5. Parameter Diversity Losses (`gaussian_splatting/losses/parameter_diversity_loss.py`)
+```python
+class ScaleDiversityLoss(nn.Module):
+    """Encourages variation in scale parameters"""
+    def forward(self, scales, progress_ratio=1.0):
+        # Compute variance across scale dimensions to encourage anisotropy
+        # Apply orthogonality loss to prevent uniform scaling
+        # Use target range loss to maintain reasonable scale values
+```
+
+```python
+class RotationDiversityLoss(nn.Module):
+    """Encourages non-identity rotations"""
+    def forward(self, rotations, progress_ratio=1.0):
+        # Apply quaternion dispersion loss to avoid identity rotations
+        # Use rotation entropy loss to maximize distribution entropy
+        # Optional principal direction alignment with volume gradients
+```
+
+### 6. Parameter Monitoring (`utils/parameter_monitoring.py`)
+```python
+class ParameterMonitor:
+    """Tracks parameter statistics during training"""
+    def track_parameters(self, model):
+        # Record parameter statistics for position, scale, rotation
+        # Generate visualization plots for parameter evolution
+        # Save final reports and statistics to output folder
+```
+
+## 🛠️ Current Pipeline Implementation
+
+1. **Initialization**:
+   - Load volume and/or mask data from disk
+   - Sample points based on volume/mask intensity distribution
+   - Initialize Gaussian parameters with appropriate defaults
+   - Set up optimization parameters and loss functions
+
+2. **Training Loop**:
+   - Forward pass: Voxelize current Gaussians into a volume
+   - Compute losses: Volume supervision + parameter diversity losses
+   - Backward pass: Compute gradients for all parameters
+   - Direct parameter updates: Apply small perturbations periodically
+   - Update parameters via optimizer or direct manipulation
+   - Monitor and visualize parameter evolution
+
+3. **Output Generation**:
+   - Export trained Gaussian model as PLY files
+   - Generate parameter statistics and evolution plots
+   - Provide performance metrics (timing, memory usage)
+
 ## 🧪 Testing & Validation
 
 ### 1. Test Data
@@ -129,49 +187,25 @@ python train.py \
 ```
 
 ### 2. Common Issues & Solutions
-1. Tensor Shape Mismatches
-   - Ensure consistent [N,3] vs [3,N] handling
-   - Use .T (transpose) at correct points
+1. **Gradient Flow Issues**:
+   - Ensure all operations maintain gradient flow
+   - Check for `.item()` or `.detach()` calls that break the chain
+   - Monitor gradient magnitudes during backpropagation
    
-2. Device Placement
-   - Set device early in initialization
-   - Use .to(device) consistently
+2. **Parameter Update Problems**:
+   - Use parameter diversity losses to encourage changes
+   - Apply direct parameter updates when gradients fail
+   - Increase learning rates for scaling and rotation parameters
    
-3. Memory Management  
-   - Auto-resize large volumes
-   - Use appropriate point counts
-   - Monitor VRAM usage
+3. **Memory Management**:  
+   - Auto-resize large volumes to prevent OOM errors
+   - Use appropriate point counts based on available VRAM
+   - Batch process large point sets during voxelization
 
-4. Initialization Order
-   - Configure device first
-   - Sample points/scales/opacities
-   - Transform to world space
-   - Initialize model tensors
-
-## 🎛️ Configuration Options
-
-```python
-# Key Parameters
-n_points = 5000  # Number of Gaussian points
-noise_std = 0.01  # Position noise during sampling
-base_scale = 0.01 * (5000 / n_points) ** (1/3)  # Scale based on density
-```
-
-## 📈 Expected Results
-
-1. Initialization should complete without tensor shape/device errors
-2. Point distribution should match volume density
-3. Scales should be appropriate for point density
-4. Transformations should preserve volume structure
-
-## 🗺️ Implementation Path
-
-1. First implement basic volume loading
-2. Add point sampling from masks
-3. Handle tensor shapes carefully
-4. Add world space transforms
-5. Implement volume loss
-6. Add volume supervision to training
+4. **Tensor Shape Consistency**:
+   - Be aware of [N,3] vs [3,N] conventions in different parts
+   - Ensure proper transposition when passing between components
+   - Validate tensor shapes before and after key operations
 
 ## 🧮 Mathematical Background
 
@@ -201,20 +235,90 @@ def transform_points_to_world(points, transform=None, bounds=None):
     """
 ```
 
-## 🔍 Key Files to Modify
+### Parameter Diversity Loss Functions
+```python
+# Scale Diversity: Encourage anisotropic scaling
+def compute_scale_diversity_loss(scales):
+    # Variance across dimensions should be high
+    scale_var = torch.var(scales, dim=1).mean()
+    return -scale_var  # Negative to maximize variance
+    
+# Rotation Diversity: Encourage non-identity rotations
+def compute_rotation_diversity_loss(rotations):
+    # Identity quaternion is [1,0,0,0]
+    identity = torch.tensor([1.0, 0.0, 0.0, 0.0], device=rotations.device)
+    # Distance from identity should be high
+    dist_from_identity = 1.0 - torch.abs(torch.sum(rotations * identity, dim=1))
+    return -dist_from_identity.mean()  # Negative to maximize distance
+```
+
+## ✅ Implementation Status
+
+### Completed Features
+1. **Volume Data Loading**:
+   - Support for multiple volume formats (.nii, .mhd, .npy)
+   - Auto-resizing of volumes to prevent memory overflow
+   - Proper normalization and preprocessing
+
+2. **Volume-Based Initialization**:
+   - Sampling points based on volume/mask intensity
+   - Setting initial parameters based on point cloud density
+   - Efficient initialization with proper device management
+
+3. **Volume Supervision**:
+   - Multiple loss functions for volume supervision
+   - Efficient batch processing for voxelization
+   - Proper handling of gradient flow
+
+4. **Parameter Diversity**:
+   - Scale diversity losses to encourage anisotropic scaling
+   - Rotation diversity losses to avoid identity rotations
+   - Parameter monitoring and visualization during training
+
+### Current Limitations and Ongoing Work
+1. **Gradient Flow Issues**:
+   - Gradients sometimes fail to flow to all parameters
+   - Current workaround uses direct parameter updates
+   - Need to identify and fix root causes in computation graph
+
+2. **Performance Optimization**:
+   - Large volumes still require significant memory
+   - Voxelization process is computationally expensive
+   - Opportunity for further batching and optimization
+
+3. **Evaluation Metrics**:
+   - Need more comprehensive evaluation of resulting models
+   - Comparison with traditional 3DGS on medical data
+   - Integration with downstream medical visualization tools
+
+## 🔍 Key Files Modified
 
 1. `train.py`
-   - Add volume supervision options
-   - Initialize from volume/mask
+   - Added volume supervision options
+   - Implemented parameter diversity losses
+   - Added parameter monitoring and direct updates
    
 2. `gaussian_splatting/utils/volume_initializer.py`
-   - Point sampling
-   - Model initialization
+   - Implemented point sampling from volumes/masks
+   - Created efficient parameter initialization
+   - Refactored for better code organization and reuse
    
 3. `gaussian_splatting/data/volume_loader.py`
-   - Volume loading
-   - Auto-resizing
+   - Added support for multiple volume formats
+   - Implemented auto-resizing and preprocessing
+   - Added safety checks and error handling
    
 4. `gaussian_splatting/losses/volume_loss.py`
-   - Volume loss computation
-   - Loss type implementations
+   - Implemented multiple volume loss functions
+   - Ensured gradient flow throughout the computation
+   - Added support for different comparison metrics
+
+5. `gaussian_splatting/losses/parameter_diversity_loss.py`
+   - Added scale diversity loss components
+   - Implemented rotation diversity loss
+   - Created combined parameter diversity loss
+
+6. `utils/parameter_monitoring.py`
+   - Created parameter tracking and visualization
+   - Added statistics collection and reporting
+   - Implemented diagnostic tools for optimization
