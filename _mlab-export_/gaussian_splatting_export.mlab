@@ -35,8 +35,8 @@ module OffscreenRenderer {
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1869 737 296 370"
-        relativePosition = "0.0863 0.0302"
+        geometry = "1867 737 296 370"
+        relativePosition = "0.0858 0.0302"
         sizeHint = "268 370"
         wasOpen = no
       }
@@ -45,7 +45,7 @@ module OffscreenRenderer {
   fields {
     instanceName = OffscreenRenderer
     transparencyType = BLEND
-    imageType = RGB
+    imageType = RGBA
     bufferType = AUTO
     stencilBuffer = FALSE
     size = "1024 1024"
@@ -266,8 +266,8 @@ module ImageSave {
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1406 550 595 490"
-        relativePosition = "-0.0047 -0.1042"
+        geometry = "1405 549 595 490"
+        relativePosition = "-0.0049 -0.1049"
         sizeHint = "407 490"
         wasOpen = no
       }
@@ -276,9 +276,9 @@ module ImageSave {
   fields {
     instanceName = ImageSave
     taskVerboseLogging = FALSE
-    filename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_/images/99.jpg
+    filename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_/images/99.png
     addFileExtension = TRUE
-    format = JPG
+    format = PNG
     comment = MeVisLab
     allowOverwrite = TRUE
     autoFilename = FALSE
