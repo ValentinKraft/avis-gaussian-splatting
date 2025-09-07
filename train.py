@@ -144,14 +144,11 @@ def training(
         #     gaussians.intensities = torch.ones((num_points, 1), device="cuda") * 0.5
         #     print(f"Initialized {num_points} intensity values to 0.5")
 
-    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
-    depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
+    # use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE
+    # depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
 
     # Initialize viewpoints based on supervision type
     # viewpoint_stack = scene.getTrainCameras().copy() if opt.rgb_supervision else []
@@ -159,7 +156,7 @@ def training(
 
     # Initialize tracking variables
     ema_loss_for_log = 0.0
-    ema_Ll1depth_for_log = 0.0
+    # ema_Ll1depth_for_log = 0.0
     ema_vol_loss_for_log = 0.0
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
@@ -175,9 +172,9 @@ def training(
 
         # Initialize total loss
         loss = 0.0
-
         # Volume supervision loss
         volume_loss = 0.0
+
         if volume_supervisor is not None:
             # Compute the volume loss and get volume gradients for parameter diversity loss
             vol_loss, vol_metrics, vol_gradients = volume_supervisor.compute_loss(
@@ -235,7 +232,7 @@ def training(
                 # Log regularization loss
                 tb_writer.add_scalar("loss/regularization", reg_loss.item(), iteration)
 
-            # Make sure the loss requires gradients before calling backward
+        # Make sure the loss requires gradients before calling backward
         if loss.requires_grad:
             # Make sure parameters require gradients BEFORE calling backward
             # Ensure core parameters keep identity as nn.Parameter (never reassign tensor objects)
@@ -306,17 +303,17 @@ def training(
                     param_stats.get("rot_change_rate", 0.0) if param_stats else 0.0
                 )
 
-            if iteration % 10 == 0:
-                postfix = {
-                    "Loss": f"{ema_loss_for_log:.{5}f}",
-                    "Vol": f"{ema_vol_loss_for_log:.{5}f}",
-                    "Scale": f"{scaling_mean:.{3}f}±{scaling_std:.{3}f}",
-                    "Rot": f"{rotation_magnitude:.{3}f}",
-                    "Δs": f"{scale_change:.{3}f}",
-                    "Δr": f"{rot_change:.{3}f}",
-                }
-                progress_bar.set_postfix(postfix)
-                progress_bar.update(10)
+            # Update progress bar every iteration
+            postfix = {
+                "Loss": f"{ema_loss_for_log:.{5}f}",
+                "Vol": f"{ema_vol_loss_for_log:.{5}f}",
+                "Scale": f"{scaling_mean:.{3}f}±{scaling_std:.{3}f}",
+                "Rot": f"{rotation_magnitude:.{3}f}",
+                "Δs": f"{scale_change:.{3}f}",
+                "Δr": f"{rot_change:.{3}f}",
+            }
+            progress_bar.set_postfix(postfix)
+            progress_bar.update(1)  # Update by 1 each iteration
             if iteration == opt.iterations:
                 progress_bar.close()
 
@@ -394,6 +391,14 @@ def training(
 
             # Generate parameter report on last iteration
             if iteration == opt.iterations:
+                # Force a final parameter update for the report
+                final_stats = parameter_monitor.update(
+                    iteration,
+                    gaussians._xyz,
+                    gaussians.get_scaling,
+                    gaussians.get_rotation,
+                    force=True,  # Force update regardless of log interval
+                )
                 parameter_monitor.final_report()
                 print(
                     "\nParameter monitoring report saved to:",
