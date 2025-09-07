@@ -159,7 +159,9 @@ def training(
     # ema_Ll1depth_for_log = 0.0
     ema_vol_loss_for_log = 0.0
 
-    progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
+    progress_bar = tqdm(
+        range(first_iter, opt.iterations), desc="#### Training progress ####"
+    )
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
         # Skip GUI network in volume-only mode
