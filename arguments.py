@@ -43,7 +43,7 @@ class OptimizationParams:
         self.rgb_supervision = True
         self.volume_supervision = False
         self.volume_path = ""
-        self.volume_loss_type = "dice"
+        self.volume_loss_type = "mse"
         self.volume_loss_weight = 1.0
         self.volume_shape = [64, 64, 64]
         self.volume_transform = ""

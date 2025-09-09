@@ -192,24 +192,24 @@ def training(
             # Configure loss weights based on training stage
             # Use stronger weights for parameter diversity to force gradient flow
             # Temporarily increased for testing
-            scale_diversity_weight = 0.5
-            rotation_diversity_weight = 0.5
+            scale_diversity_weight = 0.05
+            rotation_diversity_weight = 0.05
 
             # Add parameter diversity losses to encourage scaling and rotation diversity
             # This includes scale diversity, orthogonality, target range, quaternion dispersion,
             # rotation entropy, and principal direction alignment
-            reg_loss = add_parameter_regularization_loss(
-                model=gaussians,
-                loss=loss,
-                scale_diversity_weight=scale_diversity_weight,
-                rotation_diversity_weight=rotation_diversity_weight,
-                scale_variance_weight=0.2,
-                target_range_weight=0.2,
-                dispersion_weight=0.2,
-                alignment_weight=0.2,
-                volume_gradients=vol_gradients,
-            )
-            loss = reg_loss  # Use the regularized loss
+            # reg_loss = add_parameter_regularization_loss(
+            #     model=gaussians,
+            #     loss=loss,
+            #     scale_diversity_weight=scale_diversity_weight,
+            #     rotation_diversity_weight=rotation_diversity_weight,
+            #     scale_variance_weight=0.2,
+            #     target_range_weight=0.2,
+            #     dispersion_weight=0.2,
+            #     alignment_weight=0.2,
+            #     volume_gradients=vol_gradients,
+            # )
+            # loss = reg_loss  # Use the regularized loss
 
             # Track parameter statistics for monitoring
             param_stats = parameter_monitor.update(
@@ -232,7 +232,7 @@ def training(
                     "diversity/rotation_weight", rotation_diversity_weight, iteration
                 )
                 # Log regularization loss
-                tb_writer.add_scalar("loss/regularization", reg_loss.item(), iteration)
+                # tb_writer.add_scalar("loss/regularization", reg_loss.item(), iteration)
 
         # Make sure the loss requires gradients before calling backward
         if loss.requires_grad:
@@ -250,7 +250,7 @@ def training(
                     p.requires_grad_(True)
 
             # Call backward with create_graph=True to allow for higher order gradients
-            loss.backward(create_graph=True)
+            loss.backward()
 
             # Debug gradients
             if iteration % 10 == 0:  # Check more frequently

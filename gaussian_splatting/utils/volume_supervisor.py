@@ -120,9 +120,10 @@ class VolumeSupervisor:
                     torch.ones((xyz.shape[0], 1), device=xyz.device) * 0.5
                 )
 
-        # Update values every 10 iterations or when they're not initialized
+        # Initialize values only once - do not resample during training to preserve gradients
         iteration = getattr(self, "iteration", 0)
-        if iteration % 10 == 0 or gaussians.intensities[0, 0] == 0.5:
+        # Only update on first iteration or when intensities are uninitialized
+        if iteration == 0 or gaussians.intensities[0, 0] == 0.5:
             # Check if we have a mask for opacity
             if hasattr(self, 'mask_volume') and self.mask_volume is not None:
                 # Update both intensities and opacities
