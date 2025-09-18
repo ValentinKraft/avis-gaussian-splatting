@@ -51,6 +51,13 @@ class ParameterMonitor:
             "delta_mean": [],
             "delta_max": []
         }
+        
+        # Track loss values
+        self.loss_history = {
+            "total": [],
+            "volume": [],
+            "regularization": []
+        }
 
         # Track previous positions for measuring change
         self.prev_positions = None
@@ -65,6 +72,9 @@ class ParameterMonitor:
         scaling: torch.Tensor,
         rotation: torch.Tensor,
         force: bool = False,
+        loss: float = None,
+        volume_loss: float = None,
+        reg_loss: float = None,
     ) -> Dict[str, float]:
         """
         Update parameter statistics and track changes.
@@ -75,6 +85,9 @@ class ParameterMonitor:
             scaling: Current scaling parameters [N, 3]
             rotation: Current rotation quaternions [N, 4]
             force: Force update even if not at log interval
+            loss: Total loss value (optional)
+            volume_loss: Volume supervision loss component (optional)
+            reg_loss: Regularization loss component (optional)
 
         Returns:
             Dictionary of current statistics
@@ -151,6 +164,19 @@ class ParameterMonitor:
 
             rot_change = (self.rotation_history["std"][-1] - self.rotation_history["std"][-3])
             current_stats["rot_change_rate"] = rot_change
+            
+        # Track loss values if provided
+        if loss is not None:
+            self.loss_history["total"].append(loss)
+            current_stats["loss"] = loss
+            
+        if volume_loss is not None:
+            self.loss_history["volume"].append(volume_loss)
+            current_stats["volume_loss"] = volume_loss
+            
+        if reg_loss is not None:
+            self.loss_history["regularization"].append(reg_loss)
+            current_stats["reg_loss"] = reg_loss
 
         return current_stats
 
@@ -161,84 +187,119 @@ class ParameterMonitor:
         Args:
             iteration: Current iteration number
         """
-        # Path for saving the visualization
-        viz_path = os.path.join(self.output_path, "parameter_stats", f"params_{iteration:06d}.png")
-
-        # Create a 2x2 subplot
-        fig, axs = plt.subplots(2, 2, figsize=(15, 10))
-
+        # Path for saving the combined visualization
+        viz_path = os.path.join(self.output_path, "parameter_stats", "params_combined.png")
+        
+        # Create a 3x2 subplot for all parameters and loss
+        fig, axs = plt.subplots(3, 2, figsize=(18, 14))
+        
         # Plot scaling statistics
-        axs[0, 0].plot(self.iterations, self.scaling_history["mean"], label="Mean")
+        axs[0, 0].plot(self.iterations, self.scaling_history["mean"], label="Mean", color='blue', linewidth=2)
         axs[0, 0].fill_between(
             self.iterations,
             np.array(self.scaling_history["mean"]) - np.array(self.scaling_history["std"]),
             np.array(self.scaling_history["mean"]) + np.array(self.scaling_history["std"]),
-            alpha=0.3
+            alpha=0.3, color='blue'
         )
-        axs[0, 0].set_title("Scaling Parameters")
-        axs[0, 0].set_xlabel("Iteration")
-        axs[0, 0].set_ylabel("Scale Value")
-        axs[0, 0].legend()
+        axs[0, 0].set_title("Scaling Parameters", fontsize=14)
+        axs[0, 0].set_xlabel("Iteration", fontsize=12)
+        axs[0, 0].set_ylabel("Scale Value", fontsize=12)
+        axs[0, 0].legend(fontsize=10)
+        axs[0, 0].grid(True, linestyle='--', alpha=0.7)
 
         # Plot per-axis scaling
         if len(self.scaling_history["x"]) > 0:
-            axs[0, 1].plot(self.iterations, self.scaling_history["x"], label="X Scale")
-            axs[0, 1].plot(self.iterations, self.scaling_history["y"], label="Y Scale")
-            axs[0, 1].plot(self.iterations, self.scaling_history["z"], label="Z Scale")
-            axs[0, 1].set_title("Per-Axis Scaling")
-            axs[0, 1].set_xlabel("Iteration")
-            axs[0, 1].set_ylabel("Scale Value")
-            axs[0, 1].legend()
+            axs[0, 1].plot(self.iterations, self.scaling_history["x"], label="X Scale", color='red', linewidth=2)
+            axs[0, 1].plot(self.iterations, self.scaling_history["y"], label="Y Scale", color='green', linewidth=2)
+            axs[0, 1].plot(self.iterations, self.scaling_history["z"], label="Z Scale", color='blue', linewidth=2)
+            axs[0, 1].set_title("Per-Axis Scaling", fontsize=14)
+            axs[0, 1].set_xlabel("Iteration", fontsize=12)
+            axs[0, 1].set_ylabel("Scale Value", fontsize=12)
+            axs[0, 1].legend(fontsize=10)
+            axs[0, 1].grid(True, linestyle='--', alpha=0.7)
 
         # Plot rotation statistics
-        axs[1, 0].plot(self.iterations, self.rotation_history["mean"], label="Mean")
-        axs[1, 0].plot(self.iterations, self.rotation_history["std"], label="Std Dev")
-        axs[1, 0].set_title("Rotation Parameters")
-        axs[1, 0].set_xlabel("Iteration")
-        axs[1, 0].set_ylabel("Rotation Value")
-        axs[1, 0].legend()
+        axs[1, 0].plot(self.iterations, self.rotation_history["mean"], label="Mean", color='purple', linewidth=2)
+        axs[1, 0].plot(self.iterations, self.rotation_history["std"], label="Std Dev", color='magenta', linewidth=2)
+        axs[1, 0].set_title("Rotation Parameters", fontsize=14)
+        axs[1, 0].set_xlabel("Iteration", fontsize=12)
+        axs[1, 0].set_ylabel("Rotation Value", fontsize=12)
+        axs[1, 0].legend(fontsize=10)
+        axs[1, 0].grid(True, linestyle='--', alpha=0.7)
 
         # Plot quaternion components
         if len(self.rotation_history["w"]) > 0:
-            axs[1, 1].plot(self.iterations, self.rotation_history["w"], label="W")
-            axs[1, 1].plot(self.iterations, self.rotation_history["x"], label="X")
-            axs[1, 1].plot(self.iterations, self.rotation_history["y"], label="Y")
-            axs[1, 1].plot(self.iterations, self.rotation_history["z"], label="Z")
-            axs[1, 1].set_title("Quaternion Components")
-            axs[1, 1].set_xlabel("Iteration")
-            axs[1, 1].set_ylabel("Component Value")
-            axs[1, 1].legend()
+            axs[1, 1].plot(self.iterations, self.rotation_history["w"], label="W", color='red', linewidth=2)
+            axs[1, 1].plot(self.iterations, self.rotation_history["x"], label="X", color='green', linewidth=2)
+            axs[1, 1].plot(self.iterations, self.rotation_history["y"], label="Y", color='blue', linewidth=2)
+            axs[1, 1].plot(self.iterations, self.rotation_history["z"], label="Z", color='purple', linewidth=2)
+            axs[1, 1].set_title("Quaternion Components", fontsize=14)
+            axs[1, 1].set_xlabel("Iteration", fontsize=12)
+            axs[1, 1].set_ylabel("Component Value", fontsize=12)
+            axs[1, 1].legend(fontsize=10)
+            axs[1, 1].grid(True, linestyle='--', alpha=0.7)
 
-        plt.tight_layout()
-        plt.savefig(viz_path)
-        plt.close(fig)
-
-        # Also plot position changes if available
+        # Plot position changes if available
         if len(self.position_history["delta_mean"]) >= 2:
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.plot(
-                self.iterations[1:], 
+            plot_iterations = self.iterations[1:] if len(self.iterations) > len(self.position_history["delta_mean"]) else self.iterations
+            axs[2, 0].plot(
+                plot_iterations, 
                 self.position_history["delta_mean"], 
-                label="Mean Position Change"
+                label="Mean Position Change", 
+                color='orange',
+                linewidth=2
             )
-            ax.plot(
-                self.iterations[1:], 
+            axs[2, 0].plot(
+                plot_iterations, 
                 self.position_history["delta_max"], 
-                label="Max Position Change"
+                label="Max Position Change",
+                color='red',
+                linewidth=2
             )
-            ax.set_title("Position Changes Between Iterations")
-            ax.set_xlabel("Iteration")
-            ax.set_ylabel("Change Magnitude")
-            ax.legend()
-
-            pos_viz_path = os.path.join(
-                self.output_path, 
-                "parameter_stats", 
-                f"position_changes_{iteration:06d}.png"
-            )
-            plt.tight_layout()
-            plt.savefig(pos_viz_path)
-            plt.close(fig)
+            axs[2, 0].set_title("Position Changes Between Iterations", fontsize=14)
+            axs[2, 0].set_xlabel("Iteration", fontsize=12)
+            axs[2, 0].set_ylabel("Change Magnitude", fontsize=12)
+            axs[2, 0].legend(fontsize=10)
+            axs[2, 0].grid(True, linestyle='--', alpha=0.7)
+        
+        # Plot loss values if available
+        if len(self.loss_history["total"]) > 0:
+            # Make sure we use the same number of points for x and y axes
+            iterations_for_loss = self.iterations[:len(self.loss_history["total"])]
+            axs[2, 1].plot(iterations_for_loss, self.loss_history["total"], label="Total Loss", color='red', linewidth=2)
+            
+            # Plot volume loss component if available
+            if len(self.loss_history["volume"]) > 0:
+                iterations_for_volume = self.iterations[:len(self.loss_history["volume"])]
+                axs[2, 1].plot(iterations_for_volume, self.loss_history["volume"], label="Volume Loss", color='blue', linewidth=2)
+                
+            # Plot regularization loss component if available
+            if len(self.loss_history["regularization"]) > 0:
+                iterations_for_reg = self.iterations[:len(self.loss_history["regularization"])]
+                axs[2, 1].plot(iterations_for_reg, self.loss_history["regularization"], label="Regularization", color='green', linewidth=2)
+                
+            axs[2, 1].set_title("Loss Evolution", fontsize=14)
+            axs[2, 1].set_xlabel("Iteration", fontsize=12)
+            axs[2, 1].set_ylabel("Loss Value", fontsize=12)
+            axs[2, 1].legend(fontsize=10)
+            axs[2, 1].grid(True, linestyle='--', alpha=0.7)
+            
+            # Use log scale for loss if values vary significantly
+            if max(self.loss_history["total"]) / (min(self.loss_history["total"]) + 1e-10) > 100:
+                axs[2, 1].set_yscale('log')
+        else:
+            axs[2, 1].text(0.5, 0.5, 'No loss data available', 
+                          horizontalalignment='center', verticalalignment='center',
+                          transform=axs[2, 1].transAxes, fontsize=12)
+        
+        # Add a title with timestamp
+        current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+        plt.suptitle(f"Parameter Evolution - Last Updated: {current_time} (Iteration {iteration})", fontsize=16)
+        
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.95)
+        plt.savefig(viz_path, dpi=100)
+        plt.close(fig)
 
     def final_report(self):
         """Generate a final report of parameter changes over training."""

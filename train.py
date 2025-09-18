@@ -216,7 +216,10 @@ def training(
                 iteration, 
                 gaussians._xyz,
                 gaussians.get_scaling,
-                gaussians.get_rotation
+                gaussians.get_rotation,
+                loss=loss.item(),
+                volume_loss=vol_loss.item() if vol_loss is not None else None,
+                reg_loss=None  # No regularization loss yet
             )
 
             # Log volume metrics
@@ -400,6 +403,9 @@ def training(
                     gaussians.get_scaling,
                     gaussians.get_rotation,
                     force=True,  # Force update regardless of log interval
+                    loss=loss.item(),
+                    volume_loss=vol_loss.item() if vol_loss is not None else None,
+                    reg_loss=None  # No regularization loss yet
                 )
                 parameter_monitor.final_report()
                 print(
