@@ -649,16 +649,16 @@ class GaussianModel:
         ):
             print("Using provided features for volume rendering.")
             features_tensor = self._features_dc.detach()
-            print(
-                f"Features DC shape before transpose: {features_tensor.shape}, "
-                f"range: [{features_tensor.min().item():.4f}, {features_tensor.max().item():.4f}]"
-            )
+            # print(
+            #     f"Features DC shape before transpose: {features_tensor.shape}, "
+            #     f"range: [{features_tensor.min().item():.4f}, {features_tensor.max().item():.4f}]"
+            # )
             features_tensor = features_tensor.transpose(
                 1, 2
             )  # Change from [N, 1, 3] to [N, 3, 1]
-            print(f"Features DC shape after transpose: {features_tensor.shape}")
+            # print(f"Features DC shape after transpose: {features_tensor.shape}")
             features_tensor = features_tensor.flatten(start_dim=1)  # Change to [N, 3]
-            print(f"Features DC shape after flatten: {features_tensor.shape}")
+            # print(f"Features DC shape after flatten: {features_tensor.shape}")
             f_dc = features_tensor.contiguous().cpu().numpy()
 
             # Check for zero values in f_dc, which indicates an issue
@@ -671,9 +671,9 @@ class GaussianModel:
             # Create colors from intensity values
             f_dc = self._create_colors_from_intensities(num_points)
 
-        print(
-            f"Final f_dc shape: {f_dc.shape}, range: [{f_dc.min():.4f}, {f_dc.max():.4f}]"
-        )
+        # print(
+        #     f"Final f_dc shape: {f_dc.shape}, range: [{f_dc.min():.4f}, {f_dc.max():.4f}]"
+        # )
         print(f"RGB value examples (from features): {f_dc[:5]}")
 
         return f_dc
