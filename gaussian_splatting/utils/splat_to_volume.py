@@ -149,10 +149,13 @@ def splat_to_volume(
         points = points.clone().detach().requires_grad_(True)
 
     # Handle different input formats WITHOUT detaching - we need to keep the computation graph
-    if points.shape[0] == 3:
+    if points.shape[0] == 3 and points.shape[1] != 3:
         # Convert from (3, N) to (N, 3) without breaking gradient chain
         print(f"Converting splats from shape {points.shape} to (N, 3)")
         points_n3 = points.permute(1, 0)  # Use permute instead of T to maintain gradient connections
+
+        # IMPORTANT: Do NOT transform point_opacities and point_intensities
+        # They should remain in (N, 1) or (N,) format, not follow the points transformation
     else:
         # Keep the tensor as is
         points_n3 = points
@@ -225,6 +228,27 @@ def splat_to_volume(
     else:
         rot_mats = None
 
+    # Pre-normalize optional per-point vectors to 1D for consistent slicing
+    if point_opacities is not None:
+        print(f"Original point_opacities shape: {point_opacities.shape}")
+        if point_opacities.ndim == 2:
+            point_opacities = point_opacities.view(-1)
+        elif point_opacities.ndim > 2:
+            point_opacities = point_opacities.view(point_opacities.shape[0], -1)[:, 0]
+        print(f"Normalized point_opacities shape: {point_opacities.shape}")
+
+    if point_intensities is not None:
+        print(f"Original point_intensities shape: {point_intensities.shape}")
+        if point_intensities.ndim == 2:
+            point_intensities = point_intensities.view(-1)
+        elif point_intensities.ndim > 2:
+            point_intensities = point_intensities.view(point_intensities.shape[0], -1)[
+                :, 0
+            ]
+        print(f"Normalized point_intensities shape: {point_intensities.shape}")
+
+    print(f"Total points: {total_points}")
+
     # Flatten grid and chunk to limit memory.
     work_grid = small_grid_points.view(-1, 3)
     G = work_grid.shape[0]
@@ -257,9 +281,9 @@ def splat_to_volume(
 
         weight = torch.ones(Bcur, device=device, dtype=bp.dtype)
         if point_opacities is not None:
-            weight = weight * point_opacities[s:e].view(-1)
+            weight = weight * point_opacities[s:e]
         if point_intensities is not None:
-            weight = weight * point_intensities[s:e].view(-1)
+            weight = weight * point_intensities[s:e]
 
         inv_scales = 1.0 / (scales_batch + 1e-6)  # (B,3)
         contrib_flat = torch.zeros(G, device=device, dtype=bp.dtype)

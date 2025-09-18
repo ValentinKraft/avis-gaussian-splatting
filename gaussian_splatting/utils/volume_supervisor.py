@@ -27,13 +27,15 @@ class VolumeSupervisor:
     - Tracks metrics and optimization progress
     """
 
-    def __init__(self,
-                 volume_path: str,
-                 volume_shape: Tuple[int, int, int] = (64, 64, 64),
-                 mask_path: Optional[str] = None,
-                 loss_type: str = 'dice',
-                 loss_weight: float = 1.0,
-                 device: torch.device = torch.device('cuda')):
+    def __init__(
+        self,
+        volume_path: str,
+        volume_shape: Tuple[int, int, int] = (64, 64, 64),
+        mask_path: Optional[str] = None,
+        loss_type: str = "mse",
+        loss_weight: float = 1.0,
+        device: torch.device = torch.device("cuda"),
+    ):
         """
         Args:
             volume_path: Path to ground truth volume
@@ -122,8 +124,10 @@ class VolumeSupervisor:
 
         # Initialize values only once - do not resample during training to preserve gradients
         iteration = getattr(self, "iteration", 0)
-        # Only update on first iteration or when intensities are uninitialized
-        if iteration == 0 or gaussians.intensities[0, 0] == 0.5:
+        features_initialized = getattr(self, "features_initialized", False)
+
+        # Only update on first iteration when features are not yet initialized
+        if not features_initialized:
             # Check if we have a mask for opacity
             if hasattr(self, 'mask_volume') and self.mask_volume is not None:
                 # Update both intensities and opacities
@@ -131,6 +135,8 @@ class VolumeSupervisor:
             else:
                 # Just update intensities
                 gaussians.update_intensities(self.volume_gt)
+            # Mark as initialized to prevent future updates
+            self.features_initialized = True
         self.iteration = iteration + 1
 
         # Convert gaussians to volume using intensity values
@@ -139,13 +145,60 @@ class VolumeSupervisor:
         if hasattr(gaussians, 'opacities') and gaussians.opacities.numel() > 0:
             use_opacity = gaussians.opacities
 
+        # FIX: Ensure opacity and intensity tensors have correct shape to match number of points
+        # Get the number of points from xyz (whether [3, N] or [N, 3])
+        n_points = xyz.shape[1] if xyz.shape[0] == 3 else xyz.shape[0]
+
+        # Fix opacity tensor shape if needed
+        if use_opacity.shape[0] != n_points:
+            # If we have a shape mismatch, broadcast the opacity to all points
+            if use_opacity.numel() == 3:  # We have exactly 3 values
+                use_opacity = use_opacity.mean() * torch.ones(
+                    (n_points, 1),
+                    device=use_opacity.device,
+                    dtype=use_opacity.dtype,
+                    requires_grad=use_opacity.requires_grad,
+                )
+            else:
+                # Otherwise use the first value and broadcast
+                use_opacity = use_opacity[0] * torch.ones(
+                    (n_points, 1),
+                    device=use_opacity.device,
+                    dtype=use_opacity.dtype,
+                    requires_grad=use_opacity.requires_grad,
+                )
+
+        # Fix intensity tensor shape if needed
+        use_intensities = gaussians.intensities
+        if use_intensities.shape[0] != n_points:
+            if use_intensities.numel() == 3:  # We have exactly 3 values
+                use_intensities = use_intensities.mean() * torch.ones(
+                    (n_points, 1),
+                    device=use_intensities.device,
+                    dtype=use_intensities.dtype,
+                    requires_grad=use_intensities.requires_grad,
+                )
+            else:
+                # Otherwise use the first value and broadcast
+                use_intensities = use_intensities[0] * torch.ones(
+                    (n_points, 1),
+                    device=use_intensities.device,
+                    dtype=use_intensities.dtype,
+                    requires_grad=use_intensities.requires_grad,
+                )
+
+        # Debug tensor shapes before calling splat_to_volume
+        print(
+            f"DEBUG volume_supervisor FIXED: xyz.shape={xyz.shape}, use_opacity.shape={use_opacity.shape}, use_intensities.shape={use_intensities.shape}"
+        )
+
         # Convert gaussians to volume (directly uses parameter tensors for gradient flow)
         volume_pred = splat_to_volume(
             points=xyz,
             point_scales=scaling,
             point_rotations=rotation,
             point_opacities=use_opacity,
-            point_intensities=gaussians.intensities,
+            point_intensities=use_intensities,
             volume_shape=self.volume_shape,
             device=xyz.device,
         )

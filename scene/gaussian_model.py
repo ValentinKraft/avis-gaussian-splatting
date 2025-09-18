@@ -1313,8 +1313,14 @@ class GaussianModel:
 
         # Update intensities based on current positions and scales
         with torch.no_grad():  # No gradients needed for this operation
+            print(
+                f"DEBUG GaussianModel: Before update_intensities, xyz.shape={self.get_xyz.shape}"
+            )
             self.intensities, _, _ = update_intensities(
                 self.get_xyz, volume, self.get_scaling
+            )
+            print(
+                f"DEBUG GaussianModel: After update_intensities, intensities.shape={self.intensities.shape}"
             )
 
         print(
@@ -1344,13 +1350,22 @@ class GaussianModel:
 
         # Update both intensities and opacities based on current positions and scales
         with torch.no_grad():  # No gradients needed for this operation
+            print(
+                f"DEBUG GaussianModel: Before update_intensities_and_opacities, xyz.shape={self.get_xyz.shape}"
+            )
             intensities, opacities, volume_min, volume_max = (
                 update_intensities_and_opacities(
                     self.get_xyz, volume, mask, self.get_scaling, normalize=False
                 )
             )
+            print(
+                f"DEBUG GaussianModel: After update_intensities_and_opacities, intensities.shape={intensities.shape}"
+            )
 
             self.intensities = intensities
+            print(
+                f"DEBUG GaussianModel: After assignment, self.intensities.shape={self.intensities.shape}"
+            )
 
             # Store global min/max values for consistent normalization
             self.volume_min = volume_min
