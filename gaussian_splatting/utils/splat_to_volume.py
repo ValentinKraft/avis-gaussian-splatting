@@ -151,11 +151,9 @@ def splat_to_volume(
     # Handle different input formats WITHOUT detaching - we need to keep the computation graph
     if points.shape[0] == 3 and points.shape[1] != 3:
         # Convert from (3, N) to (N, 3) without breaking gradient chain
-        print(f"Converting splats from shape {points.shape} to (N, 3)")
-        points_n3 = points.permute(1, 0)  # Use permute instead of T to maintain gradient connections
-
-        # IMPORTANT: Do NOT transform point_opacities and point_intensities
-        # They should remain in (N, 1) or (N,) format, not follow the points transformation
+        points_n3 = points.permute(
+            1, 0
+        )  # Use permute instead of T to maintain gradient connections
     else:
         # Keep the tensor as is
         points_n3 = points
@@ -170,12 +168,11 @@ def splat_to_volume(
     volume = torch.zeros(volume_shape, device=device)
 
     # Process splats in batches to save memory
-    batch_size = min(batch_size, 50)  # Limit batch size to avoid OOM
+    batch_size = min(batch_size, 100)  # Increased batch size for better performance
     num_batches = (total_points + batch_size - 1) // batch_size
-    # No console spam per batch
 
     # Use smaller grid resolution for memory efficiency if we have many points
-    if total_points > 2000:
+    if total_points > 1000:
         # Create a smaller working grid for initial calculations
         small_shape = tuple(max(16, d // 2) for d in volume_shape)
         # Only create the grid once and reuse it
@@ -230,24 +227,18 @@ def splat_to_volume(
 
     # Pre-normalize optional per-point vectors to 1D for consistent slicing
     if point_opacities is not None:
-        print(f"Original point_opacities shape: {point_opacities.shape}")
         if point_opacities.ndim == 2:
             point_opacities = point_opacities.view(-1)
         elif point_opacities.ndim > 2:
             point_opacities = point_opacities.view(point_opacities.shape[0], -1)[:, 0]
-        print(f"Normalized point_opacities shape: {point_opacities.shape}")
 
     if point_intensities is not None:
-        print(f"Original point_intensities shape: {point_intensities.shape}")
         if point_intensities.ndim == 2:
             point_intensities = point_intensities.view(-1)
         elif point_intensities.ndim > 2:
             point_intensities = point_intensities.view(point_intensities.shape[0], -1)[
                 :, 0
             ]
-        print(f"Normalized point_intensities shape: {point_intensities.shape}")
-
-    print(f"Total points: {total_points}")
 
     # Flatten grid and chunk to limit memory.
     work_grid = small_grid_points.view(-1, 3)

@@ -24,6 +24,7 @@ from gaussian_splatting.utils.parameter_monitor import (
     ParameterMonitor,
 )
 from utils.parameter_monitoring import add_parameter_regularization_loss
+from torch.cuda.amp import autocast, GradScaler
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -61,8 +62,10 @@ def training(
         0, opt.optimizer_type
     )  # Use degree 0 for volume-only training
 
-    # Initialize parameter monitoring
-    parameter_monitor = ParameterMonitor(args.model_path)
+    # Initialize parameter monitoring with increased log interval for better performance
+    parameter_monitor = ParameterMonitor(
+        args.model_path, log_interval=50
+    )  # Changed from default 10 to 50
 
     # Initialize parameter update tracker
     from utils.parameter_update_tracking import ParameterUpdateTracker
@@ -147,17 +150,20 @@ def training(
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    # use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE
-    # depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
-
-    # Initialize viewpoints based on supervision type
-    # viewpoint_stack = scene.getTrainCameras().copy() if opt.rgb_supervision else []
-    # viewpoint_indices = list(range(len(viewpoint_stack))) if opt.rgb_supervision else []
+    # Initialize mixed precision training
+    scaler = GradScaler()
+    use_amp = (
+        not args.disable_mixed_precision
+    )  # Use mixed precision unless explicitly disabled
+    if use_amp:
+        print("Using mixed precision training for better performance")
+    else:
+        print("Mixed precision training disabled")
 
     # Initialize tracking variables
     ema_loss_for_log = 0.0
-    # ema_Ll1depth_for_log = 0.0
     ema_vol_loss_for_log = 0.0
+    param_stats = {"scale_change_rate": 0.0, "rot_change_rate": 0.0}
 
     progress_bar = tqdm(
         range(first_iter, opt.iterations), desc="#### Training progress ####"
@@ -169,6 +175,7 @@ def training(
         iter_start.record()
 
         gaussians.update_learning_rate(iteration)
+        gaussians.optimizer.zero_grad()
 
         # No SH updates needed for volume-only training
 
@@ -179,13 +186,15 @@ def training(
 
         if volume_supervisor is not None:
             # Compute the volume loss and get volume gradients for parameter diversity loss
-            vol_loss, vol_metrics, vol_gradients = volume_supervisor.compute_loss(
-                gaussians
-            )
+            with autocast(enabled=use_amp):
+                vol_loss, vol_metrics, vol_gradients = volume_supervisor.compute_loss(
+                    gaussians
+                )
 
-            # CRITICAL: Don't call item() on the loss until after backward() is called!
-            # This would break the computation graph
-            loss = vol_loss
+                # CRITICAL: Don't call item() on the loss until after backward() is called!
+                # This would break the computation graph
+                loss = vol_loss
+
             # Store value for logging only
             volume_loss = vol_loss.detach().item()
 
@@ -211,16 +220,20 @@ def training(
             # )
             # loss = reg_loss  # Use the regularized loss
 
-            # Track parameter statistics for monitoring
-            param_stats = parameter_monitor.update(
-                iteration, 
-                gaussians._xyz,
-                gaussians.get_scaling,
-                gaussians.get_rotation,
-                loss=loss.item(),
-                volume_loss=vol_loss.item() if vol_loss is not None else None,
-                reg_loss=None  # No regularization loss yet
-            )
+            # Track parameter statistics for monitoring (only on every 50th iteration)
+            if iteration % 50 == 0:
+                new_stats = parameter_monitor.update(
+                    iteration,
+                    gaussians._xyz,
+                    gaussians.get_scaling,
+                    gaussians.get_rotation,
+                    loss=loss.item(),
+                    volume_loss=vol_loss.item() if vol_loss is not None else None,
+                    reg_loss=None,  # No regularization loss yet
+                )
+                # Update our param_stats dictionary with new values
+                if new_stats:
+                    param_stats.update(new_stats)
 
             # Log volume metrics
             if tb_writer and iteration % 10 == 0:
@@ -252,26 +265,46 @@ def training(
                     )
                     p.requires_grad_(True)
 
-            # Call backward with create_graph=True to allow for higher order gradients
-            loss.backward()
+            # Use gradient scaler for mixed precision training
+            scaler.scale(loss).backward()
 
-            # Debug gradients
-            if iteration % 10 == 0:  # Check more frequently
+            # Debug gradients less frequently to improve performance
+            if iteration % 50 == 0:  # Reduced from every 10th to every 50th iteration
                 # Check if gradients exist and what their magnitudes are
-                if gaussians._xyz.grad is not None:
-                    print(f"XYZ grad norm: {gaussians._xyz.grad.norm().item():.6f}")
-                else:
-                    print("XYZ grad is None!")
+                with torch.no_grad():  # Ensure we don't track unnecessary operations
+                    if gaussians._xyz.grad is not None:
+                        print(f"XYZ grad norm: {gaussians._xyz.grad.norm().item():.6f}")
 
-                if gaussians._scaling.grad is not None:
-                    print(f"Scaling grad norm: {gaussians._scaling.grad.norm().item():.6f}")
-                else:
-                    print("Scaling grad is None!")
+                    if gaussians._scaling.grad is not None:
+                        print(
+                            f"Scaling grad norm: {gaussians._scaling.grad.norm().item():.6f}"
+                        )
 
-                if gaussians._rotation.grad is not None:
-                    print(f"Rotation grad norm: {gaussians._rotation.grad.norm().item():.6f}")
-                else:
-                    print("Rotation grad is None!")
+                    if gaussians._rotation.grad is not None:
+                        print(
+                            f"Rotation grad norm: {gaussians._rotation.grad.norm().item():.6f}"
+                        )
+
+            # Apply optimizer step with gradient scaler
+            scaler.step(gaussians.optimizer)
+            scaler.update()
+
+            # Debug gradients less frequently to improve performance
+            if iteration % 50 == 0:  # Reduced from every 10th to every 50th iteration
+                # Check if gradients exist and what their magnitudes are
+                with torch.no_grad():  # Ensure we don't track unnecessary operations
+                    if gaussians._xyz.grad is not None:
+                        print(f"XYZ grad norm: {gaussians._xyz.grad.norm().item():.6f}")
+
+                    if gaussians._scaling.grad is not None:
+                        print(
+                            f"Scaling grad norm: {gaussians._scaling.grad.norm().item():.6f}"
+                        )
+
+                    if gaussians._rotation.grad is not None:
+                        print(
+                            f"Rotation grad norm: {gaussians._rotation.grad.norm().item():.6f}"
+                        )
 
             # Add a manual gradient perturbation if gradients are zero
             # This is a drastic measure to force parameter updates
@@ -300,13 +333,9 @@ def training(
                 # Simple approximation of rotation "magnitude"
                 rotation_magnitude = torch.norm(rotation[:, 1:], dim=1).mean().item()
 
-                # Calculate changes from previous iterations if we have parameter stats
-                scale_change = (
-                    param_stats.get("scale_change_rate", 0.0) if param_stats else 0.0
-                )
-                rot_change = (
-                    param_stats.get("rot_change_rate", 0.0) if param_stats else 0.0
-                )
+                # Calculate changes from previous iterations
+                scale_change = param_stats.get("scale_change_rate", 0.0)
+                rot_change = param_stats.get("rot_change_rate", 0.0)
 
             # Update progress bar every iteration
             postfix = {
@@ -542,6 +571,11 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
+    parser.add_argument(
+        "--disable_mixed_precision",
+        action="store_true",
+        help="Disable mixed precision training",
+    )
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 

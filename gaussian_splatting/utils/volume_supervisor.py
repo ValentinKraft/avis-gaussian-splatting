@@ -80,14 +80,9 @@ class VolumeSupervisor:
         """
         # Check if xyz requires gradients
         xyz = gaussians.get_xyz
-        print(f"xyz requires_grad: {xyz.requires_grad}")
-        print(f"xyz shape: {xyz.shape}")
 
         # Ensure parameters require gradients
         if not xyz.requires_grad:
-            print(
-                "WARNING: XYZ missing gradients – enabling in-place (no reassignment)."
-            )
             # Enable requires_grad without breaking optimizer reference
             gaussians._xyz.requires_grad_(True)
             xyz = gaussians._xyz
@@ -187,10 +182,7 @@ class VolumeSupervisor:
                     requires_grad=use_intensities.requires_grad,
                 )
 
-        # Debug tensor shapes before calling splat_to_volume
-        print(
-            f"DEBUG volume_supervisor FIXED: xyz.shape={xyz.shape}, use_opacity.shape={use_opacity.shape}, use_intensities.shape={use_intensities.shape}"
-        )
+        # Debug tensor shapes is no longer needed
 
         # Convert gaussians to volume (directly uses parameter tensors for gradient flow)
         volume_pred = splat_to_volume(
