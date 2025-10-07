@@ -289,6 +289,9 @@ def training(
             scaler.step(gaussians.optimizer)
             scaler.update()
 
+            # Enforce maximum scaling constraint (2x initial size)
+            gaussians.enforce_scaling_constraint()
+
             # Debug gradients less frequently to improve performance
             if iteration % 50 == 0:  # Reduced from every 10th to every 50th iteration
                 # Check if gradients exist and what their magnitudes are
@@ -417,6 +420,7 @@ def training(
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
+                gaussians.enforce_scaling_constraint()  # Enforce maximum scaling constraint
                 gaussians.optimizer.zero_grad(set_to_none=True)
 
             if (iteration in checkpoint_iterations):

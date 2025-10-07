@@ -206,6 +206,9 @@ def _setup_model_parameters(
     model._scaling = nn.Parameter(
         torch.log(scales).contiguous().requires_grad_(True)
     )  # [N, 3], model expects log-scales
+    model._initial_scaling = (
+        torch.log(scales).clone().detach()
+    )  # Store initial scales for max size constraint
 
     # Initialize opacity based on whether we're using volume-based opacity or not
     if opacity_values is not None:

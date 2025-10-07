@@ -62,6 +62,10 @@ class GaussianModel:
         self._features_dc = torch.empty(0)  # DC features (0th order SH) [N, 1, 3]
         self._features_rest = torch.empty(0)  # Higher-order SH features [N, ?, 3]
 
+        # Store initial scaling values for maximum size constraint
+        self._initial_scaling = torch.empty(0)  # Initial log-scale values [N, 3]
+        self.max_scale_factor = 3.0  # Maximum allowed scale compared to initial scale
+
         # Runtime state
         self.max_radii2D = torch.empty(0)  # Maximum 2D radii for each point
         self.xyz_gradient_accum = torch.empty(0)
@@ -151,8 +155,18 @@ class GaussianModel:
 
     @property
     def get_scaling(self) -> torch.Tensor:
-        """Get point scaling parameters (converted from log-space)."""
-        return self.scaling_activation(self._scaling)
+        """Get point scaling parameters (converted from log-space) with maximum size constraint."""
+        # Apply maximum scale constraint if initial scales are available
+        if self._initial_scaling.numel() > 0:
+            # Clamp log-scale to ensure exp(log_scale) <= max_scale_factor * exp(initial_log_scale)
+            # This means: log_scale <= log(max_scale_factor) + initial_log_scale
+            max_log_scaling = self._initial_scaling + torch.log(
+                torch.tensor(self.max_scale_factor, device=self._scaling.device)
+            )
+            clamped_scaling = torch.min(self._scaling, max_log_scaling)
+            return self.scaling_activation(clamped_scaling)
+        else:
+            return self.scaling_activation(self._scaling)
 
     @property
     def get_rotation(self) -> torch.Tensor:
@@ -216,6 +230,7 @@ class GaussianModel:
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
             self.intensities,
+            self._initial_scaling,
         )
 
     def restore(self, model_args: tuple, training_args: Any):
@@ -247,6 +262,12 @@ class GaussianModel:
             self.intensities = extra_args[0]
         else:
             self.intensities = torch.empty(0)
+
+        # Restore initial scaling values if available
+        if len(extra_args) > 1:
+            self._initial_scaling = extra_args[1]
+        else:
+            self._initial_scaling = torch.empty(0)
 
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
@@ -358,6 +379,21 @@ class GaussianModel:
                 return lr
         return 0.0
 
+    def enforce_scaling_constraint(self):
+        """
+        Enforce maximum scaling constraint by clamping scaling parameters.
+        This ensures no Gaussian can grow larger than 2x its initial size.
+        Should be called after optimizer.step().
+        """
+        if self._initial_scaling.numel() > 0:
+            with torch.no_grad():
+                # Calculate maximum allowed log-scale value
+                max_log_scaling = self._initial_scaling + torch.log(
+                    torch.tensor(self.max_scale_factor, device=self._scaling.device)
+                )
+                # Clamp the scaling parameter to not exceed maximum
+                self._scaling.data = torch.min(self._scaling.data, max_log_scaling)
+
     def oneupSHdegree(self):
         """Increase spherical harmonics degree by one, if below maximum."""
         if self.active_sh_degree < self.max_sh_degree:
@@ -426,6 +462,9 @@ class GaussianModel:
             features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True)
         )
         self._scaling = nn.Parameter(scales.requires_grad_(True))
+        self._initial_scaling = (
+            scales.clone().detach()
+        )  # Store initial scales for max size constraint
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
