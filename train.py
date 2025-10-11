@@ -292,6 +292,50 @@ def training(
             # Enforce maximum scaling constraint (2x initial size)
             gaussians.enforce_scaling_constraint()
 
+            # Adaptive density control for volume-based training
+            with torch.no_grad():
+                # For volume-based training, use position gradients instead of viewspace gradients
+                if (
+                    iteration >= opt.densify_from_iter
+                    and iteration <= opt.densify_until_iter
+                ):
+                    # Accumulate gradients for densification (every iteration during densification period)
+                    if gaussians._xyz.grad is not None:
+                        # _xyz has shape [3, N], so grad also has shape [3, N]
+                        # Compute norm across the 3D dimension (dim=0) to get magnitude per point
+                        # Result shape: [N]
+                        xyz_grad_norm = torch.norm(
+                            gaussians._xyz.grad, dim=0, keepdim=False
+                        )
+                        # Reshape to [N, 1] to match xyz_gradient_accum shape
+                        xyz_grad_norm = xyz_grad_norm.unsqueeze(1)
+                        gaussians.xyz_gradient_accum += xyz_grad_norm
+                        gaussians.denom += 1
+
+                    # Perform densification and pruning at intervals
+                    if iteration % opt.densification_interval == 0:
+                        # Get scene extent (use a default if not available)
+                        extent = (
+                            dataset.cameras_extent
+                            if hasattr(dataset, "cameras_extent")
+                            else 1.0
+                        )
+
+                        # Perform densification and pruning
+                        gaussians.densify_and_prune(
+                            max_grad=opt.densify_grad_threshold,
+                            min_opacity=0.005,  # Lower threshold for volume-based training
+                            extent=extent,
+                            max_screen_size=None,  # No screen size limit for volume training
+                            radii=None,  # No radii for volume training
+                        )
+
+                        # Log densification
+                        if iteration % 100 == 0 or iteration == opt.densify_from_iter:
+                            print(
+                                f"\n[ITER {iteration}] Densification: {gaussians._xyz.shape[1]} points"
+                            )
+
             # Debug gradients less frequently to improve performance
             if iteration % 50 == 0:  # Reduced from every 10th to every 50th iteration
                 # Check if gradients exist and what their magnitudes are

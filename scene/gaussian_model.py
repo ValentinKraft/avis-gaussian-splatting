@@ -64,7 +64,7 @@ class GaussianModel:
 
         # Store initial scaling values for maximum size constraint
         self._initial_scaling = torch.empty(0)  # Initial log-scale values [N, 3]
-        self.max_scale_factor = 3.0  # Maximum allowed scale compared to initial scale
+        self.max_scale_factor = 4.0  # Maximum allowed scale compared to initial scale
 
         # Runtime state
         self.max_radii2D = torch.empty(0)  # Maximum 2D radii for each point
@@ -282,8 +282,9 @@ class GaussianModel:
             training_args: Training arguments for optimizer setup
         """
         self.percent_dense = training_args.percent_dense
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        # _xyz has shape [3, N], so use shape[1] to get number of points
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[1], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[1], 1), device="cuda")
 
         # Initialize empty optimizer parameters list
         optimizer_params = self._create_optimizer_param_groups(training_args)
@@ -995,18 +996,44 @@ class GaussianModel:
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             stored_state = self.optimizer.state.get(group["params"][0])
-            if stored_state is not None:
-                stored_state["exp_avg"] = stored_state["exp_avg"][mask]
-                stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
 
-                del self.optimizer.state[group['params'][0]]
-                group["params"][0] = nn.Parameter((group["params"][0][mask].requires_grad_(True)))
-                self.optimizer.state[group['params'][0]] = stored_state
+            # Special handling for xyz which has shape [3, N] instead of [N, ...]
+            if group["name"] == "xyz":
+                # For xyz with shape [3, N], index along dimension 1
+                if stored_state is not None:
+                    stored_state["exp_avg"] = stored_state["exp_avg"][:, mask]
+                    stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][:, mask]
 
-                optimizable_tensors[group["name"]] = group["params"][0]
+                    del self.optimizer.state[group["params"][0]]
+                    group["params"][0] = nn.Parameter(
+                        (group["params"][0][:, mask].requires_grad_(True))
+                    )
+                    self.optimizer.state[group["params"][0]] = stored_state
+
+                    optimizable_tensors[group["name"]] = group["params"][0]
+                else:
+                    group["params"][0] = nn.Parameter(
+                        group["params"][0][:, mask].requires_grad_(True)
+                    )
+                    optimizable_tensors[group["name"]] = group["params"][0]
             else:
-                group["params"][0] = nn.Parameter(group["params"][0][mask].requires_grad_(True))
-                optimizable_tensors[group["name"]] = group["params"][0]
+                # For other parameters with shape [N, ...], index along dimension 0
+                if stored_state is not None:
+                    stored_state["exp_avg"] = stored_state["exp_avg"][mask]
+                    stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
+
+                    del self.optimizer.state[group["params"][0]]
+                    group["params"][0] = nn.Parameter(
+                        (group["params"][0][mask].requires_grad_(True))
+                    )
+                    self.optimizer.state[group["params"][0]] = stored_state
+
+                    optimizable_tensors[group["name"]] = group["params"][0]
+                else:
+                    group["params"][0] = nn.Parameter(
+                        group["params"][0][mask].requires_grad_(True)
+                    )
+                    optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
     def prune_points(self, mask: torch.Tensor):
@@ -1021,8 +1048,8 @@ class GaussianModel:
 
         # Update model parameters
         self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        self._features_rest = optimizable_tensors["f_rest"]
+        self._features_dc = optimizable_tensors.get("f_dc", self._features_dc)
+        self._features_rest = optimizable_tensors.get("f_rest", self._features_rest)
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
@@ -1033,11 +1060,45 @@ class GaussianModel:
         self.max_radii2D = self.max_radii2D[valid_points_mask]
 
         # Update volume-specific attributes
-        if hasattr(self, "intensities") and self.intensities.numel() > 0:
-            self.intensities = self.intensities[valid_points_mask]
+        if (
+            hasattr(self, "intensities")
+            and self.intensities is not None
+            and self.intensities.numel() > 0
+        ):
+            # Check if intensities size matches the current point count
+            current_point_count = valid_points_mask.shape[0]
+            if self.intensities.shape[0] == current_point_count:
+                self.intensities = self.intensities[valid_points_mask]
+            else:
+                # Size mismatch - recreate intensities to match current points
+                print(
+                    f"Warning: intensities size mismatch. Expected {current_point_count}, got {self.intensities.shape[0]}. Recreating."
+                )
+                remaining_point_count = valid_points_mask.sum().item()
+                self.intensities = torch.zeros(
+                    (remaining_point_count, 1), device="cuda"
+                )
 
-        if hasattr(self, "opacities") and self.opacities.numel() > 0:
-            self.opacities = self.opacities[valid_points_mask]
+        if (
+            hasattr(self, "opacities")
+            and self.opacities is not None
+            and self.opacities.numel() > 0
+        ):
+            # Check if opacities size matches the current point count
+            current_point_count = valid_points_mask.shape[0]
+            if self.opacities.shape[0] == current_point_count:
+                self.opacities = self.opacities[valid_points_mask]
+            else:
+                # Size mismatch - recreate opacities to match current points
+                print(
+                    f"Warning: opacities size mismatch. Expected {current_point_count}, got {self.opacities.shape[0]}. Recreating."
+                )
+                remaining_point_count = valid_points_mask.sum().item()
+                self.opacities = torch.zeros((remaining_point_count, 1), device="cuda")
+
+        # Update initial scaling for max constraint
+        if hasattr(self, "_initial_scaling") and self._initial_scaling.numel() > 0:
+            self._initial_scaling = self._initial_scaling[valid_points_mask]
 
     def cat_tensors_to_optimizer(
         self, tensors_dict: Dict[str, torch.Tensor]
@@ -1059,21 +1120,25 @@ class GaussianModel:
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group["params"][0])
 
+            # Special handling for xyz which has shape [3, N] instead of [N, 3]
+            concat_dim = 1 if group["name"] == "xyz" else 0
+
             if stored_state is not None:
                 # Update optimizer state
                 stored_state["exp_avg"] = torch.cat(
-                    (stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0
+                    (stored_state["exp_avg"], torch.zeros_like(extension_tensor)),
+                    dim=concat_dim,
                 )
                 stored_state["exp_avg_sq"] = torch.cat(
                     (stored_state["exp_avg_sq"], torch.zeros_like(extension_tensor)),
-                    dim=0,
+                    dim=concat_dim,
                 )
 
                 # Replace parameter in optimizer
                 del self.optimizer.state[group['params'][0]]
                 group["params"][0] = nn.Parameter(
                     torch.cat(
-                        (group["params"][0], extension_tensor), dim=0
+                        (group["params"][0], extension_tensor), dim=concat_dim
                     ).requires_grad_(True)
                 )
                 self.optimizer.state[group['params'][0]] = stored_state
@@ -1081,7 +1146,7 @@ class GaussianModel:
                 # No state to update, just concatenate
                 group["params"][0] = nn.Parameter(
                     torch.cat(
-                        (group["params"][0], extension_tensor), dim=0
+                        (group["params"][0], extension_tensor), dim=concat_dim
                     ).requires_grad_(True)
                 )
 
@@ -1111,38 +1176,70 @@ class GaussianModel:
             new_rotation: New rotation values
             new_tmp_radii: New temporary radii (unused)
         """
-        # Prepare dictionary of new tensors
+        # Prepare dictionary of new tensors - only include those that are in the optimizer
         new_tensors = {
             "xyz": new_xyz,
-            "f_dc": new_features_dc,
-            "f_rest": new_features_rest,
             "opacity": new_opacities,
             "scaling": new_scaling,
             "rotation": new_rotation,
         }
+
+        # Only add features if they are not None (they are in the optimizer)
+        if new_features_dc is not None:
+            new_tensors["f_dc"] = new_features_dc
+
+        if new_features_rest is not None:
+            new_tensors["f_rest"] = new_features_rest
 
         # Add new tensors to model parameters
         optimizable_tensors = self.cat_tensors_to_optimizer(new_tensors)
         # Mark that parameter topology changed (can be used by outer training loop if needed)
         self._param_topology_changed = True
         self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        self._features_rest = optimizable_tensors["f_rest"]
+        # Only retrieve features if they were added
+        self._features_dc = optimizable_tensors.get("f_dc", self._features_dc)
+        self._features_rest = optimizable_tensors.get("f_rest", self._features_rest)
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        # Reset auxiliary tensors
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        # Reset auxiliary tensors (_xyz has shape [3, N], use shape[1])
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[1], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[1], 1), device="cuda")
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[1]), device="cuda")
 
         # Update volume-specific attributes
-        if hasattr(self, "intensities") and self.intensities.numel() > 0:
-            new_intensities = torch.zeros(
-                (new_xyz.shape[0], 1), device=self.intensities.device
+        if hasattr(self, "intensities") and self.intensities is not None:
+            if self.intensities.numel() > 0:
+                # new_xyz has shape [3, M], so shape[1] gives number of new points
+                new_intensities = torch.zeros(
+                    (new_xyz.shape[1], 1), device=self.intensities.device
+                )
+                self.intensities = torch.cat([self.intensities, new_intensities], dim=0)
+            else:
+                # If intensities is empty, create it to match the current point count
+                current_point_count = self.get_xyz.shape[1]
+                self.intensities = torch.zeros((current_point_count, 1), device="cuda")
+
+        if hasattr(self, "opacities") and self.opacities is not None:
+            if self.opacities.numel() > 0:
+                # new_xyz has shape [3, M], so shape[1] gives number of new points
+                new_opacities_vol = torch.zeros(
+                    (new_xyz.shape[1], 1), device=self.opacities.device
+                )
+                self.opacities = torch.cat([self.opacities, new_opacities_vol], dim=0)
+            else:
+                # If opacities is empty, create it to match the current point count
+                current_point_count = self.get_xyz.shape[1]
+                self.opacities = torch.zeros((current_point_count, 1), device="cuda")
+
+        # Update initial scaling for new points (for max scaling constraint)
+        if hasattr(self, "_initial_scaling") and self._initial_scaling.numel() > 0:
+            # New points inherit their initial scaling values from their current scaling
+            new_initial_scaling = new_scaling.clone().detach()
+            self._initial_scaling = torch.cat(
+                [self._initial_scaling, new_initial_scaling], dim=0
             )
-            self.intensities = torch.cat([self.intensities, new_intensities], dim=0)
 
     def densify_and_split(
         self,
@@ -1160,7 +1257,8 @@ class GaussianModel:
             scene_extent: Scene size for scaling reference
             N: Number of new points per split
         """
-        n_init_points = self.get_xyz.shape[0]
+        # get_xyz returns _xyz which has shape [3, N], so shape[1] gives number of points
+        n_init_points = self.get_xyz.shape[1]
 
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
@@ -1184,23 +1282,52 @@ class GaussianModel:
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)
 
         # Apply rotation and add to original positions
-        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
+        # get_xyz returns [3, N], transpose to [N, 3] for indexing, then back
+        selected_xyz = self.get_xyz[
+            :, selected_pts_mask
+        ].T  # [M, 3] where M is selected count
+        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(
+            -1
+        ) + selected_xyz.repeat(N, 1)
+        # Transpose new_xyz back to [3, N*M] to match _xyz shape
+        new_xyz = new_xyz.T.contiguous()
 
         # Create scaled-down versions of other attributes
         new_scaling = self.scaling_inverse_activation(
             self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N)
         )
         new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
-        new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
+        num_new_points = N * selected_pts_mask.sum().item()
 
-        # Handle rest features (might be empty tensor)
-        if self._features_rest.shape[0] > 0:
-            new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
+        # Handle features - create new features matching the shape of existing ones
+        # Check if f_dc is in the optimizer (not just if it has elements)
+        has_f_dc = any(group["name"] == "f_dc" for group in self.optimizer.param_groups)
+        if has_f_dc and self._features_dc is not None:
+            if self._features_dc.numel() > 0:
+                new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
+            else:
+                # Features exist in optimizer but are empty - create empty features for new points
+                new_features_dc = torch.zeros((num_new_points, 1, 3), device="cuda")
         else:
-            new_features_rest = torch.zeros((0, 0, 0), device="cuda")
+            new_features_dc = None
+
+        # Handle rest features - check if there are actual SH features (shape[1] > 0)
+        has_f_rest = any(
+            group["name"] == "f_rest" for group in self.optimizer.param_groups
+        )
+        if has_f_rest and self._features_rest is not None:
+            if self._features_rest.numel() > 0 and self._features_rest.shape[1] > 0:
+                new_features_rest = self._features_rest[selected_pts_mask].repeat(
+                    N, 1, 1
+                )
+            else:
+                # Features exist in optimizer but are empty - create empty features for new points
+                new_features_rest = torch.zeros((num_new_points, 0, 3), device="cuda")
+        else:
+            new_features_rest = None
 
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
-        new_tmp_radii = torch.zeros((N * selected_pts_mask.sum()), device="cuda")
+        new_tmp_radii = torch.zeros(num_new_points, device="cuda")
 
         # Add new points to the model
         self.densification_postfix(
@@ -1214,16 +1341,16 @@ class GaussianModel:
         )
 
         # Create pruning filter to remove the original points that were split
-        prune_filter = torch.cat(
-            (
-                torch.ones_like(selected_pts_mask),
-                torch.zeros_like(selected_pts_mask).repeat(N),
-            ),
-            dim=0,
-        )
-        prune_filter = torch.where(
-            prune_filter == 1, selected_pts_mask.repeat(N + 1), False
-        )
+        # After densification, we now have original_points + N * split_points
+        current_num_points = self.get_xyz.shape[1]
+        prune_filter = torch.zeros(current_num_points, dtype=torch.bool, device="cuda")
+
+        # Mark original split points for removal
+        # The original split points are at the beginning, new points are at the end
+        num_split_points = selected_pts_mask.sum().item()
+        original_split_indices = torch.where(selected_pts_mask)[0]
+        prune_filter[original_split_indices] = True
+
         self.prune_points(prune_filter)
 
     def densify_and_clone(
@@ -1251,19 +1378,40 @@ class GaussianModel:
         )
 
         # Clone selected points
-        new_xyz = self._xyz[selected_pts_mask]
-        new_features_dc = self._features_dc[selected_pts_mask]
+        # _xyz has shape [3, N], so index along dimension 1
+        new_xyz = self._xyz[:, selected_pts_mask]
+        num_new_points = selected_pts_mask.sum().item()
 
-        # Handle rest features (might be empty tensor)
-        if self._features_rest.shape[0] > 0:
-            new_features_rest = self._features_rest[selected_pts_mask]
+        # Handle features - create new features matching the shape of existing ones
+        # Check if f_dc is in the optimizer (not just if it has elements)
+        has_f_dc = any(group["name"] == "f_dc" for group in self.optimizer.param_groups)
+        if has_f_dc and self._features_dc is not None:
+            if self._features_dc.numel() > 0:
+                new_features_dc = self._features_dc[selected_pts_mask]
+            else:
+                # Features exist in optimizer but are empty - create empty features for new points
+                new_features_dc = torch.zeros((num_new_points, 1, 3), device="cuda")
         else:
-            new_features_rest = torch.zeros((0, 0, 0), device="cuda")
+            new_features_dc = None
+
+        # Handle rest features - check if there are actual SH features (shape[1] > 0)
+        has_f_rest = any(
+            group["name"] == "f_rest" for group in self.optimizer.param_groups
+        )
+        if has_f_rest and self._features_rest is not None:
+            if self._features_rest.numel() > 0 and self._features_rest.shape[1] > 0:
+                new_features_rest = self._features_rest[selected_pts_mask]
+            else:
+                # Features exist in optimizer but are empty - create empty features for new points
+                new_features_rest = torch.zeros((num_new_points, 0, 3), device="cuda")
+        else:
+            new_features_rest = None
 
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
-        new_tmp_radii = torch.zeros(new_xyz.shape[0], device="cuda")
+        # new_xyz has shape [3, M] where M is number of selected points
+        new_tmp_radii = torch.zeros(new_xyz.shape[1], device="cuda")
 
         # Add cloned points to the model
         self.densification_postfix(
@@ -1313,9 +1461,10 @@ class GaussianModel:
 
         # Prune points and reset tracking tensors
         self.prune_points(prune_mask)
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        # _xyz has shape [3, N], so use shape[1] to get number of points
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[1], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[1], 1), device="cuda")
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[1]), device="cuda")
 
     def add_densification_stats(
         self, viewspace_point_tensor: torch.Tensor, update_filter: torch.Tensor
