@@ -112,6 +112,15 @@ def training(
             ),
         )
 
+        # Set spatial_lr_scale after volume initialization
+        # This is critical for position learning rate to be non-zero
+        if hasattr(dataset, "cameras_extent") and dataset.cameras_extent is not None:
+            gaussians.spatial_lr_scale = dataset.cameras_extent
+        else:
+            gaussians.spatial_lr_scale = 1.0  # Default fallback
+
+        print(f"Set spatial_lr_scale to {gaussians.spatial_lr_scale}")
+
     # Initialize volume supervision if enabled
     volume_supervisor = None
     if args.volume_supervision and args.volume_path:
@@ -288,6 +297,15 @@ def training(
             # Apply optimizer step with gradient scaler
             scaler.step(gaussians.optimizer)
             scaler.update()
+
+            # Verify learning rates on first few iterations
+            if iteration <= 3:
+                print(f"\n[ITER {iteration}] Learning Rates:")
+                for i, group in enumerate(gaussians.optimizer.param_groups):
+                    print(f"  {group['name']:15s}: {group['lr']:.8f}")
+
+                # Also print spatial_lr_scale for debugging
+                print(f"  spatial_lr_scale: {gaussians.spatial_lr_scale:.8f}")
 
             # Enforce maximum scaling constraint (2x initial size)
             gaussians.enforce_scaling_constraint()
