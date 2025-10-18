@@ -301,16 +301,27 @@ def training(
 
             # Clip gradients to prevent numerical instability
             if iteration > 1:
-                torch.nn.utils.clip_grad_norm_(gaussians.get_xyz, max_norm=10.0)
-                torch.nn.utils.clip_grad_norm_(gaussians.get_scaling, max_norm=10.0)
-                torch.nn.utils.clip_grad_norm_(gaussians.get_rotation, max_norm=10.0)
+                clip_candidates = []
+
+                if gaussians._xyz.grad is not None:
+                    clip_candidates.append(gaussians._xyz)
+
+                if gaussians._scaling.grad is not None:
+                    clip_candidates.append(gaussians._scaling)
+
+                if gaussians._rotation.grad is not None:
+                    clip_candidates.append(gaussians._rotation)
+
                 if (
                     hasattr(gaussians, "_features_dc")
+                    and gaussians._features_dc is not None
                     and gaussians._features_dc.requires_grad
+                    and gaussians._features_dc.grad is not None
                 ):
-                    torch.nn.utils.clip_grad_norm_(
-                        gaussians._features_dc, max_norm=10.0
-                    )
+                    clip_candidates.append(gaussians._features_dc)
+
+                if clip_candidates:
+                    torch.nn.utils.clip_grad_norm_(clip_candidates, max_norm=10.0)
 
             # Apply optimizer step with gradient scaler
             scaler.step(gaussians.optimizer)
