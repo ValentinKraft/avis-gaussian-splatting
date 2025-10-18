@@ -134,6 +134,22 @@ class VolumeSupervisor:
             self.features_initialized = True
         self.iteration = iteration + 1
 
+        # CRITICAL FIX: Derive intensities from features dynamically for gradient flow
+        # Convert features_dc to intensity values (features_dc contains normalized RGB)
+        if (
+            hasattr(gaussians, "_features_dc")
+            and gaussians._features_dc is not None
+            and gaussians._features_dc.numel() > 0
+        ):
+            # features_dc shape: [N, 1, 3], take mean across RGB channels to get intensity
+            # This creates a differentiable connection from features to intensities
+            use_intensities = gaussians._features_dc[:, 0, :].mean(dim=1, keepdim=True)
+            # Normalize to [0, 1] range using sigmoid
+            use_intensities = torch.sigmoid(use_intensities)
+        else:
+            # Fallback to stored intensities if features don't exist
+            use_intensities = gaussians.intensities
+
         # Convert gaussians to volume using intensity values
         # Use non-learnable opacities if they exist, otherwise use the opacity parameter
         use_opacity = opacity
@@ -163,8 +179,7 @@ class VolumeSupervisor:
                     requires_grad=use_opacity.requires_grad,
                 )
 
-        # Fix intensity tensor shape if needed
-        use_intensities = gaussians.intensities
+        # Fix intensity tensor shape if needed (use_intensities was computed above from features)
         if use_intensities.shape[0] != n_points:
             if use_intensities.numel() == 3:  # We have exactly 3 values
                 use_intensities = use_intensities.mean() * torch.ones(

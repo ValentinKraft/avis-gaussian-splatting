@@ -277,6 +277,11 @@ def training(
             # Use gradient scaler for mixed precision training
             scaler.scale(loss).backward()
 
+            # Debug: Save pre-step values to verify updates happen
+            if iteration <= 5 or iteration % 500 == 0:
+                pre_xyz_mean = gaussians._xyz.mean().item()
+                pre_scaling_mean = gaussians._scaling.mean().item()
+
             # Debug gradients less frequently to improve performance
             if iteration % 50 == 0:  # Reduced from every 10th to every 50th iteration
                 # Check if gradients exist and what their magnitudes are
@@ -294,9 +299,36 @@ def training(
                             f"Rotation grad norm: {gaussians._rotation.grad.norm().item():.6f}"
                         )
 
+            # Clip gradients to prevent numerical instability
+            if iteration > 1:
+                torch.nn.utils.clip_grad_norm_(gaussians.get_xyz, max_norm=10.0)
+                torch.nn.utils.clip_grad_norm_(gaussians.get_scaling, max_norm=10.0)
+                torch.nn.utils.clip_grad_norm_(gaussians.get_rotation, max_norm=10.0)
+                if (
+                    hasattr(gaussians, "_features_dc")
+                    and gaussians._features_dc.requires_grad
+                ):
+                    torch.nn.utils.clip_grad_norm_(
+                        gaussians._features_dc, max_norm=10.0
+                    )
+
             # Apply optimizer step with gradient scaler
             scaler.step(gaussians.optimizer)
             scaler.update()
+
+            # Debug: Check if scaler skipped the step (happens when gradients are inf/nan)
+            if iteration <= 10 or iteration % 500 == 0:
+                scale = scaler.get_scale()
+                print(f"[ITER {iteration}] Scaler scale: {scale:.2f}")
+
+                # Check if parameters actually changed
+                if iteration <= 5 or iteration % 500 == 0:
+                    post_xyz_mean = gaussians._xyz.mean().item()
+                    post_scaling_mean = gaussians._scaling.mean().item()
+                    xyz_change = abs(post_xyz_mean - pre_xyz_mean)
+                    scaling_change = abs(post_scaling_mean - pre_scaling_mean)
+                    print(f"  XYZ mean change: {xyz_change:.10f}")
+                    print(f"  Scaling mean change: {scaling_change:.10f}")
 
             # Verify learning rates on first few iterations
             if iteration <= 3:
