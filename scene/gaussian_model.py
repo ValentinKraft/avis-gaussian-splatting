@@ -23,6 +23,13 @@ from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from typing import Optional, Dict, Tuple, List, Union, Any
 
+from gaussian_splatting.utils.orientation_field import (
+    gather_rotation_from_field,
+    random_quat_perturb,
+    rotmat_to_quat,
+    world_to_voxel,
+)
+
 try:
     from gaussian_rasterization import SparseGaussianAdam
 except:
@@ -81,6 +88,10 @@ class GaussianModel:
         self.volume_max = 1.0  # Global maximum intensity value
         self.reference_volume = None  # Reference intensity volume
         self.reference_mask = None  # Reference opacity mask
+
+        # Orientation metadata populated during initialization for densification reuse
+        self.orientation_field: Optional[Dict[str, torch.Tensor]] = None
+        self.orientation_fallback_stats = {"clone": 0, "split": 0}
 
         # Set up activation functions
         self._setup_activation_functions()
@@ -1252,6 +1263,90 @@ class GaussianModel:
                 [self._initial_scaling, new_initial_scaling], dim=0
             )
 
+    def _sample_orientation_quats(
+        self,
+        xyz: torch.Tensor,
+        fallback_quats: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return quaternions for new points using cached orientation field."""
+        if fallback_quats is not None and fallback_quats.numel() > 0:
+            device = fallback_quats.device
+            dtype = fallback_quats.dtype
+        elif xyz.numel() > 0:
+            device = xyz.device
+            dtype = xyz.dtype
+        elif self._rotation.numel() > 0:
+            device = self._rotation.device
+            dtype = self._rotation.dtype
+        else:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            dtype = torch.float32
+
+        coords = xyz.T if xyz.dim() == 2 and xyz.shape[0] == 3 else xyz
+        if coords.numel() == 0:
+            quats = torch.empty(0, 4, device=device, dtype=dtype)
+            mask = torch.empty(0, dtype=torch.bool, device=device)
+            return quats, mask
+
+        coords = coords.contiguous()
+        count = coords.shape[0]
+
+        if fallback_quats is None or fallback_quats.numel() == 0:
+            fallback_quats = torch.zeros(count, 4, device=device, dtype=dtype)
+            fallback_quats[:, 0] = 1.0
+        else:
+            fallback_quats = fallback_quats.to(device=device, dtype=dtype)
+            fallback_quats = torch.nn.functional.normalize(fallback_quats, dim=1)
+
+        field = getattr(self, "orientation_field", None)
+        has_field = (
+            isinstance(field, dict)
+            and field.get("eigvecs") is not None
+            and field["eigvecs"].numel() > 0
+        )
+        if not has_field:
+            quats = random_quat_perturb(fallback_quats, 2.0)
+            mask = torch.ones(count, dtype=torch.bool, device=device)
+            quats = torch.nn.functional.normalize(quats, dim=1)
+            return quats, mask
+
+        eigvecs = field["eigvecs"]
+        if eigvecs.device != device:
+            eigvecs = eigvecs.to(device)
+            field["eigvecs"] = eigvecs
+        eigvals = field["eigvals"]
+        if eigvals.device != device:
+            eigvals = eigvals.to(device)
+            field["eigvals"] = eigvals
+        origin = field["origin"]
+        if origin.device != device:
+            origin = origin.to(device)
+            field["origin"] = origin
+        voxel = field["voxel_size"]
+        if voxel.device != device:
+            voxel = voxel.to(device)
+            field["voxel_size"] = voxel
+        deg_tensor = field.get("perturb_deg")
+        if deg_tensor is None:
+            deg = 2.0
+        else:
+            deg_tensor = deg_tensor.to(device)
+            field["perturb_deg"] = deg_tensor
+            deg = float(deg_tensor.item())
+
+        ijk = world_to_voxel(coords, origin, voxel)
+        rotmats, fallback_mask = gather_rotation_from_field(eigvecs, eigvals, ijk)
+        quats = rotmat_to_quat(rotmats)
+        if deg > 0.0:
+            quats = random_quat_perturb(quats, deg)
+        if fallback_mask.any():
+            repl = fallback_quats[fallback_mask]
+            if deg > 0.0:
+                repl = random_quat_perturb(repl, deg)
+            quats[fallback_mask] = repl
+        quats = torch.nn.functional.normalize(quats, dim=1)
+        return quats, fallback_mask
+
     def densify_and_split(
         self,
         grads: torch.Tensor,
@@ -1307,7 +1402,16 @@ class GaussianModel:
         new_scaling = self.scaling_inverse_activation(
             self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N)
         )
-        new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
+        parent_quats = self.get_rotation[selected_pts_mask].detach()
+        fallback_quats = parent_quats.repeat(N, 1)
+        new_rotation, fallback_mask = self._sample_orientation_quats(
+            new_xyz, fallback_quats
+        )
+        fallback_used = (
+            int(fallback_mask.sum().item()) if fallback_mask.numel() > 0 else 0
+        )
+        if fallback_used > 0:
+            self.orientation_fallback_stats["split"] += fallback_used
         num_new_points = N * selected_pts_mask.sum().item()
 
         # Handle features - create new features matching the shape of existing ones
@@ -1420,7 +1524,15 @@ class GaussianModel:
 
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
-        new_rotation = self._rotation[selected_pts_mask]
+        parent_quats = self.get_rotation[selected_pts_mask].detach()
+        new_rotation, fallback_mask = self._sample_orientation_quats(
+            new_xyz, parent_quats
+        )
+        fallback_used = (
+            int(fallback_mask.sum().item()) if fallback_mask.numel() > 0 else 0
+        )
+        if fallback_used > 0:
+            self.orientation_fallback_stats["clone"] += fallback_used
         # new_xyz has shape [3, M] where M is number of selected points
         new_tmp_radii = torch.zeros(new_xyz.shape[1], device="cuda")
 

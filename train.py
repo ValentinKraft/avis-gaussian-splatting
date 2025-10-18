@@ -19,10 +19,12 @@ from utils.general_utils import safe_state, get_expon_lr_func
 import uuid
 from tqdm import tqdm
 from argparse import ArgumentParser, Namespace
+from typing import Optional
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from gaussian_splatting.utils.parameter_monitor import (
     ParameterMonitor,
 )
+from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
 from utils.parameter_monitoring import add_parameter_regularization_loss
 from torch.cuda.amp import autocast, GradScaler
 
@@ -75,6 +77,29 @@ def training(
     # Create scene for volume-based training
     scene = VolumeScene(args, gaussians)
 
+    volume_supervisor: Optional[VolumeSupervisor] = None
+    if getattr(args, "volume_path", None):
+        volume_shape = tuple(
+            args.volume_shape if hasattr(args, "volume_shape") else opt.volume_shape
+        )
+        loss_type = (
+            args.volume_loss_type
+            if hasattr(args, "volume_loss_type")
+            else opt.volume_loss_type
+        )
+        loss_weight = (
+            args.volume_loss_weight
+            if hasattr(args, "volume_loss_weight")
+            else opt.volume_loss_weight
+        )
+        volume_supervisor = VolumeSupervisor(
+            volume_path=args.volume_path,
+            volume_shape=volume_shape,
+            mask_path=args.mask_path if hasattr(args, "mask_path") else None,
+            loss_type=loss_type,
+            loss_weight=loss_weight,
+        )
+
     # Initialize from segmentation mask if requested
     if args.init_from_mask:
         if not args.mask_path:
@@ -110,6 +135,7 @@ def training(
                 if hasattr(args, "position_noise")
                 else opt.position_noise
             ),
+            orientation_helper=volume_supervisor,
         )
 
         # Set spatial_lr_scale after volume initialization
@@ -121,29 +147,8 @@ def training(
 
         print(f"Set spatial_lr_scale to {gaussians.spatial_lr_scale}")
 
-    # Initialize volume supervision if enabled
-    volume_supervisor = None
-    if args.volume_supervision and args.volume_path:
-        from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
-
-        volume_supervisor = VolumeSupervisor(
-            volume_path=args.volume_path,
-            volume_shape=tuple(
-                args.volume_shape if hasattr(args, "volume_shape") else opt.volume_shape
-            ),
-            # Pass mask path if available - use the same mask for both initialization and opacity
-            mask_path=args.mask_path if hasattr(args, "mask_path") else None,
-            loss_type=(
-                args.volume_loss_type
-                if hasattr(args, "volume_loss_type")
-                else opt.volume_loss_type
-            ),
-            loss_weight=(
-                args.volume_loss_weight
-                if hasattr(args, "volume_loss_weight")
-                else opt.volume_loss_weight
-            ),
-        )
+    if args.volume_supervision and volume_supervisor is None:
+        sys.exit("Volume supervision requested but no volume path provided.")
 
     gaussians.training_setup(opt)
     if checkpoint:
@@ -193,7 +198,7 @@ def training(
         # Volume supervision loss
         volume_loss = 0.0
 
-        if volume_supervisor is not None:
+        if args.volume_supervision and volume_supervisor is not None:
             # Compute the volume loss and get volume gradients for parameter diversity loss
             with autocast(enabled=use_amp):
                 vol_loss, vol_metrics, vol_gradients = volume_supervisor.compute_loss(

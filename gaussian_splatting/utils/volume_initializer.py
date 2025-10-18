@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 import numpy as np
-from typing import Tuple, Optional
+from typing import Optional, Tuple, TYPE_CHECKING
 import torch.nn.functional as F
 from pathlib import Path
 
@@ -24,6 +24,10 @@ from gaussian_splatting.utils.intensity_sampler import (
     update_opacities,
     update_intensities,
 )
+from gaussian_splatting.utils.orientation_field import random_quat_perturb
+
+if TYPE_CHECKING:
+    from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
 
 def initialize_from_volume(
     mask_path: str,
@@ -184,6 +188,7 @@ def _setup_model_parameters(
     scales: Tensor,
     opacities: Tensor,
     opacity_values: Optional[Tensor] = None,
+    initial_rotations: Optional[Tensor] = None,
 ) -> None:
     """
     Set up core model parameters (positions, scales, rotations, opacities).
@@ -225,9 +230,13 @@ def _setup_model_parameters(
             torch.log(opacities).contiguous().requires_grad_(True)
         )
 
-    # Initialize rotation quaternions to identity
-    rotations = torch.zeros((num_points, 4), device=device)
-    rotations[..., 0] = 1  # w=1, x=y=z=0 for identity rotation
+    # Initialize rotation quaternions
+    if initial_rotations is not None and initial_rotations.numel() != 0:
+        rotations = initial_rotations.to(device)
+        rotations = rotations / (rotations.norm(dim=1, keepdim=True) + 1e-8)
+    else:
+        rotations = torch.zeros((num_points, 4), device=device)
+        rotations[..., 0] = 1  # Identity quaternion
     model._rotation = nn.Parameter(rotations.contiguous().requires_grad_(True))
 
     # Initialize max 2D radii
@@ -404,6 +413,7 @@ def initialize_gaussians(
     scene_bounds: Optional[Tuple[Tensor, Tensor]] = None,
     volume_path: Optional[str] = None,
     mask_path: Optional[str] = None,
+    orientation_helper: Optional["VolumeSupervisor"] = None,
     **kwargs,
 ):
     """
@@ -478,8 +488,36 @@ def initialize_gaussians(
     # Transform to world space
     points = transform_points_to_world(points, volume_transform, scene_bounds)
 
+    initial_rotations = None
+    orientation_field = None
+    fallback_count = 0
+    if orientation_helper is not None:
+        quats, fallback_count = orientation_helper.get_quat_for_points(points)
+        initial_rotations = quats.detach()
+        orientation_field = orientation_helper.export_orientation_field()
+        print(
+            f"Orientation initialized for {quats.shape[0]} points "
+            f"(fallback {fallback_count})."
+        )
+    else:
+        identity = torch.zeros(points.shape[0], 4, device=points.device)
+        identity[:, 0] = 1.0
+        initial_rotations = random_quat_perturb(identity, deg=2.0)
+        fallback_count = points.shape[0]
+        print(f"Orientation initialized without field (fallback {fallback_count}).")
+
     # Set up model parameters and feature tensors
-    _setup_model_parameters(model, points, scales, opacities, opacity_values)
+    _setup_model_parameters(
+        model,
+        points,
+        scales,
+        opacities,
+        opacity_values,
+        initial_rotations,
+    )
     _setup_feature_tensors(model, intensities, volume_min, volume_max)
+
+    # Cache orientation data for densification if available
+    model.orientation_field = orientation_field
 
     return model

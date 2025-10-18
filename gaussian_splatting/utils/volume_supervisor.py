@@ -18,6 +18,13 @@ from typing import Optional, Dict, Tuple
 from gaussian_splatting.losses.volume_loss import VolumeLoss
 from gaussian_splatting.utils.splat_to_volume import splat_to_volume
 from gaussian_splatting.data.volume_loader import VolumeLoader
+from gaussian_splatting.utils.orientation_field import (
+    compute_structure_field,
+    gather_rotation_from_field,
+    random_quat_perturb,
+    rotmat_to_quat,
+    world_to_voxel,
+)
 
 class VolumeSupervisor:
     """
@@ -56,6 +63,21 @@ class VolumeSupervisor:
         # Load ground truth volume
         self.volume_gt = self.loader.load_volume(volume_path)
 
+        # Orientation defaults (no CLI controls for now)
+        self.orientation_sigma_grad = 1.5
+        self.orientation_sigma_tensor = 1.0
+        self.orientation_perturb_deg = 2.0
+        self._orientation_eigvecs: Optional[Tensor] = None
+        self._orientation_eigvals: Optional[Tensor] = None
+
+        # Coordinate mapping assumes volume space normalised to [0, 1]
+        dims_dhw = torch.tensor(
+            self.volume_gt.shape, device=self.device, dtype=torch.float32
+        )
+        dims_xyz = dims_dhw[[2, 1, 0]].clamp_min(1.0)
+        self.volume_origin = torch.zeros(3, device=self.device, dtype=torch.float32)
+        self.voxel_size = 1.0 / (dims_xyz - 1.0).clamp_min(1.0)
+
         # Load mask volume if provided
         self.mask_volume = None
         if mask_path:
@@ -66,6 +88,54 @@ class VolumeSupervisor:
         self.metrics = {
             'volume_loss': 0.0,
             'dice_score': 0.0,
+        }
+
+    def _orientation_source(self) -> Tensor:
+        """Return the tensor used to derive orientations."""
+        if self.mask_volume is not None:
+            return self.mask_volume
+        return self.volume_gt
+
+    def _ensure_orientation_field(self) -> None:
+        """Compute and cache structure tensor eigen-data if needed."""
+        if self._orientation_eigvecs is not None:
+            return
+        source = self._orientation_source().to(self.device)
+        eigvecs, eigvals = compute_structure_field(
+            source,
+            sigma_grad=self.orientation_sigma_grad,
+            sigma_tensor=self.orientation_sigma_tensor,
+        )
+        self._orientation_eigvecs = eigvecs
+        self._orientation_eigvals = eigvals
+        origin_name = "mask" if self.mask_volume is not None else "volume"
+        print(f"Computed orientation field from {origin_name} data.")
+
+    def get_quat_for_points(self, xyz_world: Tensor) -> Tuple[Tensor, int]:
+        """Return orientation quaternions and fallback count for points."""
+        if xyz_world.numel() == 0:
+            return torch.empty(0, 4, device=self.device), 0
+
+        self._ensure_orientation_field()
+        ijk = world_to_voxel(xyz_world, self.volume_origin, self.voxel_size)
+        rotmats, fallback = gather_rotation_from_field(
+            self._orientation_eigvecs, self._orientation_eigvals, ijk
+        )
+        quats = rotmat_to_quat(rotmats)
+        quats = random_quat_perturb(quats, self.orientation_perturb_deg)
+        return quats, int(fallback.sum().item())
+
+    def export_orientation_field(self) -> Dict[str, Tensor]:
+        """Expose cached orientation data for reuse by the Gaussian model."""
+        self._ensure_orientation_field()
+        return {
+            "eigvecs": self._orientation_eigvecs,
+            "eigvals": self._orientation_eigvals,
+            "origin": self.volume_origin,
+            "voxel_size": self.voxel_size,
+            "perturb_deg": torch.tensor(
+                self.orientation_perturb_deg, device=self.device
+            ),
         }
 
     def compute_loss(self, gaussians) -> Tuple[Tensor, Dict[str, float], Tensor]:
