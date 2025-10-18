@@ -730,6 +730,8 @@ module AHrEZPlanner {
   fields {
     instanceName = AHrEZPlanner
     currentCase = ""
+    toggleMeshVolumeRendering = FALSE
+    studyIsRunning = FALSE
   }
 }
 module LoadNIfTI {
@@ -833,7 +835,7 @@ module View3D {
     colorFactor = "1 1 1"
     camType = TRUE
     camPosition = "28.1548957824707 -496.255340576172 -216.815032958984"
-    camOrientation = "0.987740635871887 0.154606729745865 -0.0215666219592094 1.6575779914856"
+    camOrientation = "0.987740695476532 0.154606744647026 -0.0215666238218546 1.6575779914856"
     initialCameraOrientation = CAMERA_KEEP_AS_IS
     camFar = 555.96814
     camNear = 158.44897
@@ -984,6 +986,93 @@ module SoLUTEditor {
     selectedTriangleSize = 8
     triangleSize = 6
     useAntiAliasing = TRUE
+  }
+}
+module TestPattern {
+  internal {
+    frame = "1209 1181 112 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1076 825 285 443"
+        relativePosition = "-0.1456 0.0934"
+        sizeHint = "285 443"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = TestPattern
+    sizeX = 128
+    sizeY = 128
+    sizeZ = 128
+    sizeC = 1
+    sizeT = 1
+    sizeU = 1
+    dataType = "unsigned int8"
+    fillValue = 255
+    autoApply = TRUE
+    pattern = XRamp
+    voxelSize = "1 1 1"
+    gradient = "0 0 0"
+    eigenValues = "1 0 -1"
+    offDiagonalElements = "0 0 0"
+    fillValue2 = 0
+    pageSizeX = 32
+    pageSizeY = 32
+    pageSizeZ = 1
+    pageSizeC = 1
+    pageSizeT = 1
+    pageSizeU = 1
+  }
+}
+module EllipsoidTestPattern {
+  internal {
+    frame = "1393 1189 144 56"
+    moduleGroupName = ""
+    windows {
+      window _default {
+        geometry = "1482 834 265 514"
+        relativePosition = "-0.0305 0.0999"
+        sizeHint = "265 514"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = EllipsoidTestPattern
+    sizeX = 128
+    sizeY = 128
+    sizeZ = 128
+    sizeC = 1
+    sizeT = 1
+    sizeU = 1
+    dataType = "unsigned int8"
+    fillValue = 0
+    autoApply = TRUE
+    pattern = XStripes
+    voxelSize = "1 1 1"
+    gradient = "0 0 0"
+    eigenValues = "1 0 -1"
+    offDiagonalElements = "0 0 0"
+    fillValue2 = 255
+    pageSizeX = 32
+    pageSizeY = 32
+    pageSizeZ = 1
+    pageSizeC = 1
+    pageSizeT = 1
+    pageSizeU = 1
+    mode = Ellipse
+    circlePos = "128 128 0"
+    circleExt = "50 5 5"
+    useCenterPos = TRUE
+    coneTipPos = "128 128 0"
+    coneDir = "1 0 0"
+    coneAngle = 45
+    coneHeight = 32
+    coneTipRadius = 0
+    coneDisplaceTip = TRUE
   }
 }
 connections {
