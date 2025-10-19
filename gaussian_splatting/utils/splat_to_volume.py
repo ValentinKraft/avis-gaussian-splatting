@@ -1,7 +1,10 @@
 from typing import Optional, Tuple
+
 import torch
 from torch import Tensor
 import torch.nn.functional as F
+
+from gaussian_splatting.utils.orientation_field import default_origin_and_spacing
 
 # NOTE: Refactored to (1) minimize Python loops, (2) actually use rotation by
 # constructing covariances, and (3) avoid reallocation / unnecessary empty_cache calls.
@@ -184,6 +187,22 @@ def splat_to_volume(
 
     # Create a small working volume for accumulating results
     small_volume = torch.zeros(small_shape, device=device)
+    weight_volume = torch.zeros_like(small_volume)
+
+    voxel_spacing = default_origin_and_spacing(volume_shape, device)[1].to(points_n3.dtype)
+    if small_shape == volume_shape:
+        scale_ratio = torch.ones(3, device=device, dtype=points_n3.dtype)
+    else:
+        scale_ratio = torch.tensor(
+            [
+                volume_shape[2] / small_shape[2],
+                volume_shape[1] / small_shape[1],
+                volume_shape[0] / small_shape[0],
+            ],
+            device=device,
+            dtype=points_n3.dtype,
+        )
+    min_sigma = voxel_spacing * scale_ratio
 
     # Handle scaling parameters
     # point_scales, point_opacities, point_intensities already passed as parameters
@@ -265,19 +284,26 @@ def splat_to_volume(
         if small_shape != volume_shape:
             scales_batch = scales_batch * 0.5
 
+        scales_batch = torch.maximum(scales_batch, min_sigma.unsqueeze(0))
+
         if rot_mats is not None:
             rb = rot_mats[s:e]  # (B,3,3)
         else:
             rb = None
 
-        weight = torch.ones(Bcur, device=device, dtype=bp.dtype)
         if point_opacities is not None:
-            weight = weight * point_opacities[s:e]
+            alpha = point_opacities[s:e]
+        else:
+            alpha = torch.ones(Bcur, device=device, dtype=bp.dtype)
+
         if point_intensities is not None:
-            weight = weight * point_intensities[s:e]
+            value_scale = point_intensities[s:e]
+        else:
+            value_scale = torch.ones(Bcur, device=device, dtype=bp.dtype)
 
         inv_scales = 1.0 / (scales_batch + 1e-6)  # (B,3)
         contrib_flat = torch.zeros(G, device=device, dtype=bp.dtype)
+        weight_flat = torch.zeros(G, device=device, dtype=bp.dtype)
 
         for g0 in range(0, G, grid_chunk):
             g1 = min(g0 + grid_chunk, G)
@@ -306,18 +332,24 @@ def splat_to_volume(
                 diff_local = diff
             diff_scaled = diff_local * inv_scales.unsqueeze(0)  # (Cg,B,3)
             sq = (diff_scaled * diff_scaled).sum(-1)  # (Cg,B)
-            kern = torch.exp(-0.5 * sq) * weight.unsqueeze(0)  # (Cg,B)
-            contrib_flat[g0:g1] += kern.sum(dim=1)
-            del diff, diff_local, diff_scaled, sq, kern
+            kern = torch.exp(-0.5 * sq)
+            value_contrib = kern * (alpha * value_scale).unsqueeze(0)
+            weight_contrib = kern * alpha.unsqueeze(0)
+            contrib_flat[g0:g1] += value_contrib.sum(dim=1)
+            weight_flat[g0:g1] += weight_contrib.sum(dim=1)
+            del diff, diff_local, diff_scaled, sq, kern, value_contrib, weight_contrib
 
         small_volume = small_volume + contrib_flat.view(small_shape)
+        weight_volume = weight_volume + weight_flat.view(small_shape)
         del contrib_flat
+        del weight_flat
 
     # Normalize the working volume to [0, 1] - ensure we preserve gradient flow
-    max_val = small_volume.max()
-    if max_val > 0:
-        # Use proper differentiable normalization
-        small_volume = small_volume / (max_val + 1e-6)
+    small_volume = torch.where(
+        weight_volume > 1e-6,
+        small_volume / (weight_volume + 1e-6),
+        torch.zeros_like(small_volume),
+    )
 
     # If we used a smaller working grid, upsample back to full resolution
     if small_shape != volume_shape:

@@ -9,13 +9,16 @@
 Initialize Gaussian points from volume data for 3D Gaussian Splatting.
 """
 
+import math
+import heapq
+from pathlib import Path
+from typing import List, Optional, Tuple, TYPE_CHECKING
+
+import numpy as np
 import torch
 import torch.nn as nn
-from torch import Tensor
-import numpy as np
-from typing import Optional, Tuple, TYPE_CHECKING
 import torch.nn.functional as F
-from pathlib import Path
+from torch import Tensor
 
 from scene.gaussian_model import GaussianModel
 from gaussian_splatting.data.volume_loader import VolumeLoader
@@ -24,117 +27,163 @@ from gaussian_splatting.utils.intensity_sampler import (
     update_opacities,
     update_intensities,
 )
-from gaussian_splatting.utils.orientation_field import random_quat_perturb
+from gaussian_splatting.utils.orientation_field import (
+    default_origin_and_spacing,
+    random_quat_perturb,
+)
 
 if TYPE_CHECKING:
     from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
+
+def _compute_distance_field(mask: Tensor, threshold: float = 0.1) -> Tensor:
+    """Approximate Euclidean distance transform using a weighted grid Dijkstra."""
+    mask_cpu = mask.detach().float().cpu()
+    D, H, W = mask_cpu.shape
+    outside = mask_cpu <= threshold
+    outside_np = outside.numpy()
+
+    if torch.all(~outside):
+        # Entire volume is foreground; return zeros to avoid NaNs
+        return torch.zeros_like(mask, dtype=torch.float32)
+
+    dist = np.full((D, H, W), np.inf, dtype=np.float32)
+    visited = np.zeros((D, H, W), dtype=bool)
+
+    heap: List[Tuple[float, int, int, int]] = []
+    outside_idx = np.argwhere(outside_np)
+    for z, y, x in outside_idx:
+        dist[z, y, x] = 0.0
+        heapq.heappush(heap, (0.0, int(z), int(y), int(x)))
+
+    offsets: List[Tuple[float, int, int, int]] = []
+    for dz in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == dy == dz == 0:
+                    continue
+                cost = math.sqrt(dx * dx + dy * dy + dz * dz)
+                offsets.append((cost, dz, dy, dx))
+
+    while heap:
+        current_dist, z, y, x = heapq.heappop(heap)
+        if visited[z, y, x]:
+            continue
+        visited[z, y, x] = True
+
+        for cost, dz, dy, dx in offsets:
+            nz, ny, nx = z + dz, y + dy, x + dx
+            if nz < 0 or nz >= D or ny < 0 or ny >= H or nx < 0 or nx >= W:
+                continue
+            new_dist = current_dist + cost
+            if new_dist < dist[nz, ny, nx]:
+                dist[nz, ny, nx] = new_dist
+                heapq.heappush(heap, (new_dist, nz, ny, nx))
+
+    dist[outside_np] = 0.0
+    return torch.from_numpy(dist).to(mask.device)
+
+
+def _hash_indices(coords: Tensor, grid_size: Tuple[int, int, int]) -> Tensor:
+    """Hash integer voxel coordinates for uniqueness filtering."""
+    W = grid_size[2]
+    H = grid_size[1]
+    stride_y = W + 1
+    stride_z = (H + 1) * stride_y
+    return coords[:, 2] * stride_z + coords[:, 1] * stride_y + coords[:, 0]
+
 
 def initialize_from_volume(
     mask_path: str,
     n_points: int = 5000,
     noise_std: float = 0.01,
-    device: torch.device = torch.device('cuda')
+    device: torch.device = torch.device("cuda"),
 ) -> Tuple[Tensor, Tensor, Tensor]:
-    """
-    Initialize Gaussian points by sampling from a segmentation mask.
-    The mask is expected to be pre-aligned with the volume and have the same dimensions.
-    
-    Args:
-        mask_path: Path to segmentation mask (.nii, .npy, .mhd)
-                  Values should be in [0,1], either binary or continuous
-        n_points: Number of points to sample
-        noise_std: Standard deviation for position noise
-        device: Device to create tensors on
-        
-    Returns:
-        Tuple of (positions, scales, opacities)
-    """
+    """Sample Gaussian seeds with distance-weighted importance and spacing control."""
+
     from gaussian_splatting.data.volume_loader import VolumeLoader
 
-    # Load mask - keep original dimensions since it's pre-aligned
     loader = VolumeLoader(device=device)
-    mask = loader.load_volume(mask_path)
+    sampling_volume = loader.load_volume(mask_path)
+    sampling_volume = sampling_volume.to(device=device, dtype=torch.float32)
 
-    # Sample points based on mask values
-    # Create coordinate grid
-    D, H, W = mask.shape
+    D, H, W = sampling_volume.shape
     z, y, x = torch.meshgrid(
         torch.arange(D, device=device),
         torch.arange(H, device=device),
         torch.arange(W, device=device),
-        indexing='ij'
+        indexing="ij",
     )
     coords = torch.stack([x, y, z], dim=-1).float()
+    coords_flat = coords.view(-1, 3)
+    volume_flat = sampling_volume.view(-1)
 
-    # Flatten everything
-    coords_flat = coords.reshape(-1, 3)
-    mask_flat = mask.reshape(-1)
+    positive_vals = volume_flat[volume_flat > 0]
+    if positive_vals.numel() == 0:
+        raise ValueError("Sampling volume contains no positive entries.")
 
-    # Print mask stats for debugging
-    print(
-        f"Mask stats: min={mask_flat.min().item():.4f}, max={mask_flat.max().item():.4f}, "
-        f"mean={mask_flat.mean().item():.4f}, nonzero={(mask_flat > 0).sum().item()}"
-    )
+    threshold = float(positive_vals.mean().item() * 0.3)
+    distance_field = _compute_distance_field(sampling_volume, threshold=threshold)
+    distance_flat = distance_field.view(-1)
 
-    # Sample points based on mask values
-    if mask_flat.unique().numel() <= 2:  # Binary mask
-        valid_idx = torch.nonzero(mask_flat > 0).squeeze(1)
-        if len(valid_idx) == 0:
-            raise ValueError("No valid points found in mask")
+    weights = (volume_flat.clamp_min(0.0) + 1e-6) * (distance_flat + 1e-4)
+    weights_sum = weights.sum()
+    if weights_sum <= 0.0:
+        weights = torch.full_like(weights, 1.0 / weights.numel())
+    else:
+        weights = weights / weights_sum
 
-        print(
-            f"Binary mask detected: {len(valid_idx)} valid points of {len(mask_flat)} total"
-        )
+    oversample = max(n_points * 4, n_points + 32)
+    sampled_idx = torch.multinomial(weights, oversample, replacement=True)
+    sampled_coords = coords_flat[sampled_idx]
+    sampled_dist = distance_flat[sampled_idx]
+    sampled_vals = volume_flat[sampled_idx]
 
-        # Random sampling from valid points
-        if len(valid_idx) > n_points:
-            selected_idx = valid_idx[torch.randperm(len(valid_idx))[:n_points]]
-        else:
-            # If we have fewer valid points than requested, duplicate some
-            print(
-                f"Warning: Only {len(valid_idx)} valid points, fewer than requested {n_points}"
-            )
-            repeats_needed = (n_points + len(valid_idx) - 1) // len(valid_idx)
-            repeated_idx = valid_idx.repeat(repeats_needed)
-            selected_idx = repeated_idx[:n_points]
+    min_spacing_vox = 1.0
+    cell_coords = torch.floor(sampled_coords / min_spacing_vox).long()
+    cell_keys = _hash_indices(cell_coords, (D, H, W))
+    unique_idx_np = np.unique(cell_keys.cpu().numpy(), return_index=True)[1]
+    unique_idx = torch.from_numpy(unique_idx_np).to(device=device, dtype=torch.long)
+    unique_idx, _ = torch.sort(unique_idx)
 
-        points = coords_flat[selected_idx]
-        opacities = torch.ones(len(points), 1, device=device)
+    sampled_coords = sampled_coords[unique_idx]
+    sampled_dist = sampled_dist[unique_idx]
+    sampled_vals = sampled_vals[unique_idx]
 
-    else:  # Continuous mask - sample proportional to values
-        print(
-            f"Continuous mask detected: values range [{mask_flat.min().item():.4f}, {mask_flat.max().item():.4f}]"
-        )
+    extra_idx = None
+    if sampled_coords.shape[0] < n_points:
+        deficit = n_points - sampled_coords.shape[0]
+        extra_idx = torch.multinomial(weights, deficit, replacement=True)
+        sampled_coords = torch.cat([sampled_coords, coords_flat[extra_idx]], dim=0)
+        sampled_dist = torch.cat([sampled_dist, distance_flat[extra_idx]], dim=0)
+        sampled_vals = torch.cat([sampled_vals, volume_flat[extra_idx]], dim=0)
 
-        # Add small epsilon and add more weight to positive values to ensure good coverage
-        mask_weighted = mask_flat.clone()
-        mask_weighted[mask_weighted > 0] = (
-            mask_weighted[mask_weighted > 0] + 0.2
-        )  # Boost positive values
+    sampled_coords = sampled_coords[:n_points]
+    sampled_dist = sampled_dist[:n_points]
+    sampled_vals = sampled_vals[:n_points]
 
-        probs = mask_weighted + 1e-6
-        probs = probs / probs.sum()  # Normalize to probability distribution
+    jitter = ((torch.rand_like(sampled_coords) - 0.5) * 0.5)
+    jittered = sampled_coords + jitter
+    jittered[:, 0].clamp_(0, W - 1)
+    jittered[:, 1].clamp_(0, H - 1)
+    jittered[:, 2].clamp_(0, D - 1)
 
-        # Sample point indices according to mask values
-        selected_idx = torch.multinomial(probs, n_points, replacement=True)
-        points = coords_flat[selected_idx]
+    scale_den = torch.tensor([W - 1, H - 1, D - 1], device=device).clamp_min(1)
+    points = jittered / scale_den
 
-        # Use mask values as initial opacities, but ensure a minimum value
-        raw_opacities = mask_flat[selected_idx].unsqueeze(1)
-        opacities = torch.clamp(
-            raw_opacities, min=0.3
-        )  # Minimum opacity for visibility
+    _, voxel_size = default_origin_and_spacing((D, H, W), device)
+    voxel_sizes_xyz = voxel_size
+    dist_norm = sampled_dist / sampled_dist.max().clamp_min(1e-3)
+    scale_min = voxel_sizes_xyz * 0.5
+    scale_max = voxel_sizes_xyz * 2.5
+    scales = scale_min + dist_norm.unsqueeze(1) * (scale_max - scale_min)
 
-    # Normalize coordinates to [0, 1]
-    points = points / torch.tensor([W-1, H-1, D-1], device=device)
-
-    # Add noise to positions
-    points = points + torch.randn_like(points) * noise_std
-    points = torch.clamp(points, 0, 1)
-
-    # Initialize scales (use smaller scales for denser point clouds)
-    base_scale = 0.01 * (5000 / n_points) ** (1/3)  # Scale based on point density
-    scales = torch.ones(len(points), 3, device=device) * base_scale
+    val_min = float(positive_vals.min().item())
+    val_max = float(positive_vals.max().item())
+    if val_max > val_min:
+        norm_vals = (sampled_vals - val_min) / (val_max - val_min)
+    else:
+        norm_vals = torch.ones_like(sampled_vals)
+    opacities = norm_vals.clamp(0.1, 1.0).unsqueeze(1)
 
     return points, scales, opacities
 

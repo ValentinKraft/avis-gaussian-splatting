@@ -9,10 +9,42 @@
 Utility functions for sampling and computing intensity and opacity values for Gaussian splats.
 """
 
+import os
+
 import torch
 from torch import Tensor
 import torch.nn.functional as F
 from typing import Optional, Tuple
+
+from gaussian_splatting.utils.orientation_field import (
+    default_origin_and_spacing,
+    world_to_grid,
+)
+
+_SAMPLING_VALIDATED = False
+
+
+def _ensure_n3(points: Tensor) -> Tensor:
+    """Return point tensor shaped [N, 3], cloning only if needed."""
+    if points.dim() != 2:
+        raise ValueError("Points tensor must have shape [..., 3].")
+    if points.shape[1] == 3:
+        return points
+    if points.shape[0] == 3:
+        return points.permute(1, 0)
+    raise ValueError("Unexpected point shape; expected [N,3] or [3,N].")
+
+
+def _normalize_points(points: Tensor, volume_shape: Tuple[int, int, int]) -> Tensor:
+    """Normalize points from voxel index space to world [0,1]^3 if needed."""
+    pts = points
+    if pts.max() > 1.0 + 1e-6 or pts.min() < -1e-6:
+        D, H, W = volume_shape
+        pts = pts.clone()
+        pts[:, 0] /= max(W - 1, 1)
+        pts[:, 1] /= max(H - 1, 1)
+        pts[:, 2] /= max(D - 1, 1)
+    return pts
 
 
 def sample_intensities_from_volume(
@@ -40,170 +72,64 @@ def sample_intensities_from_volume(
             - Global maximum intensity value in volume
     """
     device = points.device
-    D, H, W = volume.shape
-    N = points.shape[0]
+    volume = volume.to(device=device, dtype=torch.float32)
+    points_n3 = _ensure_n3(points).to(device=device, dtype=torch.float32)
+    points_n3 = _normalize_points(points_n3, volume.shape)
 
-    # Get global min/max values from the volume for consistent normalization
     volume_min = float(volume.min().item())
     volume_max = float(volume.max().item())
 
-    print(f"Volume intensity range: [{volume_min:.4f}, {volume_max:.4f}]")
+    if (volume_max - volume_min) <= 1e-8:
+        print("Warning: Volume has near-constant intensity; returning mid-gray.")
+        fallback = torch.full((points_n3.shape[0], 1), 0.5, device=device)
+        return fallback, volume_min, volume_max
 
-    # Check if volume contains meaningful values
-    valid_values = torch.nonzero(volume > 1e-5, as_tuple=False)
-    if len(valid_values) == 0:
-        print("Warning: No valid intensity values found in volume (all near zero)")
-        # Return a reasonable default
-        return (
-            torch.full((points.shape[0], 1), 0.5, device=device),
-            volume_min,
-            volume_max,
-        )
+    origin, voxel = default_origin_and_spacing(volume.shape, device)
+    grid = world_to_grid(points_n3, origin, voxel, volume.shape)
+    grid = grid.view(1, -1, 1, 1, 3)
 
-    # Convert normalized coordinates [0,1] to volume indices
-    point_indices = points.clone()
-    point_indices[:, 0] *= (W - 1)  # x
-    point_indices[:, 1] *= (H - 1)  # y
-    point_indices[:, 2] *= (D - 1)  # z
+    global _SAMPLING_VALIDATED
+    if not _SAMPLING_VALIDATED and os.environ.get("GS_VALIDATE_SAMPLING") == "1":
+        _SAMPLING_VALIDATED = True
+        idx = torch.stack(
+            torch.meshgrid(
+                torch.arange(volume.shape[0], device=device),
+                torch.arange(volume.shape[1], device=device),
+                torch.arange(volume.shape[2], device=device),
+                indexing="ij",
+            ),
+            dim=-1,
+        ).view(-1, 3)
+        idx_xyz = torch.stack([idx[:, 2], idx[:, 1], idx[:, 0]], dim=-1).float()
+        pts_full = idx_xyz / torch.tensor(
+            [volume.shape[2] - 1, volume.shape[1] - 1, volume.shape[0] - 1],
+            device=device,
+        ).clamp_min(1)
+        full_grid = world_to_grid(pts_full, origin, voxel, volume.shape)
+        full_grid = full_grid.view(1, -1, 1, 1, 3)
+        gt_samples = volume.unsqueeze(0).unsqueeze(0)
+        round_trip = F.grid_sample(
+            gt_samples,
+            full_grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        ).view(-1)
+        diff = (round_trip - volume.view(-1)).abs().max().item()
+        print(f"Trilinear sampling check max |diff| = {diff:.4e}")
 
-    # Determine sampling radius for each point
-    if scale is None:
-        # Default radius as fraction of volume size
-        radius = torch.tensor([W, H, D], device=device).float() * 0.02
-        radius = radius.unsqueeze(0).expand(N, 3)
-    else:
-        # Use provided scales (already in correct units)
-        if scale.shape[-1] == 3:
-            radius = scale * radius_scale
-        else:
-            radius = scale.unsqueeze(-1).expand(N, 3) * radius_scale
+    volume_5d = volume.unsqueeze(0).unsqueeze(0)
+    samples = F.grid_sample(
+        volume_5d,
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=True,
+    )
+    intensities = samples.view(-1, 1)
 
-    # Create sampling grid for each point
-    intensities = torch.zeros(N, 1, device=device)
-
-    # First attempt: try direct sampling at point locations
-    direct_intensities = torch.zeros(N, 1, device=device)
-    valid_samples = 0
-
-    for i in range(N):
-        x, y, z = point_indices[i]
-        ix, iy, iz = (
-            int(min(max(0, x.item()), W - 1)),
-            int(min(max(0, y.item()), H - 1)),
-            int(min(max(0, z.item()), D - 1)),
-        )
-        val = volume[iz, iy, ix].item()
-        direct_intensities[i, 0] = val
-        if val > 1e-4:  # Count valid samples
-            valid_samples += 1
-
-    # Check if direct sampling gave good results
-    if (
-        valid_samples > N * 0.1
-        and direct_intensities.max() > direct_intensities.min() + 1e-4
-    ):
-        print(f"Using direct sampling - found {valid_samples}/{N} valid samples")
-        return direct_intensities, volume_min, volume_max
-
-    print(f"Direct sampling insufficient, using neighborhood sampling...")
-
-    # Process points in batches to avoid memory issues
-    batch_size = min(100, N)
-    num_batches = (N + batch_size - 1) // batch_size
-
-    for b in range(num_batches):
-        start_idx = b * batch_size
-        end_idx = min((b + 1) * batch_size, N)
-        batch_points = point_indices[start_idx:end_idx]
-        batch_radius = radius[start_idx:end_idx]
-
-        # For each point, extract a cube around it and compute mean intensity
-        batch_intensities = []
-
-        for i in range(len(batch_points)):
-            # Get point center and radius
-            x, y, z = batch_points[i]
-            rx, ry, rz = batch_radius[i]
-
-            # Compute sampling bounds
-            min_x = max(0, int(x - rx))
-            max_x = min(W-1, int(x + rx))
-            min_y = max(0, int(y - ry))
-            max_y = min(H-1, int(y + ry))
-            min_z = max(0, int(z - rz))
-            max_z = min(D-1, int(z + rz))
-
-            # Skip if out of bounds
-            if min_x > max_x or min_y > max_y or min_z > max_z:
-                # Instead of default mid-gray, sample the exact point
-                ix, iy, iz = (
-                    int(min(max(0, x.item()), W - 1)),
-                    int(min(max(0, y.item()), H - 1)),
-                    int(min(max(0, z.item()), D - 1)),
-                )
-                point_val = volume[iz, iy, ix].item()
-                batch_intensities.append(point_val)
-                continue
-
-            # Extract subvolume
-            subvol = volume[min_z:max_z+1, min_y:max_y+1, min_x:max_x+1]
-
-            # Check if we have any non-zero values in the subvolume
-            if subvol.max() <= 1e-4:
-                # If no signal, just use 0
-                batch_intensities.append(0.0)
-                continue
-
-            # Compute weighted mean based on distance
-            grid_z, grid_y, grid_x = torch.meshgrid(
-                torch.arange(min_z, max_z+1, device=device),
-                torch.arange(min_y, max_y+1, device=device),
-                torch.arange(min_x, max_x+1, device=device),
-                indexing='ij'
-            )
-            grid_pts = torch.stack([grid_x, grid_y, grid_z], dim=-1).float()
-
-            # Compute squared distance
-            dist_sq = torch.sum((grid_pts - batch_points[i].unsqueeze(0).unsqueeze(0).unsqueeze(0)) ** 2, dim=-1)
-
-            # Create Gaussian weight
-            weight = torch.exp(-0.5 * dist_sq / (batch_radius[i].mean() ** 2))
-
-            # Compute weighted mean intensity
-            if weight.sum() > 0:
-                weighted_mean = (subvol * weight).sum() / weight.sum()
-                batch_intensities.append(weighted_mean.item())
-            else:
-                batch_intensities.append(subvol.mean().item())
-
-        # Store batch results
-        intensities[start_idx:end_idx] = torch.tensor(batch_intensities, device=device).unsqueeze(-1)
-
-    # Check if we got meaningful values from neighborhood sampling
-    if intensities.max() <= 1e-4:
-        print(
-            "Neighborhood sampling failed, attempting to sample from nonzero regions..."
-        )
-
-        # Find nonzero locations in volume
-        nonzero_locs = torch.nonzero(volume > 1e-4, as_tuple=False)
-        if len(nonzero_locs) > 0:
-            # Sample random indices from nonzero locations
-            random_indices = torch.randint(0, len(nonzero_locs), (N,), device=device)
-            sampled_locs = nonzero_locs[random_indices]
-
-            # Get intensity values at these locations
-            sampled_intensities = volume[
-                sampled_locs[:, 0], sampled_locs[:, 1], sampled_locs[:, 2]
-            ]
-            intensities = sampled_intensities.float().unsqueeze(1)
-
-    # Optionally normalize intensities to [0,1] based on global min/max
     if normalize and volume_max > volume_min:
         intensities = (intensities - volume_min) / (volume_max - volume_min)
-        print(
-            f"Normalized intensities to [0,1] range: [{intensities.min().item():.4f}, {intensities.max().item():.4f}]"
-        )
 
     return intensities, volume_min, volume_max
 
@@ -267,24 +193,7 @@ def update_intensities(
             - Global minimum intensity value in volume
             - Global maximum intensity value in volume
     """
-    # Handle different point formats
-    if points.shape[0] == 3 and points.shape[0] != points.shape[1]:
-        # Convert from [3, N] to [N, 3]
-        points_n3 = points.permute(1, 0)
-    else:
-        points_n3 = points
-
-    # Get volume dimensions
-    D, H, W = volume.shape
-    device = points.device
-
-    # Normalize points to [0,1] if they're in volume index space
-    if points_n3.max() > 1.0:
-        points_n3 = points_n3.clone()
-        points_n3[:, 0] /= (W - 1)
-        points_n3[:, 1] /= (H - 1)
-        points_n3[:, 2] /= (D - 1)
-
+    points_n3 = _ensure_n3(points)
     return sample_intensities_from_volume(points_n3, volume, scale, normalize)
 
 
@@ -306,27 +215,11 @@ def update_opacities(
             - Minimum mask value (usually 0)
             - Maximum mask value (usually 1)
     """
-    # Handle different point formats
-    if points.shape[0] == 3 and points.shape[0] != points.shape[1]:
-        # Convert from [3, N] to [N, 3]
-        points_n3 = points.permute(1, 0)
-    else:
-        points_n3 = points
-
-    # Get volume dimensions
-    D, H, W = mask.shape
-    device = points.device
+    points_n3 = _ensure_n3(points)
 
     # Get global min/max of the mask
     mask_min = float(mask.min().item())
     mask_max = float(mask.max().item())
-
-    # Normalize points to [0,1] if they're in volume index space
-    if points_n3.max() > 1.0:
-        points_n3 = points_n3.clone()
-        points_n3[:, 0] /= W - 1
-        points_n3[:, 1] /= H - 1
-        points_n3[:, 2] /= D - 1
 
     # Get opacity values
     opacities, _, _ = sample_opacities_from_mask(points_n3, mask, scale)

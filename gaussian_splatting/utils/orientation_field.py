@@ -11,6 +11,26 @@ from torch import Tensor
 _DEFAULT_SIGMA_EPS = 1e-6
 
 
+def _normalize_index(idx: Tensor, size: int) -> Tensor:
+    """Normalize voxel indices to [-1, 1] for grid_sample with align_corners=True."""
+    if size <= 1:
+        return torch.zeros_like(idx)
+    denom = float(size - 1)
+    return (idx / denom) * 2.0 - 1.0
+
+
+def default_origin_and_spacing(
+    volume_shape: Tuple[int, int, int],
+    device: torch.device,
+) -> Tuple[Tensor, Tensor]:
+    """Return origin and voxel spacing vectors for a normalized [0, 1]^3 volume."""
+    dims_dhw = torch.tensor(volume_shape, device=device, dtype=torch.float32)
+    dims_xyz = dims_dhw[[2, 1, 0]].clamp_min(1.0)
+    origin = torch.zeros(3, device=device, dtype=torch.float32)
+    voxel = 1.0 / (dims_xyz - 1.0).clamp_min(1.0)
+    return origin, voxel
+
+
 def _gauss1d_kernel(sigma: float, device: torch.device) -> Tensor:
     """Return a 1D Gaussian kernel normalised to sum 1."""
     if sigma <= _DEFAULT_SIGMA_EPS:
@@ -118,6 +138,21 @@ def world_to_voxel(
     iy = rel[:, 1]
     ix = rel[:, 0]
     return torch.stack([iz, iy, ix], dim=-1)
+
+
+def world_to_grid(
+    xyz_world: Tensor,
+    origin_xyz: Tensor,
+    voxel_size_xyz: Tensor,
+    volume_shape: Tuple[int, int, int],
+) -> Tensor:
+    """Convert world coordinates to grid_sample coordinates in [-1, 1]."""
+    ijk = world_to_voxel(xyz_world, origin_xyz, voxel_size_xyz)
+    D, H, W = volume_shape
+    norm_z = _normalize_index(ijk[:, 0], D)
+    norm_y = _normalize_index(ijk[:, 1], H)
+    norm_x = _normalize_index(ijk[:, 2], W)
+    return torch.stack([norm_z, norm_y, norm_x], dim=-1)
 
 
 def gather_rotation_from_field(

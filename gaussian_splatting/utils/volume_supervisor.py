@@ -20,6 +20,7 @@ from gaussian_splatting.utils.splat_to_volume import splat_to_volume
 from gaussian_splatting.data.volume_loader import VolumeLoader
 from gaussian_splatting.utils.orientation_field import (
     compute_structure_field,
+    default_origin_and_spacing,
     gather_rotation_from_field,
     random_quat_perturb,
     rotmat_to_quat,
@@ -71,12 +72,11 @@ class VolumeSupervisor:
         self._orientation_eigvals: Optional[Tensor] = None
 
         # Coordinate mapping assumes volume space normalised to [0, 1]
-        dims_dhw = torch.tensor(
-            self.volume_gt.shape, device=self.device, dtype=torch.float32
+        origin, spacing = default_origin_and_spacing(
+            self.volume_gt.shape, self.device
         )
-        dims_xyz = dims_dhw[[2, 1, 0]].clamp_min(1.0)
-        self.volume_origin = torch.zeros(3, device=self.device, dtype=torch.float32)
-        self.voxel_size = 1.0 / (dims_xyz - 1.0).clamp_min(1.0)
+        self.volume_origin = origin
+        self.voxel_size = spacing
 
         # Load mask volume if provided
         self.mask_volume = None
