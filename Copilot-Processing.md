@@ -10,13 +10,13 @@ tags:
 	- tracking
 ai_note: "Generated with AI assistance."
 summary: "Tracking the current Copilot request workflow."
-post_date: "2025-10-18"
+post_date: "2025-10-19"
 ---
 
 ## Request Overview
-- Fix blurry reconstructions and stripe artifacts from Gaussian splatting training.
-- Align world↔voxel mappings, use trilinear sampling, and improve initialization without new CLI flags.
-- Adjust splatting kernel normalization to avoid over-smoothing while keeping defaults stable.
+- Investigate why Gaussian splat scales stay constant during training and restore expected updates.
+- Diagnose learning rate, gradient flow, and optimizer wiring for `_scaling` parameters.
+- Apply minimal fixes to ensure scale parameters learn without altering public APIs or adding CLI flags.
 
 ## Action Plan
 1. Audit current coordinate transforms, sampling paths, and splat normalization to pinpoint inconsistencies.
@@ -53,6 +53,8 @@ post_date: "2025-10-18"
 - Reworked point initialization to use distance-weighted sampling, jitter, spacing control, and normalized opacity seeding.
 - Tightened `splat_to_volume` kernels with per-axis sigma clamps and explicit weight normalization to reduce blur.
 - Updated volume supervision to reuse shared spacing helper; validation smoke-test still pending.
+- Refactored training loop to unscale gradients before clipping, drop the redundant optimizer step, and clear grads after densification so `_scaling` applies a single update per iteration.
+- Added console and TensorBoard diagnostics for scaling learning rates, gradient norms, and per-iteration parameter deltas to spotlight stagnant scale updates quickly.
 
 ## Action Plan
 1. Review available orientation metadata on the model to confirm densification access patterns.
@@ -75,7 +77,27 @@ post_date: "2025-10-18"
 - [x] Validate tensor device/dtype alignment and guard against missing orientation field.
 - [x] Run or recommend relevant tests to confirm densification stability (`python train.py --volume_supervision ...` on a small volume scene).
 
-## Summary
-- Added `_sample_orientation_quats` helper in `scene/gaussian_model.py` to reuse cached orientation field data for densification.
-- Updated `densify_and_split` and `densify_and_clone` to request field-aligned quaternions with fallback perturbations while tracking fallback counts.
-- Ensured new rotation tensors remain normalized, device-aligned, and detached from parent parameters; recommended rerunning a short `train.py --volume_supervision` trial to validate behavior.
+-## Action Plan
+1. Instrument training loop to log learning rates, gradient norms, and per-iteration scale updates.
+2. Audit optimizer/AMP ordering to ensure `_scaling` receives gradients and steps correctly.
+3. Confirm `_scaling` parameters are registered with valid learning rates during setup and densification.
+4. Enforce sane scale constraints without erasing gradients; rerun smoke tests to verify scale evolution.
+
+## Task Tracker
+### Phase A: Diagnostics
+- [x] Add temporary LR and gradient logging around optimizer step.
+- [x] Verify `_scaling` is an `nn.Parameter` with `requires_grad=True` during training.
+- [x] Measure per-iteration scale changes using existing trackers or new summaries.
+
+### Phase B: Optimizer & AMP Ordering
+- [x] Review `train.py` backward/step flow to remove duplicate steps and unscale before clipping.
+- [x] Clip gradients after `scaler.unscale_` and ensure zero_grad occurs post-step.
+
+### Phase C: Scaling Parameter Wiring
+- [x] Confirm `_scaling` is added to optimizer with non-zero LR in `GaussianModel.training_setup`.
+- [x] Ensure densification routines re-register `_scaling` parameters with optimizer state.
+- [ ] Adjust scale constraint helper to clamp decoded scales while keeping gradients intact.
+
+### Phase D: Validation
+- [ ] Run targeted training (e.g., `_test-data_/synthetic-gradient.nii.gz`) to confirm scale statistics evolve.
+- [ ] Capture logs or plots demonstrating non-trivial scale updates.

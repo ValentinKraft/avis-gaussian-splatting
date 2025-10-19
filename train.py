@@ -188,8 +188,20 @@ def training(
 
         iter_start.record()
 
+        xyz_grad_norm = None
+        scaling_grad_norm = None
+        rotation_grad_norm = None
+        scaling_lr = next(
+            (
+                group["lr"]
+                for group in gaussians.optimizer.param_groups
+                if group["name"] == "scaling"
+            ),
+            None,
+        )
+
         gaussians.update_learning_rate(iteration)
-        gaussians.optimizer.zero_grad()
+        gaussians.optimizer.zero_grad(set_to_none=True)
 
         # No SH updates needed for volume-only training
 
@@ -279,8 +291,18 @@ def training(
                     )
                     p.requires_grad_(True)
 
-            # Use gradient scaler for mixed precision training
-            scaler.scale(loss).backward()
+            if use_amp:
+                scaler.scale(loss).backward()
+                scaler.unscale_(gaussians.optimizer)
+            else:
+                loss.backward()
+
+            if gaussians._xyz.grad is not None:
+                xyz_grad_norm = gaussians._xyz.grad.norm().item()
+            if gaussians._scaling.grad is not None:
+                scaling_grad_norm = gaussians._scaling.grad.norm().item()
+            if gaussians._rotation.grad is not None:
+                rotation_grad_norm = gaussians._rotation.grad.norm().item()
 
             # Debug: Save pre-step values to verify updates happen
             if iteration <= 5 or iteration % 500 == 0:
@@ -328,16 +350,21 @@ def training(
                 if clip_candidates:
                     torch.nn.utils.clip_grad_norm_(clip_candidates, max_norm=10.0)
 
-            # Apply optimizer step with gradient scaler
-            scaler.step(gaussians.optimizer)
-            scaler.update()
+            if use_amp:
+                prev_scale = scaler.get_scale()
+                scaler.step(gaussians.optimizer)
+                scaler.update()
+            else:
+                gaussians.optimizer.step()
 
             # Debug: Check if scaler skipped the step (happens when gradients are inf/nan)
             if iteration <= 10 or iteration % 500 == 0:
-                scale = scaler.get_scale()
-                print(f"[ITER {iteration}] Scaler scale: {scale:.2f}")
+                if use_amp:
+                    scale = scaler.get_scale()
+                    print(
+                        f"[ITER {iteration}] GradScaler scale: {scale:.2f} (prev {prev_scale:.2f})"
+                    )
 
-                # Check if parameters actually changed
                 if iteration <= 5 or iteration % 500 == 0:
                     post_xyz_mean = gaussians._xyz.mean().item()
                     post_scaling_mean = gaussians._scaling.mean().item()
@@ -345,6 +372,17 @@ def training(
                     scaling_change = abs(post_scaling_mean - pre_scaling_mean)
                     print(f"  XYZ mean change: {xyz_change:.10f}")
                     print(f"  Scaling mean change: {scaling_change:.10f}")
+                    if scaling_lr is not None and scaling_grad_norm is not None:
+                        print(
+                            "  Scaling lr: {:.6e} | grad norm: {:.6e}".format(
+                                scaling_lr,
+                                scaling_grad_norm,
+                            )
+                        )
+                    if xyz_grad_norm is not None:
+                        print(f"  XYZ grad norm: {xyz_grad_norm:.6e}")
+                    if rotation_grad_norm is not None:
+                        print(f"  Rotation grad norm: {rotation_grad_norm:.6e}")
 
             # Verify learning rates on first few iterations
             if iteration <= 3:
@@ -370,12 +408,12 @@ def training(
                         # _xyz has shape [3, N], so grad also has shape [3, N]
                         # Compute norm across the 3D dimension (dim=0) to get magnitude per point
                         # Result shape: [N]
-                        xyz_grad_norm = torch.norm(
+                        xyz_grad_per_point = torch.norm(
                             gaussians._xyz.grad, dim=0, keepdim=False
                         )
                         # Reshape to [N, 1] to match xyz_gradient_accum shape
-                        xyz_grad_norm = xyz_grad_norm.unsqueeze(1)
-                        gaussians.xyz_gradient_accum += xyz_grad_norm
+                        xyz_grad_per_point = xyz_grad_per_point.unsqueeze(1)
+                        gaussians.xyz_gradient_accum += xyz_grad_per_point
                         gaussians.denom += 1
 
                     # Perform densification and pruning at intervals
@@ -418,6 +456,8 @@ def training(
                         print(
                             f"Rotation grad norm: {gaussians._rotation.grad.norm().item():.6f}"
                         )
+
+            gaussians.optimizer.zero_grad(set_to_none=True)
 
             # Add a manual gradient perturbation if gradients are zero
             # This is a drastic measure to force parameter updates
@@ -478,6 +518,17 @@ def training(
                 tb_writer.add_scalar("parameters/scaling_std", scaling_std, iteration) 
                 tb_writer.add_scalar("parameters/rotation_magnitude", rotation_magnitude, iteration)
 
+                if xyz_grad_norm is not None:
+                    tb_writer.add_scalar("grads/xyz_norm", xyz_grad_norm, iteration)
+                if scaling_grad_norm is not None:
+                    tb_writer.add_scalar("grads/scaling_norm", scaling_grad_norm, iteration)
+                if rotation_grad_norm is not None:
+                    tb_writer.add_scalar(
+                        "grads/rotation_norm", rotation_grad_norm, iteration
+                    )
+                if scaling_lr is not None:
+                    tb_writer.add_scalar("lr/scaling", scaling_lr, iteration)
+
                 # Track parameter updates to verify optimization is working
                 update_metrics = update_tracker.update(gaussians)
                 for name, value in update_metrics.items():
@@ -526,12 +577,6 @@ def training(
             # Reset opacity periodically
             if iteration % opt.opacity_reset_interval == 0:
                 gaussians.reset_opacity()
-
-            # Optimizer step
-            if iteration < opt.iterations:
-                gaussians.optimizer.step()
-                gaussians.enforce_scaling_constraint()  # Enforce maximum scaling constraint
-                gaussians.optimizer.zero_grad(set_to_none=True)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
