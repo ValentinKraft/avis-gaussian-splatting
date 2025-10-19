@@ -114,8 +114,8 @@ def initialize_from_volume(
         indexing="ij",
     )
     coords = torch.stack([x, y, z], dim=-1).float()
-    coords_flat = coords.view(-1, 3)
-    volume_flat = sampling_volume.view(-1)
+    coords_flat = coords.reshape(-1, 3)
+    volume_flat = sampling_volume.reshape(-1)
 
     positive_vals = volume_flat[volume_flat > 0]
     if positive_vals.numel() == 0:
@@ -123,7 +123,7 @@ def initialize_from_volume(
 
     threshold = float(positive_vals.mean().item() * 0.3)
     distance_field = _compute_distance_field(sampling_volume, threshold=threshold)
-    distance_flat = distance_field.view(-1)
+    distance_flat = distance_field.reshape(-1)
 
     weights = (volume_flat.clamp_min(0.0) + 1e-6) * (distance_flat + 1e-4)
     weights_sum = weights.sum()

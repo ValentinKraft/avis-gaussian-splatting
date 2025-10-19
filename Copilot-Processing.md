@@ -47,6 +47,7 @@ post_date: "2025-10-18"
 - Second attempt failed due to uninitialized `extra_idx`; guard added before concatenation.
 - Third attempt hit grid reshape bug; fixed world→grid helper to stack normalized coords before reshaping.
 - Fourth attempt exposed batch mismatch in `grid_sample`; reshaped queries to `[1, N, 1, 1, 3]` and fixed validation branch indentation.
+- Synthetic-case run failed on non-contiguous tensors; swapped `.view(...)` for `.reshape(...)` during volume flattening.
 - Added unified coordinate helpers (`default_origin_and_spacing`, `world_to_grid`) to ensure consistent world↔voxel/grid mapping.
 - Refactored intensity/opacity sampling to rely on trilinear `grid_sample` with optional validation guard.
 - Reworked point initialization to use distance-weighted sampling, jitter, spacing control, and normalized opacity seeding.
