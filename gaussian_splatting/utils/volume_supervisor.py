@@ -16,6 +16,7 @@ from torch import Tensor
 from typing import Optional, Dict, Tuple
 
 from gaussian_splatting.losses.volume_loss import VolumeLoss
+from torch.utils.checkpoint import checkpoint
 from gaussian_splatting.utils.splat_to_volume import splat_to_volume
 from gaussian_splatting.data.volume_loader import VolumeLoader
 from gaussian_splatting.utils.orientation_field import (
@@ -138,7 +139,12 @@ class VolumeSupervisor:
             ),
         }
 
-    def compute_loss(self, gaussians) -> Tuple[Tensor, Dict[str, float], Tensor]:
+    def compute_loss(
+        self,
+        gaussians,
+        active_idx: Optional[Tensor] = None,
+        total_points: Optional[int] = None,
+    ) -> Tuple[Tensor, Dict[str, float], Tensor]:
         """
         Compute volume supervision loss for current gaussians.
         
@@ -249,6 +255,9 @@ class VolumeSupervisor:
                     requires_grad=use_opacity.requires_grad,
                 )
 
+        if total_points is None:
+            total_points = n_points
+
         # Fix intensity tensor shape if needed (use_intensities was computed above from features)
         if use_intensities.shape[0] != n_points:
             if use_intensities.numel() == 3:  # We have exactly 3 values
@@ -270,15 +279,23 @@ class VolumeSupervisor:
         # Debug tensor shapes is no longer needed
 
         # Convert gaussians to volume (directly uses parameter tensors for gradient flow)
-        volume_pred = splat_to_volume(
-            points=xyz,
-            point_scales=scaling,
-            point_rotations=rotation,
-            point_opacities=use_opacity,
-            point_intensities=use_intensities,
-            volume_shape=self.volume_shape,
-            device=xyz.device,
-        )
+        def _render(points, scales, rotations, opacities, intensities):
+            return splat_to_volume(
+                points=points,
+                point_scales=scales,
+                point_rotations=rotations,
+                point_opacities=opacities,
+                point_intensities=intensities,
+                volume_shape=self.volume_shape,
+                device=xyz.device,
+                active_idx=active_idx,
+            )
+
+        render_inputs = (xyz, scaling, rotation, use_opacity, use_intensities)
+        if any(t.requires_grad for t in render_inputs):
+            volume_pred = checkpoint(_render, *render_inputs, use_reentrant=False)
+        else:
+            volume_pred = _render(*render_inputs)
 
         # Optionally retain grad for debugging
         if getattr(self, "debug", False):
@@ -294,6 +311,15 @@ class VolumeSupervisor:
         # Compute loss - make sure both tensors are on the same device
         self.volume_gt = self.volume_gt.to(volume_pred.device)
         loss = self.criterion(volume_pred, self.volume_gt)
+
+        if (
+            active_idx is not None
+            and self.criterion.loss_type == "mse"
+            and total_points is not None
+            and active_idx.numel() > 0
+            and total_points > active_idx.numel()
+        ):
+            loss = loss * (total_points / active_idx.numel())
 
         # Scale loss by weight
         if self.loss_weight != 1.0:

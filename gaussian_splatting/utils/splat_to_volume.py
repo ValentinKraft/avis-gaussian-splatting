@@ -118,6 +118,7 @@ def splat_to_volume(
     scale: float = 0.1,
     batch_size: int = 50,  # Process points in batches to save memory
     device: Optional[torch.device] = None,
+    active_idx: Optional[Tensor] = None,
 ) -> Tensor:
     """
     Convert 3D Gaussian splats to a volumetric representation.
@@ -138,6 +139,21 @@ def splat_to_volume(
         Volume tensor (D, H, W)
     """
     device = points.device if device is None else device
+
+    def _index_param(t: Optional[Tensor]) -> Optional[Tensor]:
+        if t is None or active_idx is None:
+            return t
+        if t.dim() == 2 and t.shape[0] == 3 and t.shape[1] != 3:
+            return torch.index_select(t, 1, active_idx)
+        return torch.index_select(t, 0, active_idx)
+
+    points = _index_param(points)
+    point_scales = _index_param(point_scales)
+    point_rotations = _index_param(point_rotations)
+    point_opacities = _index_param(point_opacities)
+    point_intensities = _index_param(point_intensities)
+    if covariances is not None and active_idx is not None:
+        covariances = torch.index_select(covariances, 0, active_idx)
 
     # Lightweight debug (can be silenced by setting ENV var later)
     if torch.is_grad_enabled() and points.grad_fn is None:
@@ -161,14 +177,27 @@ def splat_to_volume(
         # Keep the tensor as is
         points_n3 = points
 
+    accum_dtype = torch.float32
+    points_n3 = points_n3.to(accum_dtype)
+    if point_scales is not None:
+        point_scales = point_scales.to(accum_dtype)
+    if point_opacities is not None:
+        point_opacities = point_opacities.to(accum_dtype)
+    if point_intensities is not None:
+        point_intensities = point_intensities.to(accum_dtype)
+    if point_rotations is not None:
+        point_rotations = point_rotations.to(accum_dtype)
+    if covariances is not None:
+        covariances = covariances.to(accum_dtype)
+
     total_points = points_n3.shape[0]
     # Avoid verbose printing here for performance
 
     # Create volume grid - these don't need gradients
-    grid_points = create_grid_points(volume_shape, device)
+    grid_points = create_grid_points(volume_shape, device).to(accum_dtype)
 
     # Allocate final volume (grad will flow through ops populating it)
-    volume = torch.zeros(volume_shape, device=device)
+    volume = torch.zeros(volume_shape, device=device, dtype=accum_dtype)
 
     # Process splats in batches to save memory
     batch_size = min(batch_size, 100)  # Increased batch size for better performance
@@ -179,17 +208,17 @@ def splat_to_volume(
         # Create a smaller working grid for initial calculations
         small_shape = tuple(max(16, d // 2) for d in volume_shape)
         # Only create the grid once and reuse it
-        small_grid_points = create_grid_points(small_shape, device)
+        small_grid_points = create_grid_points(small_shape, device).to(accum_dtype)
         # We'll upsample back to full resolution at the end
     else:
         small_shape = volume_shape
         small_grid_points = grid_points
 
     # Create a small working volume for accumulating results
-    small_volume = torch.zeros(small_shape, device=device)
+    small_volume = torch.zeros(small_shape, device=device, dtype=accum_dtype)
     weight_volume = torch.zeros_like(small_volume)
 
-    voxel_spacing = default_origin_and_spacing(volume_shape, device)[1].to(points_n3.dtype)
+    voxel_spacing = default_origin_and_spacing(volume_shape, device)[1].to(accum_dtype)
     if small_shape == volume_shape:
         scale_ratio = torch.ones(3, device=device, dtype=points_n3.dtype)
     else:
@@ -200,9 +229,10 @@ def splat_to_volume(
                 volume_shape[0] / small_shape[0],
             ],
             device=device,
-            dtype=points_n3.dtype,
+            dtype=accum_dtype,
         )
     min_sigma = voxel_spacing * scale_ratio
+    min_sigma = torch.maximum(min_sigma, 0.5 * voxel_spacing)
 
     # Handle scaling parameters
     # point_scales, point_opacities, point_intensities already passed as parameters
@@ -210,7 +240,7 @@ def splat_to_volume(
     # Use default intensity values if not provided
     if point_intensities is None:
         # Default to 1.0 intensity if not provided
-        point_intensities = torch.ones(total_points, device=device)
+        point_intensities = torch.ones(total_points, device=device, dtype=accum_dtype)
 
     # Use torch.cuda.empty_cache() to clear memory periodically
     # if device.type == 'cuda':
@@ -302,8 +332,8 @@ def splat_to_volume(
             value_scale = torch.ones(Bcur, device=device, dtype=bp.dtype)
 
         inv_scales = 1.0 / (scales_batch + 1e-6)  # (B,3)
-        contrib_flat = torch.zeros(G, device=device, dtype=bp.dtype)
-        weight_flat = torch.zeros(G, device=device, dtype=bp.dtype)
+        contrib_flat = torch.zeros(G, device=device, dtype=accum_dtype)
+        weight_flat = torch.zeros(G, device=device, dtype=accum_dtype)
 
         for g0 in range(0, G, grid_chunk):
             g1 = min(g0 + grid_chunk, G)
@@ -331,7 +361,9 @@ def splat_to_volume(
             else:
                 diff_local = diff
             diff_scaled = diff_local * inv_scales.unsqueeze(0)  # (Cg,B,3)
+            support_mask = (diff_scaled.abs() <= 3.0).all(dim=-1)
             sq = (diff_scaled * diff_scaled).sum(-1)  # (Cg,B)
+            sq = sq.masked_fill(~support_mask, 36.0)
             kern = torch.exp(-0.5 * sq)
             value_contrib = kern * (alpha * value_scale).unsqueeze(0)
             weight_contrib = kern * alpha.unsqueeze(0)

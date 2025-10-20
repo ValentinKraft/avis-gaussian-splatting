@@ -28,6 +28,45 @@ from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
 from utils.parameter_monitoring import add_parameter_regularization_loss
 from torch.cuda.amp import autocast, GradScaler
 
+
+MAX_POINTS_PER_ITER = 20000  # Upper bound of splats per forward pass to limit memory
+
+
+def _select_active_indices(xyz: torch.Tensor) -> tuple[Optional[torch.Tensor], int]:
+    """Return a random subset of point indices capped at MAX_POINTS_PER_ITER."""
+    if xyz.dim() != 2:
+        total = xyz.shape[0]
+        return None, total
+
+    if xyz.shape[0] == 3 and xyz.shape[1] != 3:
+        total = xyz.shape[1]
+    else:
+        total = xyz.shape[0]
+
+    if total <= MAX_POINTS_PER_ITER:
+        return None, total
+
+    device = xyz.device
+    idx = torch.randperm(total, device=device)[:MAX_POINTS_PER_ITER]
+    return idx, total
+
+
+def _log_gpu_memory(
+    tag: str, iteration: int, total_points: int, active_points: int
+) -> None:
+    """Print lightweight CUDA memory diagnostics for early iterations."""
+    if not torch.cuda.is_available():
+        return
+    alloc = torch.cuda.max_memory_allocated() / 1e9
+    reserved = torch.cuda.max_memory_reserved() / 1e9
+    print(
+        (
+            f"[MEM][iter={iteration}] {tag}: alloc={alloc:.2f} GB, "
+            f"reserved={reserved:.2f} GB | points {active_points}/{total_points}"
+        )
+    )
+
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -171,8 +210,13 @@ def training(
     )  # Use mixed precision unless explicitly disabled
     if use_amp:
         print("Using mixed precision training for better performance")
+        bf16_supported = False
+        if hasattr(torch.cuda, "is_bf16_supported") and torch.cuda.is_available():
+            bf16_supported = torch.cuda.is_bf16_supported()
+        amp_dtype = torch.bfloat16 if bf16_supported else torch.float16
     else:
         print("Mixed precision training disabled")
+        amp_dtype = torch.float32
 
     # Initialize tracking variables
     ema_loss_for_log = 0.0
@@ -187,6 +231,10 @@ def training(
         # Skip GUI network in volume-only mode
 
         iter_start.record()
+
+        log_mem = iteration <= 3
+        if log_mem and torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
 
         xyz_grad_norm = None
         scaling_grad_norm = None
@@ -203,6 +251,24 @@ def training(
         gaussians.update_learning_rate(iteration)
         gaussians.optimizer.zero_grad(set_to_none=True)
 
+        active_idx: Optional[torch.Tensor] = None
+        total_points = 0
+        active_points = 0
+        if args.volume_supervision and volume_supervisor is not None:
+            xyz_for_sampling = gaussians.get_xyz
+            active_idx, total_points = _select_active_indices(xyz_for_sampling)
+            active_points = (
+                active_idx.numel() if active_idx is not None else total_points
+            )
+            if log_mem and total_points > 0:
+                _log_gpu_memory(
+                    "before_forward", iteration, total_points, active_points
+                )
+                if active_idx is not None:
+                    print(
+                        f"[Points][iter={iteration}] using {active_points} / {total_points} splats"
+                    )
+
         # No SH updates needed for volume-only training
 
         # Initialize total loss
@@ -212,14 +278,19 @@ def training(
 
         if args.volume_supervision and volume_supervisor is not None:
             # Compute the volume loss and get volume gradients for parameter diversity loss
-            with autocast(enabled=use_amp):
+            with autocast(enabled=use_amp, dtype=amp_dtype if use_amp else None):
                 vol_loss, vol_metrics, vol_gradients = volume_supervisor.compute_loss(
-                    gaussians
+                    gaussians,
+                    active_idx=active_idx,
+                    total_points=total_points,
                 )
 
                 # CRITICAL: Don't call item() on the loss until after backward() is called!
                 # This would break the computation graph
                 loss = vol_loss
+
+            if log_mem and total_points > 0:
+                _log_gpu_memory("after_forward", iteration, total_points, active_points)
 
             # Store value for logging only
             volume_loss = vol_loss.detach().item()
@@ -304,6 +375,11 @@ def training(
             if gaussians._rotation.grad is not None:
                 rotation_grad_norm = gaussians._rotation.grad.norm().item()
 
+            if log_mem and total_points > 0:
+                _log_gpu_memory(
+                    "after_backward", iteration, total_points, active_points
+                )
+
             # Debug: Save pre-step values to verify updates happen
             if iteration <= 5 or iteration % 500 == 0:
                 pre_xyz_mean = gaussians._xyz.mean().item()
@@ -356,6 +432,9 @@ def training(
                 scaler.update()
             else:
                 gaussians.optimizer.step()
+
+            if log_mem and total_points > 0:
+                _log_gpu_memory("after_step", iteration, total_points, active_points)
 
             # Debug: Check if scaler skipped the step (happens when gradients are inf/nan)
             if iteration <= 10 or iteration % 500 == 0:

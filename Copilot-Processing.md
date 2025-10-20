@@ -55,6 +55,7 @@ post_date: "2025-10-19"
 - Updated volume supervision to reuse shared spacing helper; validation smoke-test still pending.
 - Refactored training loop to unscale gradients before clipping, drop the redundant optimizer step, and clear grads after densification so `_scaling` applies a single update per iteration.
 - Added console and TensorBoard diagnostics for scaling learning rates, gradient norms, and per-iteration parameter deltas to spotlight stagnant scale updates quickly.
+- Introduced per-iteration micro-batching, CUDA memory probes, and checkpointed rendering to keep >25k splats within VRAM while maintaining gradient fidelity.
 
 ## Action Plan
 1. Review available orientation metadata on the model to confirm densification access patterns.
