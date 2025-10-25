@@ -6,6 +6,9 @@ Tracks and visualizes parameter changes during optimization.
 import torch
 import numpy as np
 import os
+import matplotlib
+
+matplotlib.use("Agg")  # Headless backend to avoid Tkinter dependency during training
 import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Tuple
 import time

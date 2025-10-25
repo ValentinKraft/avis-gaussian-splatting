@@ -25,7 +25,6 @@ from gaussian_splatting.utils.parameter_monitor import (
     ParameterMonitor,
 )
 from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
-from utils.parameter_monitoring import add_parameter_regularization_loss
 from torch.cuda.amp import autocast, GradScaler
 
 
@@ -67,6 +66,81 @@ def _log_gpu_memory(
     )
 
 
+def _ensure_core_params_require_grad(gaussians: GaussianModel) -> None:
+    """Make sure the core tensors stay connected to the optimizer graph."""
+    for name in ("_xyz", "_scaling", "_rotation"):
+        tensor = getattr(gaussians, name, None)
+        if tensor is None or not isinstance(tensor, torch.nn.Parameter):
+            continue
+        if not tensor.requires_grad:
+            print(f"WARNING: {name} had requires_grad=False – enabling in-place.")
+            tensor.requires_grad_(True)
+
+
+def _collect_grad_norms(gaussians: GaussianModel) -> dict[str, float]:
+    """Return gradient norms for the main parameter tensors."""
+    norms: dict[str, float] = {}
+    if gaussians._xyz.grad is not None:
+        norms["xyz"] = gaussians._xyz.grad.norm().item()
+    if gaussians._scaling.grad is not None:
+        norms["scaling"] = gaussians._scaling.grad.norm().item()
+    if gaussians._rotation.grad is not None:
+        norms["rotation"] = gaussians._rotation.grad.norm().item()
+    return norms
+
+
+def _clip_gradients(gaussians: GaussianModel, max_norm: float) -> None:
+    """Apply gradient clipping to the core tensors if gradients exist."""
+    clip_candidates: list[torch.Tensor] = []
+
+    if gaussians._xyz.grad is not None:
+        clip_candidates.append(gaussians._xyz)
+
+    if gaussians._scaling.grad is not None:
+        clip_candidates.append(gaussians._scaling)
+
+    if gaussians._rotation.grad is not None:
+        clip_candidates.append(gaussians._rotation)
+
+    if (
+        hasattr(gaussians, "_features_dc")
+        and gaussians._features_dc is not None
+        and gaussians._features_dc.requires_grad
+        and gaussians._features_dc.grad is not None
+    ):
+        clip_candidates.append(gaussians._features_dc)
+
+    if clip_candidates:
+        torch.nn.utils.clip_grad_norm_(clip_candidates, max_norm=max_norm)
+
+
+def _log_gradient_snapshot(
+    gaussians: GaussianModel, iteration: int, interval: int
+) -> None:
+    """Log gradient norms to stdout at a fixed interval."""
+    if iteration % interval != 0:
+        return
+    with torch.no_grad():
+        if gaussians._xyz.grad is not None:
+            print(f"XYZ grad norm: {gaussians._xyz.grad.norm().item():.6f}")
+        if gaussians._scaling.grad is not None:
+            print(f"Scaling grad norm: {gaussians._scaling.grad.norm().item():.6f}")
+        if gaussians._rotation.grad is not None:
+            print(f"Rotation grad norm: {gaussians._rotation.grad.norm().item():.6f}")
+
+
+def _log_learning_rates(gaussians: GaussianModel, iteration: int) -> None:
+    """Dump learning rate information for the first iterations."""
+    if iteration > 3:
+        return
+    print(f"\n[ITER {iteration}] Learning Rates:")
+    for group in gaussians.optimizer.param_groups:
+        name = group.get("name", "?")
+        lr = group.get("lr", 0.0)
+        print(f"  {name:15s}: {lr:.8f}")
+    print(f"  spatial_lr_scale: {gaussians.spatial_lr_scale:.8f}")
+
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -93,6 +167,7 @@ def training(
 ):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
+
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
     first_iter = 0
@@ -195,13 +270,6 @@ def training(
         gaussians.restore(model_params, opt)
 
         # Initialize intensity values if they don't exist
-        # if not hasattr(gaussians, "intensities") or gaussians.intensities.numel() == 0:
-        #     num_points = gaussians._xyz.shape[1]
-        #     gaussians.intensities = torch.ones((num_points, 1), device="cuda") * 0.5
-        #     print(f"Initialized {num_points} intensity values to 0.5")
-
-    iter_start = torch.cuda.Event(enable_timing = True)
-    iter_end = torch.cuda.Event(enable_timing = True)
 
     # Initialize mixed precision training
     scaler = GradScaler()
@@ -222,6 +290,22 @@ def training(
     ema_loss_for_log = 0.0
     ema_vol_loss_for_log = 0.0
     param_stats = {"scale_change_rate": 0.0, "rot_change_rate": 0.0}
+
+    class _NoopCudaEvent:
+        """Minimal stand-in when CUDA timing events are unavailable."""
+
+        def record(self) -> None:
+            return None
+
+        def elapsed_time(self, other) -> float:
+            return 0.0
+
+    if torch.cuda.is_available():
+        iter_start = torch.cuda.Event(enable_timing=True)
+        iter_end = torch.cuda.Event(enable_timing=True)
+    else:
+        iter_start = _NoopCudaEvent()
+        iter_end = _NoopCudaEvent()
 
     progress_bar = tqdm(
         range(first_iter, opt.iterations), desc="#### Training progress ####"
@@ -350,17 +434,7 @@ def training(
         # Make sure the loss requires gradients before calling backward
         if loss.requires_grad:
             # Make sure parameters require gradients BEFORE calling backward
-            # Ensure core parameters keep identity as nn.Parameter (never reassign tensor objects)
-            for name in ["_xyz", "_scaling", "_rotation"]:
-                p = getattr(gaussians, name, None)
-                if p is None or not isinstance(p, torch.nn.Parameter):
-                    # Skip silently if absent – initialization should have created them
-                    continue
-                if not p.requires_grad:
-                    print(
-                        f"WARNING: {name} had requires_grad=False – enabling in-place."
-                    )
-                    p.requires_grad_(True)
+            _ensure_core_params_require_grad(gaussians)
 
             if use_amp:
                 scaler.scale(loss).backward()
@@ -368,12 +442,10 @@ def training(
             else:
                 loss.backward()
 
-            if gaussians._xyz.grad is not None:
-                xyz_grad_norm = gaussians._xyz.grad.norm().item()
-            if gaussians._scaling.grad is not None:
-                scaling_grad_norm = gaussians._scaling.grad.norm().item()
-            if gaussians._rotation.grad is not None:
-                rotation_grad_norm = gaussians._rotation.grad.norm().item()
+            grad_norms = _collect_grad_norms(gaussians)
+            xyz_grad_norm = grad_norms.get("xyz")
+            scaling_grad_norm = grad_norms.get("scaling")
+            rotation_grad_norm = grad_norms.get("rotation")
 
             if log_mem and total_points > 0:
                 _log_gpu_memory(
@@ -385,46 +457,11 @@ def training(
                 pre_xyz_mean = gaussians._xyz.mean().item()
                 pre_scaling_mean = gaussians._scaling.mean().item()
 
-            # Debug gradients less frequently to improve performance
-            if iteration % 50 == 0:  # Reduced from every 10th to every 50th iteration
-                # Check if gradients exist and what their magnitudes are
-                with torch.no_grad():  # Ensure we don't track unnecessary operations
-                    if gaussians._xyz.grad is not None:
-                        print(f"XYZ grad norm: {gaussians._xyz.grad.norm().item():.6f}")
-
-                    if gaussians._scaling.grad is not None:
-                        print(
-                            f"Scaling grad norm: {gaussians._scaling.grad.norm().item():.6f}"
-                        )
-
-                    if gaussians._rotation.grad is not None:
-                        print(
-                            f"Rotation grad norm: {gaussians._rotation.grad.norm().item():.6f}"
-                        )
+            _log_gradient_snapshot(gaussians, iteration, interval=50)
 
             # Clip gradients to prevent numerical instability
             if iteration > 1:
-                clip_candidates = []
-
-                if gaussians._xyz.grad is not None:
-                    clip_candidates.append(gaussians._xyz)
-
-                if gaussians._scaling.grad is not None:
-                    clip_candidates.append(gaussians._scaling)
-
-                if gaussians._rotation.grad is not None:
-                    clip_candidates.append(gaussians._rotation)
-
-                if (
-                    hasattr(gaussians, "_features_dc")
-                    and gaussians._features_dc is not None
-                    and gaussians._features_dc.requires_grad
-                    and gaussians._features_dc.grad is not None
-                ):
-                    clip_candidates.append(gaussians._features_dc)
-
-                if clip_candidates:
-                    torch.nn.utils.clip_grad_norm_(clip_candidates, max_norm=10.0)
+                _clip_gradients(gaussians, max_norm=10.0)
 
             if use_amp:
                 prev_scale = scaler.get_scale()
@@ -464,13 +501,7 @@ def training(
                         print(f"  Rotation grad norm: {rotation_grad_norm:.6e}")
 
             # Verify learning rates on first few iterations
-            if iteration <= 3:
-                print(f"\n[ITER {iteration}] Learning Rates:")
-                for i, group in enumerate(gaussians.optimizer.param_groups):
-                    print(f"  {group['name']:15s}: {group['lr']:.8f}")
-
-                # Also print spatial_lr_scale for debugging
-                print(f"  spatial_lr_scale: {gaussians.spatial_lr_scale:.8f}")
+            _log_learning_rates(gaussians, iteration)
 
             # Enforce maximum scaling constraint (2x initial size)
             gaussians.enforce_scaling_constraint()
@@ -519,22 +550,7 @@ def training(
                                 f"\n[ITER {iteration}] Densification: {gaussians._xyz.shape[1]} points"
                             )
 
-            # Debug gradients less frequently to improve performance
-            if iteration % 50 == 0:  # Reduced from every 10th to every 50th iteration
-                # Check if gradients exist and what their magnitudes are
-                with torch.no_grad():  # Ensure we don't track unnecessary operations
-                    if gaussians._xyz.grad is not None:
-                        print(f"XYZ grad norm: {gaussians._xyz.grad.norm().item():.6f}")
-
-                    if gaussians._scaling.grad is not None:
-                        print(
-                            f"Scaling grad norm: {gaussians._scaling.grad.norm().item():.6f}"
-                        )
-
-                    if gaussians._rotation.grad is not None:
-                        print(
-                            f"Rotation grad norm: {gaussians._rotation.grad.norm().item():.6f}"
-                        )
+            _log_gradient_snapshot(gaussians, iteration, interval=50)
 
             gaussians.optimizer.zero_grad(set_to_none=True)
 
