@@ -176,6 +176,7 @@ def gather_rotation_from_field(
 
     fallback = vals.sum(dim=-1) < eps
     if fallback.any():
+        print(f"Warning: Rotation fallback for {fallback.sum().item()} points.")
         rot[fallback] = torch.eye(3, device=rot.device, dtype=rot.dtype)
 
     q, _ = torch.linalg.qr(rot)

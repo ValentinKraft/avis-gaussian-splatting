@@ -115,6 +115,7 @@ class VolumeSupervisor:
     def get_quat_for_points(self, xyz_world: Tensor) -> Tuple[Tensor, int]:
         """Return orientation quaternions and fallback count for points."""
         if xyz_world.numel() == 0:
+            print("Warning: Empty point set provided for orientation query.")
             return torch.empty(0, 4, device=self.device), 0
 
         self._ensure_orientation_field()
