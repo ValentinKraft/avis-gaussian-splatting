@@ -39,7 +39,6 @@ except:
 # Define constants at the module level for better maintainability
 SH_C0 = 0.28209479177387814  # Value of Y_0^0 (first spherical harmonic)
 SH_SCALE = 1.77  # Approximate 1/(2*SH_C0)
-INTENSITY_SCALE = 50.0  # Scale factor to improve visibility (only for debugging)
 
 
 class GaussianModel:
@@ -93,6 +92,13 @@ class GaussianModel:
         self.orientation_field: Optional[Dict[str, torch.Tensor]] = None
         self.orientation_fallback_stats = {"clone": 0, "split": 0}
 
+        # Intensity handling mode and cached parameter snapshots
+        self.intensity_mode = "learned"
+        self._prev_xyz = None
+        self._prev_scaling = None
+        self._prev_rotation = None
+        self.intensity_color_divisor = 100.0
+
         # Set up activation functions
         self._setup_activation_functions()
 
@@ -144,18 +150,168 @@ class GaussianModel:
             )
             self._opacity.requires_grad_(True)
 
-        # Check intensity values for volume rendering
+        # Ensure intensities remain non-learnable when present
         if hasattr(self, "intensities") and self.intensities.numel() > 0:
-            if not isinstance(self.intensities, nn.Parameter):
-                print(
-                    "WARNING: Intensity values are not nn.Parameter. Converting to nn.Parameter."
-                )
-                self.intensities = nn.Parameter(self.intensities)
-            if not self.intensities.requires_grad:
-                print(
-                    "WARNING: Intensity values do not require gradients. Setting requires_grad=True."
-                )
-                self.intensities.requires_grad_(True)
+            if isinstance(self.intensities, nn.Parameter):
+                self.intensities = self.intensities.detach()
+            self.intensities.requires_grad = False
+
+    # ===== Intensity handling utilities =====
+
+    def set_intensity_mode(self, mode: str) -> None:
+        """Record which intensity mode is currently active."""
+        self.intensity_mode = mode
+
+    def set_intensity_color_divisor(self, divisor: float) -> None:
+        """Configure manual brightness divisor for intensity-derived colors."""
+        safe_divisor = max(float(divisor), 1e-8)
+        if safe_divisor != self.intensity_color_divisor:
+            print(
+                f"Applying intensity color divisor {safe_divisor:.6f} (was {self.intensity_color_divisor:.6f})."
+            )
+        self.intensity_color_divisor = safe_divisor
+
+    def _ensure_prev_buffers(self) -> None:
+        """Ensure previous-parameter buffers exist and match current shapes."""
+        if self._xyz.numel() == 0:
+            return
+        if self._prev_xyz is None or self._prev_xyz.shape != self._xyz.shape:
+            self._prev_xyz = self._xyz.detach().clone()
+        if (
+            self._prev_scaling is None
+            or self._prev_scaling.shape != self._scaling.shape
+        ):
+            self._prev_scaling = self._scaling.detach().clone()
+        if (
+            self._prev_rotation is None
+            or self._prev_rotation.shape != self._rotation.shape
+        ):
+            self._prev_rotation = self._rotation.detach().clone()
+
+    @torch.no_grad()
+    def snapshot_params_for_dirty_check(
+        self, indices: Optional[torch.Tensor] = None
+    ) -> None:
+        """Store current xyz/scaling/rotation values for future dirty checks."""
+        self._ensure_prev_buffers()
+        if indices is None or self._xyz.numel() == 0:
+            if self._prev_xyz is not None:
+                self._prev_xyz.copy_(self._xyz.detach())
+                self._prev_scaling.copy_(self._scaling.detach())
+                self._prev_rotation.copy_(self._rotation.detach())
+            return
+
+        idx = indices.long().unique()
+        if idx.numel() == 0:
+            return
+        self._prev_xyz[:, idx] = self._xyz[:, idx].detach()
+        self._prev_scaling[:, idx] = self._scaling[:, idx].detach()
+        self._prev_rotation[idx] = self._rotation[idx].detach()
+
+    @torch.no_grad()
+    def dirty_indices(
+        self,
+        indices: Optional[torch.Tensor],
+        thr_xyz: float,
+        thr_log_scale: float,
+        thr_rot_rad: float,
+    ) -> torch.Tensor:
+        """Return subset indices whose parameters changed beyond thresholds."""
+        if self._xyz.numel() == 0:
+            return torch.empty(0, dtype=torch.long, device=self._xyz.device)
+
+        self._ensure_prev_buffers()
+        device = self._xyz.device
+        if indices is None:
+            idx = torch.arange(self._xyz.shape[1], device=device)
+        else:
+            idx = indices.long().unique()
+
+        if idx.numel() == 0:
+            return idx
+
+        # Position delta in world units
+        delta_xyz = (self._xyz[:, idx] - self._prev_xyz[:, idx]).norm(dim=0)
+        dirty_xyz = delta_xyz > thr_xyz
+
+        # Scaling deltas in log-space
+        delta_scale = (self._scaling[:, idx] - self._prev_scaling[:, idx]).norm(dim=0)
+        dirty_scale = delta_scale > thr_log_scale
+
+        # Rotation delta via quaternion angle
+        q_curr = self._rotation[idx]
+        q_prev = self._prev_rotation[idx]
+        dots = (q_curr * q_prev).sum(dim=1).clamp(-1.0, 1.0).abs()
+        angles = 2.0 * torch.arccos(dots)
+        dirty_rot = angles > thr_rot_rad
+
+        mask = dirty_xyz | dirty_scale | dirty_rot
+        return idx[mask]
+
+    @torch.no_grad()
+    def update_sampled_intensities(
+        self,
+        sampler,
+        indices: Optional[torch.Tensor] = None,
+    ) -> int:
+        """Update intensity buffer using provided sampler for selected indices."""
+        if self.intensity_mode != "sampled":
+            return 0
+
+        if self._xyz.numel() == 0:
+            return 0
+
+        device = self._xyz.device
+        if indices is None:
+            idx = torch.arange(self._xyz.shape[1], device=device)
+        else:
+            idx = indices.long().unique()
+
+        if idx.numel() == 0:
+            return 0
+
+        sampled = sampler(self, idx if indices is not None else None)
+        if sampled is None or sampled.numel() == 0:
+            return 0
+
+        total_points = self._xyz.shape[1]
+        if (
+            hasattr(self, "intensities")
+            and self.intensities.numel() > 0
+            and self.intensities.shape[0] != total_points
+        ):
+            channels = self.intensities.shape[1]
+            new_buf = torch.zeros(
+                (total_points, channels),
+                device=device,
+                dtype=self.intensities.dtype,
+            )
+            count = min(self.intensities.shape[0], total_points)
+            if count > 0:
+                new_buf[:count] = self.intensities[:count]
+            self.intensities = new_buf
+
+        if not hasattr(self, "intensities") or self.intensities.numel() == 0:
+            self.intensities = torch.zeros(
+                (total_points, sampled.shape[1]),
+                device=device,
+                dtype=sampled.dtype,
+            )
+        elif self.intensities.shape[1] != sampled.shape[1]:
+            # Resize to match channel count (e.g. grayscale vs RGB)
+            new_buf = torch.zeros(
+                (total_points, sampled.shape[1]),
+                device=device,
+                dtype=sampled.dtype,
+            )
+            count = min(self.intensities.shape[1], sampled.shape[1])
+            new_buf[:, :count] = self.intensities[:, :count]
+            self.intensities = new_buf
+
+        self.intensities[idx] = sampled
+        self.intensities.requires_grad = False
+        self.snapshot_params_for_dirty_check(idx)
+        return idx.numel()
 
     # ===== Properties for accessing model parameters =====
 
@@ -327,8 +483,14 @@ class GaussianModel:
         """
         param_groups = []
 
-        # Only add feature parameters if they exist (for volume-only training they might be empty)
-        if self._features_dc is not None and self._features_dc.numel() > 0:
+        allow_feature_params = getattr(self, "intensity_mode", "learned") != "sampled"
+
+        # Only add feature parameters if enabled and they exist
+        if (
+            allow_feature_params
+            and self._features_dc is not None
+            and self._features_dc.numel() > 0
+        ):
             param_groups.append(
                 {
                     "params": [self._features_dc],
@@ -337,7 +499,11 @@ class GaussianModel:
                 }
             )
 
-        if self._features_rest is not None and self._features_rest.numel() > 0:
+        if (
+            allow_feature_params
+            and self._features_rest is not None
+            and self._features_rest.numel() > 0
+        ):
             param_groups.append(
                 {
                     "params": [self._features_rest],
@@ -671,11 +837,10 @@ class GaussianModel:
             intensity_tensor = (intensity_tensor - volume_min) / (
                 volume_max - volume_min
             )
+            intensity_tensor = intensity_tensor.clamp_(0.0, 1.0)
 
             # Map normalized [0,1] intensities to spherical harmonic coefficient range
-            intensity_tensor = (
-                intensity_tensor * 2.0 * INTENSITY_SCALE - 1.0
-            )  # Map [0,1] to [-1,1]
+            intensity_tensor = intensity_tensor * 2.0 - 1.0  # Map [0,1] to [-1,1]
             intensity_tensor = (
                 intensity_tensor * SH_SCALE
             )  # Map [-1,1] to [-SH_SCALE, SH_SCALE]
@@ -692,6 +857,9 @@ class GaussianModel:
         Returns:
             Array of color values in appropriate format for PLY export
         """
+        if getattr(self, "intensity_mode", "learned") == "sampled":
+            return self._create_colors_from_intensities(num_points)
+
         # Check if we have valid feature tensors
         if (
             self._features_dc is not None
@@ -741,52 +909,45 @@ class GaussianModel:
         """
         if hasattr(self, "intensities") and self.intensities.numel() > 0:
             print("Creating colors from intensities.")
-            # Get raw intensity values
-            intensity_values = self.intensities.detach().cpu().numpy()
+            raw_tensor = self.intensities.detach().cpu()
+            intensity_values = raw_tensor.view(-1).numpy()
             print(
-                f"Raw intensity shape: {intensity_values.shape}, "
+                f"Raw intensity shape: {tuple(raw_tensor.shape)}, "
                 f"range: [{intensity_values.min():.4f}, {intensity_values.max():.4f}]"
             )
 
-            # Use the class method to map intensities to SH coefficients
-            if hasattr(self, "volume_min") and hasattr(self, "volume_max"):
-                volume_min = self.volume_min
-                volume_max = self.volume_max
+            if (
+                hasattr(self, "volume_min")
+                and hasattr(self, "volume_max")
+                and self.volume_max > self.volume_min
+            ):
+                denom = max(self.volume_max - self.volume_min, 1e-8)
+                normalized = (intensity_values - self.volume_min) / denom
                 print(
-                    f"Normalized intensity using global min/max [{volume_min:.4f}, {volume_max:.4f}]"
-                )
-
-                # Convert numpy array to tensor for processing
-                intensity_tensor = torch.from_numpy(intensity_values).to(
-                    self._xyz.device
-                )
-                sh_values = (
-                    self._map_intensities_to_sh_coefficients(
-                        intensity_tensor, volume_min, volume_max
-                    )
-                    .cpu()
-                    .numpy()
+                    f"Applying cached global min/max [{self.volume_min:.4f}, {self.volume_max:.4f}]"
                 )
             else:
-                # Use numpy operations directly if we don't have global min/max
-                if intensity_values.max() > intensity_values.min():
-                    intensity_values = (intensity_values - intensity_values.min()) / (
-                        intensity_values.max() - intensity_values.min()
+                local_min = float(intensity_values.min())
+                local_max = float(intensity_values.max())
+                if local_max > local_min:
+                    normalized = (intensity_values - local_min) / (
+                        local_max - local_min
                     )
-                    intensity_values = intensity_values * 2.0 * INTENSITY_SCALE - 1.0
-                    sh_values = intensity_values * SH_SCALE
                 else:
-                    sh_values = intensity_values
+                    normalized = np.full_like(intensity_values, 0.5, dtype=np.float32)
+                print(
+                    f"Fallback normalization range [{local_min:.4f}, {local_max:.4f}]"
+                )
 
-            # Create grayscale RGB values
-            f_dc = np.zeros((num_points, 3))
-            f_dc[:, 0] = sh_values[:, 0]  # Red
-            f_dc[:, 1] = sh_values[:, 0]  # Green
-            f_dc[:, 2] = sh_values[:, 0]  # Blue
+            normalized = np.clip(normalized, 0.0, 1.0)
+            divisor = getattr(self, "intensity_color_divisor", 1.0)
+            scaled = (normalized * 255.0) / max(divisor, 1e-8)
+            rgb_values = np.round(np.clip(scaled, 0.0, 255.0)).astype(np.float32)
+            f_dc = np.repeat(rgb_values[:, None], 3, axis=1)
         else:
             # Default to mid-gray if no intensities available
             print("Could not find intensity values, using default mid-gray.")
-            f_dc = np.ones((num_points, 3)) * 0.5
+            f_dc = np.ones((num_points, 3), dtype=np.float32) * 128.0
 
         return f_dc
 
@@ -1664,9 +1825,18 @@ class GaussianModel:
             print(
                 f"DEBUG GaussianModel: Before update_intensities_and_opacities, xyz.shape={self.get_xyz.shape}"
             )
+            normalize_samples = getattr(self, "intensity_mode", "learned") == "sampled"
+            global_min = float(volume.min().item()) if normalize_samples else None
+            global_max = float(volume.max().item()) if normalize_samples else None
             intensities, opacities, volume_min, volume_max = (
                 update_intensities_and_opacities(
-                    self.get_xyz, volume, mask, self.get_scaling, normalize=False
+                    self.get_xyz,
+                    volume,
+                    mask,
+                    self.get_scaling,
+                    normalize=normalize_samples,
+                    min_val=global_min,
+                    max_val=global_max,
                 )
             )
             print(

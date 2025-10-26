@@ -19,6 +19,9 @@ from gaussian_splatting.losses.volume_loss import VolumeLoss
 from torch.utils.checkpoint import checkpoint
 from gaussian_splatting.utils.splat_to_volume import splat_to_volume
 from gaussian_splatting.data.volume_loader import VolumeLoader
+from gaussian_splatting.utils.intensity_sampler import (
+    update_intensities_and_opacities,
+)
 from gaussian_splatting.utils.orientation_field import (
     compute_structure_field,
     default_origin_and_spacing,
@@ -44,6 +47,10 @@ class VolumeSupervisor:
         loss_type: str = "mse",
         loss_weight: float = 1.0,
         device: torch.device = torch.device("cuda"),
+        intensity_update_interval: int = 10,
+        dirty_threshold_xyz: float = 1e-3,
+        dirty_threshold_scale: float = 5e-3,
+        dirty_threshold_rot: float = 8.726646e-3,
     ):
         """
         Args:
@@ -64,6 +71,16 @@ class VolumeSupervisor:
 
         # Load ground truth volume
         self.volume_gt = self.loader.load_volume(volume_path)
+        self.global_intensity_min = float(self.volume_gt.min().item())
+        self.global_intensity_max = float(self.volume_gt.max().item())
+        print(
+            "Loaded volume intensity range: "
+            f"[{self.global_intensity_min:.4f}, {self.global_intensity_max:.4f}]"
+        )
+        if abs(self.global_intensity_max - self.global_intensity_min) <= 1e-8:
+            print(
+                "Warning: Volume intensity range is nearly zero; outputs will default to mid-gray."
+            )
 
         # Orientation defaults (no CLI controls for now)
         self.orientation_sigma_grad = 1.5
@@ -90,12 +107,67 @@ class VolumeSupervisor:
             'volume_loss': 0.0,
             'dice_score': 0.0,
         }
+        self._step = 0
+        self.last_intensity_update_count = 0
+        self.intensity_update_interval = max(1, int(intensity_update_interval))
+        self.dirty_threshold_xyz = float(dirty_threshold_xyz)
+        self.dirty_threshold_scale = float(dirty_threshold_scale)
+        self.dirty_threshold_rot = float(dirty_threshold_rot)
 
     def _orientation_source(self) -> Tensor:
         """Return the tensor used to derive orientations."""
         if self.mask_volume is not None:
             return self.mask_volume
         return self.volume_gt
+
+    def _volume_sampler(self, gaussians, indices: Optional[Tensor]) -> Tensor:
+        """Sample mean intensities (and optional opacities) for selected indices."""
+        xyz = gaussians.get_xyz
+        scaling_full = gaussians.get_scaling
+        if indices is None:
+            pts = xyz
+            scales = scaling_full if scaling_full.numel() > 0 else None
+        else:
+            idx = indices.long()
+            pts = xyz[:, idx] if xyz.shape[0] == 3 else xyz[idx]
+            scales = scaling_full[idx] if scaling_full.numel() > 0 else None
+
+        intensities, opacities, v_min, v_max = update_intensities_and_opacities(
+            pts,
+            self.volume_gt,
+            mask=self.mask_volume,
+            scale=scales,
+            normalize=True,
+            min_val=self.global_intensity_min,
+            max_val=self.global_intensity_max,
+        )
+
+        if indices is None:
+            gaussians.volume_min = v_min
+            gaussians.volume_max = v_max
+
+        if opacities is not None:
+            total = gaussians._xyz.shape[1]
+            target_device = opacities.device
+            if (
+                not hasattr(gaussians, "opacities")
+                or gaussians.opacities.shape[0] != total
+            ):
+                gaussians.opacities = torch.zeros(
+                    (total, opacities.shape[1]),
+                    device=target_device,
+                    dtype=opacities.dtype,
+                )
+            elif gaussians.opacities.device != target_device:
+                gaussians.opacities = gaussians.opacities.to(target_device)
+
+            if indices is None:
+                gaussians.opacities[:] = opacities
+            else:
+                gaussians.opacities[indices.long()] = opacities
+            gaussians.opacities.requires_grad = False
+
+        return intensities
 
     def _ensure_orientation_field(self) -> None:
         """Compute and cache structure tensor eigen-data if needed."""
@@ -169,63 +241,120 @@ class VolumeSupervisor:
         rotation = gaussians.get_rotation
         opacity = gaussians.get_opacity
 
-        # Check if intensity values need updating (match number of points = xyz.shape[0])
-        if (
-            not hasattr(gaussians, "intensities")
-            or gaussians.intensities.shape[0] != xyz.shape[0]
-        ):
-            gaussians.intensities = (
-                torch.ones((xyz.shape[0], 1), device=xyz.device) * 0.5
+        self._step += 1
+        self.iteration = getattr(self, "iteration", 0) + 1
+
+        n_points = xyz.shape[1] if xyz.shape[0] == 3 else xyz.shape[0]
+        intensity_mode = getattr(gaussians, "intensity_mode", "learned")
+
+        use_intensities: Tensor
+        if intensity_mode == "sampled":
+            gaussians.reference_volume = self.volume_gt
+            if self.mask_volume is not None:
+                gaussians.reference_mask = self.mask_volume
+
+            needs_resize = (
+                not hasattr(gaussians, "intensities")
+                or gaussians.intensities.numel() == 0
+                or gaussians.intensities.shape[0] != n_points
             )
 
-        # Update intensity values if reference volume is available
-        if gaussians.reference_volume is None:
-            # Store the reference volume for future updates
-            gaussians.reference_volume = self.volume_gt
-
-        # Check if we need to initialize/update opacities
-        if hasattr(self, 'mask_volume') and self.mask_volume is not None:
-            # Initialize opacities buffer if needed (match number of points)
-            if (
-                not hasattr(gaussians, "opacities")
-                or gaussians.opacities.shape[0] != xyz.shape[0]
-            ):
-                gaussians.opacities = (
-                    torch.ones((xyz.shape[0], 1), device=xyz.device) * 0.5
+            update_due = ((self._step - 1) % self.intensity_update_interval) == 0
+            dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
+            if active_idx is not None and active_idx.numel() > 0:
+                dirty_subset = gaussians.dirty_indices(
+                    active_idx,
+                    self.dirty_threshold_xyz,
+                    self.dirty_threshold_scale,
+                    self.dirty_threshold_rot,
                 )
 
-        # Initialize values only once - do not resample during training to preserve gradients
-        iteration = getattr(self, "iteration", 0)
-        features_initialized = getattr(self, "features_initialized", False)
-
-        # Only update on first iteration when features are not yet initialized
-        if not features_initialized:
-            # Check if we have a mask for opacity
-            if hasattr(self, 'mask_volume') and self.mask_volume is not None:
-                # Update both intensities and opacities
-                gaussians.update_intensities_and_opacities(self.volume_gt, self.mask_volume)
+            indices_for_update: Optional[Tensor]
+            if needs_resize:
+                indices_for_update = None
+            elif dirty_subset.numel() > 0:
+                indices_for_update = dirty_subset
+            elif update_due:
+                indices_for_update = active_idx
             else:
-                # Just update intensities
-                gaussians.update_intensities(self.volume_gt)
-            # Mark as initialized to prevent future updates
-            self.features_initialized = True
-        self.iteration = iteration + 1
+                indices_for_update = None
 
-        # CRITICAL FIX: Derive intensities from features dynamically for gradient flow
-        # Convert features_dc to intensity values (features_dc contains normalized RGB)
-        if (
-            hasattr(gaussians, "_features_dc")
-            and gaussians._features_dc is not None
-            and gaussians._features_dc.numel() > 0
-        ):
-            # features_dc shape: [N, 1, 3], take mean across RGB channels to get intensity
-            # This creates a differentiable connection from features to intensities
-            use_intensities = gaussians._features_dc[:, 0, :].mean(dim=1, keepdim=True)
-            # Normalize to [0, 1] range using sigmoid
-            use_intensities = torch.sigmoid(use_intensities)
-        else:
-            # Fallback to stored intensities if features don't exist
+            if indices_for_update is not None or needs_resize:
+                updated = gaussians.update_sampled_intensities(
+                    sampler=self._volume_sampler,
+                    indices=indices_for_update,
+                )
+                self.last_intensity_update_count = updated
+            else:
+                self.last_intensity_update_count = 0
+
+            if (
+                not hasattr(gaussians, "intensities")
+                or gaussians.intensities.numel() == 0
+                or gaussians.intensities.shape[0] != n_points
+            ):
+                has_prev = (
+                    hasattr(gaussians, "intensities")
+                    and gaussians.intensities.numel() > 0
+                )
+                channels = gaussians.intensities.shape[1] if has_prev else 1
+                new_buf = torch.full(
+                    (n_points, channels),
+                    0.5,
+                    device=xyz.device,
+                    dtype=xyz.dtype,
+                )
+                if has_prev:
+                    copy_count = min(gaussians.intensities.shape[0], n_points)
+                    if copy_count > 0:
+                        src = (
+                            gaussians.intensities.to(xyz.device)
+                            if gaussians.intensities.device != xyz.device
+                            else gaussians.intensities
+                        )
+                        new_buf[:copy_count] = src[:copy_count]
+                gaussians.intensities = new_buf
+            else:
+                if gaussians.intensities.device != xyz.device:
+                    gaussians.intensities = gaussians.intensities.to(xyz.device)
+            gaussians.intensities.requires_grad = False
+            gaussians.volume_min = self.global_intensity_min
+            gaussians.volume_max = self.global_intensity_max
             use_intensities = gaussians.intensities
+            if self._step % 200 == 0 and use_intensities.numel() > 0:
+                batch_min = float(use_intensities.min().item())
+                batch_max = float(use_intensities.max().item())
+                print(
+                    (
+                        f"[Intensity] global_min={self.global_intensity_min:.4f}, "
+                        f"global_max={self.global_intensity_max:.4f}, "
+                        f"sampled_batch=[{batch_min:.4f},{batch_max:.4f}]"
+                    )
+                )
+        else:
+            self.last_intensity_update_count = 0
+            if (
+                hasattr(gaussians, "_features_dc")
+                and gaussians._features_dc is not None
+                and gaussians._features_dc.numel() > 0
+            ):
+                use_intensities = torch.sigmoid(
+                    gaussians._features_dc[:, 0, :].mean(dim=1, keepdim=True)
+                )
+            else:
+                if (
+                    not hasattr(gaussians, "intensities")
+                    or gaussians.intensities.numel() == 0
+                    or gaussians.intensities.shape[0] != n_points
+                ):
+                    gaussians.intensities = torch.full(
+                        (n_points, 1),
+                        0.5,
+                        device=xyz.device,
+                        dtype=xyz.dtype,
+                    )
+                gaussians.intensities.requires_grad = False
+                use_intensities = gaussians.intensities
 
         # Convert gaussians to volume using intensity values
         # Use non-learnable opacities if they exist, otherwise use the opacity parameter
@@ -258,6 +387,20 @@ class VolumeSupervisor:
 
         if total_points is None:
             total_points = n_points
+
+        if (
+            getattr(self, "debug_intensity", False)
+            and intensity_mode == "sampled"
+            and use_intensities.numel() > 0
+        ):
+            if not torch.isfinite(use_intensities).all():
+                raise AssertionError("Sampled intensities contain non-finite values")
+            min_val = float(use_intensities.min().item())
+            max_val = float(use_intensities.max().item())
+            if min_val < -1e-4 or max_val > 1.0 + 1e-4:
+                raise AssertionError(
+                    f"Sampled intensities out of [0,1] range: [{min_val:.4f}, {max_val:.4f}]"
+                )
 
         # Fix intensity tensor shape if needed (use_intensities was computed above from features)
         if use_intensities.shape[0] != n_points:

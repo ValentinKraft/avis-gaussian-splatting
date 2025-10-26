@@ -177,6 +177,10 @@ def training(
     gaussians = GaussianModel(
         0, opt.optimizer_type
     )  # Use degree 0 for volume-only training
+    gaussians.set_intensity_mode(getattr(opt, "intensity_mode", "learned"))
+    if hasattr(gaussians, "set_intensity_color_divisor"):
+        divisor = getattr(opt, "intensity_color_divisor", 1.0)
+        gaussians.set_intensity_color_divisor(divisor)
 
     # Initialize parameter monitoring with increased log interval for better performance
     parameter_monitor = ParameterMonitor(
@@ -212,6 +216,7 @@ def training(
             mask_path=args.mask_path if hasattr(args, "mask_path") else None,
             loss_type=loss_type,
             loss_weight=loss_weight,
+            intensity_update_interval=getattr(opt, "intensity_update_interval", 10),
         )
 
     # Initialize from segmentation mask if requested

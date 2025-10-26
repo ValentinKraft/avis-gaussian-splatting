@@ -54,7 +54,7 @@ class ParameterMonitor:
             "delta_mean": [],
             "delta_max": []
         }
-        
+
         # Track loss values
         self.loss_history = {
             "total": [],
@@ -144,8 +144,8 @@ class ParameterMonitor:
             self.rotation_history["y"].append(rotation[:, 2].mean().item())
             self.rotation_history["z"].append(rotation[:, 3].mean().item())
 
-        # Create visualization if we have enough data
-        if len(self.iterations) >= 3:
+        # Create visualization whenever we have logged data
+        if self.iterations:
             self._create_visualizations(iteration)
 
         # Return current statistics
@@ -167,16 +167,16 @@ class ParameterMonitor:
 
             rot_change = (self.rotation_history["std"][-1] - self.rotation_history["std"][-3])
             current_stats["rot_change_rate"] = rot_change
-            
+
         # Track loss values if provided
         if loss is not None:
             self.loss_history["total"].append(loss)
             current_stats["loss"] = loss
-            
+
         if volume_loss is not None:
             self.loss_history["volume"].append(volume_loss)
             current_stats["volume_loss"] = volume_loss
-            
+
         if reg_loss is not None:
             self.loss_history["regularization"].append(reg_loss)
             current_stats["reg_loss"] = reg_loss
@@ -191,11 +191,13 @@ class ParameterMonitor:
             iteration: Current iteration number
         """
         # Path for saving the combined visualization
-        viz_path = os.path.join(self.output_path, "parameter_stats", "params_combined.png")
-        
+        viz_dir = os.path.join(self.output_path, "parameter_stats")
+        os.makedirs(viz_dir, exist_ok=True)
+        viz_path = os.path.join(viz_dir, "params_combined.png")
+
         # Create a 3x2 subplot for all parameters and loss
         fig, axs = plt.subplots(3, 2, figsize=(18, 14))
-        
+
         # Plot scaling statistics
         axs[0, 0].plot(self.iterations, self.scaling_history["mean"], label="Mean", color='blue', linewidth=2)
         axs[0, 0].fill_between(
@@ -264,29 +266,29 @@ class ParameterMonitor:
             axs[2, 0].set_ylabel("Change Magnitude", fontsize=12)
             axs[2, 0].legend(fontsize=10)
             axs[2, 0].grid(True, linestyle='--', alpha=0.7)
-        
+
         # Plot loss values if available
         if len(self.loss_history["total"]) > 0:
             # Make sure we use the same number of points for x and y axes
             iterations_for_loss = self.iterations[:len(self.loss_history["total"])]
             axs[2, 1].plot(iterations_for_loss, self.loss_history["total"], label="Total Loss", color='red', linewidth=2)
-            
+
             # Plot volume loss component if available
             if len(self.loss_history["volume"]) > 0:
                 iterations_for_volume = self.iterations[:len(self.loss_history["volume"])]
                 axs[2, 1].plot(iterations_for_volume, self.loss_history["volume"], label="Volume Loss", color='blue', linewidth=2)
-                
+
             # Plot regularization loss component if available
             if len(self.loss_history["regularization"]) > 0:
                 iterations_for_reg = self.iterations[:len(self.loss_history["regularization"])]
                 axs[2, 1].plot(iterations_for_reg, self.loss_history["regularization"], label="Regularization", color='green', linewidth=2)
-                
+
             axs[2, 1].set_title("Loss Evolution", fontsize=14)
             axs[2, 1].set_xlabel("Iteration", fontsize=12)
             axs[2, 1].set_ylabel("Loss Value", fontsize=12)
             axs[2, 1].legend(fontsize=10)
             axs[2, 1].grid(True, linestyle='--', alpha=0.7)
-            
+
             # Use log scale for loss if values vary significantly
             if max(self.loss_history["total"]) / (min(self.loss_history["total"]) + 1e-10) > 100:
                 axs[2, 1].set_yscale('log')
@@ -294,15 +296,28 @@ class ParameterMonitor:
             axs[2, 1].text(0.5, 0.5, 'No loss data available', 
                           horizontalalignment='center', verticalalignment='center',
                           transform=axs[2, 1].transAxes, fontsize=12)
-        
+
         # Add a title with timestamp
         current_time = time.strftime("%Y-%m-%d %H:%M:%S")
         plt.suptitle(f"Parameter Evolution - Last Updated: {current_time} (Iteration {iteration})", fontsize=16)
-        
+
         plt.tight_layout()
         plt.subplots_adjust(top=0.95)
-        plt.savefig(viz_path, dpi=100)
-        plt.close(fig)
+
+        tmp_path = viz_path + ".png"
+        try:
+            # Write to a temporary file first to avoid partial writes on failure
+            fig.savefig(tmp_path, dpi=100, bbox_inches="tight")
+            os.replace(tmp_path, viz_path)
+        except Exception as exc:
+            print(f"[ParameterMonitor] Failed to save params_combined.png: {exc}")
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        finally:
+            plt.close(fig)
 
     def final_report(self):
         """Generate a final report of parameter changes over training."""

@@ -311,63 +311,55 @@ def _setup_feature_tensors(
     device = intensities.device
 
     # Store intensity values and volume range (not learnable parameters)
-    model.intensities = intensities
+    model.intensities = intensities.detach().contiguous()
+    model.intensities.requires_grad = False
     model.volume_min = volume_min
     model.volume_max = volume_max
 
     print(f"Initialized {num_points} Gaussians with intensity values")
     print(f"Stored volume min/max values: [{volume_min:.4f}, {volume_max:.4f}]")
 
-    # Map intensity values to spherical harmonic coefficients
+    if getattr(model, "intensity_mode", "learned") == "sampled":
+        # Disable SH features; rely entirely on sampled intensities
+        model._features_dc = torch.zeros((num_points, 0, 3), device=device)
+        model._features_rest = torch.zeros((num_points, 0, 3), device=device)
+        return
+
+    # Map intensity values to spherical harmonic coefficients for learnable color modes
     normalized_intensities = model._map_intensities_to_sh_coefficients(
         intensities, volume_min, volume_max
     )
 
-    # Check if we have valid intensity values
     if torch.allclose(normalized_intensities, torch.zeros_like(normalized_intensities)):
         print(
             "Warning: Using default mid-gray intensities. Check if volume sampling worked correctly."
         )
 
-    # Initialize feature tensors based on SH degree
     if model.max_sh_degree > 0:
-        # For RGB training, use full SH feature tensors
         model.num_sh_channels = (model.max_sh_degree + 1) ** 2 * 3
-
-        # Create RGB features by repeating intensity for all channels (grayscale)
         model._features_dc = nn.Parameter(
-            torch.cat([normalized_intensities] * 3, dim=1)  # Repeat for R, G, B
+            torch.cat([normalized_intensities] * 3, dim=1)
             .contiguous()
             .requires_grad_(True)
         )
-
-        # Initialize higher-order SH coefficients to zero
         model._features_rest = nn.Parameter(
             torch.zeros(num_points, model.num_sh_channels - 3, device=device)
             .contiguous()
             .requires_grad_(True)
         )
     else:
-        # For volume-only training with no SH
-        # Expand intensities to RGB and reshape for DC features
-        intensity_tensor = normalized_intensities.expand(-1, 3)  # [N, 3]
-        intensity_tensor = intensity_tensor.unsqueeze(1)  # [N, 1, 3]
-
+        intensity_tensor = normalized_intensities.expand(-1, 3).unsqueeze(1)
         print(
             f"Creating feature_dc from normalized intensities: shape {intensity_tensor.shape}, "
             f"range [{intensity_tensor.min().item():.4f}, {intensity_tensor.max().item():.4f}]"
         )
-
         if num_points > 0:
             print(
                 f"First 5 RGB values: {intensity_tensor[:min(5, num_points), 0, :].cpu().numpy()}"
             )
-
         model._features_dc = nn.Parameter(
             intensity_tensor.contiguous().requires_grad_(True)
         )
-
-        # Create empty rest features
         model._features_rest = nn.Parameter(
             torch.zeros((num_points, 0, 3), device=device)
             .contiguous()
@@ -495,11 +487,19 @@ def initialize_gaussians(
         # Load volume for intensity sampling
         print(f"Loading intensity volume from: {volume_path}")
         volume = loader.load_volume(volume_path)
+        global_min = float(volume.min().item())
+        global_max = float(volume.max().item())
+        normalize_samples = getattr(model, "intensity_mode", "learned") == "sampled"
 
         # Sample intensities using the utility function
         print("Sampling intensity values from volume...")
         intensities, volume_min, volume_max = update_intensities(
-            points, volume, scales, normalize=False
+            points,
+            volume,
+            scales,
+            normalize=normalize_samples,
+            min_val=global_min if normalize_samples else None,
+            max_val=global_max if normalize_samples else None,
         )
 
         # Check if sampling was successful
@@ -512,6 +512,19 @@ def initialize_gaussians(
             intensities, volume_min, volume_max = _sample_fallback_intensities(
                 points, volume, device
             )
+
+            if normalize_samples:
+                denom = max(global_max - global_min, 1e-8)
+                if denom <= 1e-8:
+                    intensities = torch.full_like(intensities, 0.5)
+                else:
+                    intensities = (intensities - global_min) / denom
+                    intensities = intensities.clamp_(0.0, 1.0)
+                volume_min = global_min
+                volume_max = global_max
+        elif normalize_samples:
+            volume_min = global_min
+            volume_max = global_max
 
         print(f"Final volume global range: [{volume_min:.4f}, {volume_max:.4f}]")
     else:
