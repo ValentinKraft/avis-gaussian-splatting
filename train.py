@@ -29,6 +29,7 @@ from torch.cuda.amp import autocast, GradScaler
 
 
 MAX_POINTS_PER_ITER = 20000  # Upper bound of splats per forward pass to limit memory
+COLOR_DIVISOR = 255.0  # Default color divisor for intensity scaling
 
 
 def _select_active_indices(xyz: torch.Tensor) -> tuple[Optional[torch.Tensor], int]:
@@ -178,9 +179,7 @@ def training(
         0, opt.optimizer_type
     )  # Use degree 0 for volume-only training
     gaussians.set_intensity_mode(getattr(opt, "intensity_mode", "learned"))
-    if hasattr(gaussians, "set_intensity_color_divisor"):
-        divisor = getattr(opt, "intensity_color_divisor", 1.0)
-        gaussians.set_intensity_color_divisor(divisor)
+    gaussians.set_intensity_color_divisor(COLOR_DIVISOR)
 
     # Initialize parameter monitoring with increased log interval for better performance
     parameter_monitor = ParameterMonitor(

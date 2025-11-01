@@ -97,7 +97,7 @@ class GaussianModel:
         self._prev_xyz = None
         self._prev_scaling = None
         self._prev_rotation = None
-        self.intensity_color_divisor = 100.0
+        self.intensity_color_divisor = 255.0
 
         # Set up activation functions
         self._setup_activation_functions()
