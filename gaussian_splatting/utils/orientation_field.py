@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Tuple
 
 import torch
@@ -9,6 +10,13 @@ import torch.nn.functional as F
 from torch import Tensor
 
 _DEFAULT_SIGMA_EPS = 1e-6
+_GRAD_EPS = 1e-6
+_FALLBACK_EPS = (
+    1e-8  # Very small threshold - only fallback when gradient is essentially zero
+)
+
+_DEBUG_ORIENTATION = os.environ.get("GS_ORIENTATION_DEBUG", "0") == "1"
+_ORIENTATION_DEBUG_STATE = {"points": 0, "fallbacks": 0, "calls": 0, "reported": False}
 
 
 def _normalize_index(idx: Tensor, size: int) -> Tensor:
@@ -60,12 +68,12 @@ def _separable_gaussian_blur3d(volume: Tensor, sigma: float) -> Tensor:
     return volume
 
 
-def compute_structure_field(
+def compute_gradient_field(
     volume: Tensor,
-    sigma_grad: float = 1.5,
-    sigma_tensor: float = 1.0,
+    sigma_pre: float = 1.5,
+    sigma_post: float = 0.0,
 ) -> Tuple[Tensor, Tensor]:
-    """Compute per-voxel structure tensor eigenvectors and eigenvalues."""
+    """Return gradient vectors and magnitudes for each voxel in a scalar field."""
     if volume.dim() != 3:
         raise ValueError("Volume tensor must have shape [D, H, W].")
 
@@ -74,7 +82,7 @@ def compute_structure_field(
 
     with torch.no_grad():
         data = volume.unsqueeze(0).unsqueeze(0)
-        data = _separable_gaussian_blur3d(data, sigma_grad)
+        data = _separable_gaussian_blur3d(data, sigma_pre)
 
         kernel_dx = torch.tensor([[[[[-1.0, 0.0, 1.0]]]]], device=device, dtype=dtype)
         kernel_dy = torch.tensor([[[[[-1.0], [0.0], [1.0]]]]], device=device, dtype=dtype)
@@ -91,36 +99,17 @@ def compute_structure_field(
         gy = gy.squeeze(0).squeeze(0)
         gz = gz.squeeze(0).squeeze(0)
 
-        j_xx = gx * gx
-        j_xy = gx * gy
-        j_xz = gx * gz
-        j_yy = gy * gy
-        j_yz = gy * gz
-        j_zz = gz * gz
+    if sigma_post > _DEFAULT_SIGMA_EPS:
+        gx = _separable_gaussian_blur3d(gx.unsqueeze(0).unsqueeze(0), sigma_post)
+        gy = _separable_gaussian_blur3d(gy.unsqueeze(0).unsqueeze(0), sigma_post)
+        gz = _separable_gaussian_blur3d(gz.unsqueeze(0).unsqueeze(0), sigma_post)
+        gx = gx.squeeze(0).squeeze(0)
+        gy = gy.squeeze(0).squeeze(0)
+        gz = gz.squeeze(0).squeeze(0)
 
-        def _blur(component: Tensor) -> Tensor:
-            comp = component.unsqueeze(0).unsqueeze(0)
-            comp = _separable_gaussian_blur3d(comp, sigma_tensor)
-            return comp.squeeze(0).squeeze(0)
-
-        j_xx = _blur(j_xx)
-        j_xy = _blur(j_xy)
-        j_xz = _blur(j_xz)
-        j_yy = _blur(j_yy)
-        j_yz = _blur(j_yz)
-        j_zz = _blur(j_zz)
-
-        J = torch.stack(
-            [
-                torch.stack([j_xx, j_xy, j_xz], dim=-1),
-                torch.stack([j_xy, j_yy, j_yz], dim=-1),
-                torch.stack([j_xz, j_yz, j_zz], dim=-1),
-            ],
-            dim=-2,
-        )
-
-        eigvals, eigvecs = torch.linalg.eigh(J)
-        return eigvecs.contiguous(), eigvals.contiguous()
+    grad = torch.stack([gx, gy, gz], dim=-1)
+    magnitude = torch.linalg.norm(grad, dim=-1)
+    return grad.contiguous(), magnitude.contiguous()
 
 
 def world_to_voxel(
@@ -137,7 +126,22 @@ def world_to_voxel(
     iz = rel[:, 2]
     iy = rel[:, 1]
     ix = rel[:, 0]
-    return torch.stack([iz, iy, ix], dim=-1)
+
+    ijk = torch.stack([iz, iy, ix], dim=-1)
+
+    # Debug: check coordinate transformation (show for first call only)
+    if not hasattr(world_to_voxel, "_printed"):
+        unique_ijk = torch.unique(ijk.round(), dim=0)
+        print(
+            f"[world_to_voxel] {xyz_world.shape[0]} points -> {unique_ijk.shape[0]} unique voxels"
+        )
+        print(
+            f"[world_to_voxel] Voxel range: z=[{ijk[:, 0].min():.2f}, {ijk[:, 0].max():.2f}], "
+            f"y=[{ijk[:, 1].min():.2f}, {ijk[:, 1].max():.2f}], x=[{ijk[:, 2].min():.2f}, {ijk[:, 2].max():.2f}]"
+        )
+        world_to_voxel._printed = True
+
+    return ijk
 
 
 def world_to_grid(
@@ -155,35 +159,148 @@ def world_to_grid(
     return torch.stack([norm_z, norm_y, norm_x], dim=-1)
 
 
-def gather_rotation_from_field(
-    eigvecs: Tensor,
-    eigvals: Tensor,
+def gather_rotation_from_gradient(
+    grad_field: Tensor,
+    mag_field: Tensor,
     ijk: Tensor,
-    eps: float = 1e-8,
+    eps: float = _FALLBACK_EPS,
 ) -> Tuple[Tensor, Tensor]:
-    """Sample rotation matrices and fallback mask from structure field."""
+    """
+    Sample rotation matrices from gradient field.
+
+    The gradient direction becomes the main axis (principal eigenvector),
+    and gradient magnitude represents the eigenvalue (structural strength).
+
+    Args:
+        grad_field: [D, H, W, 3] gradient vectors at each voxel
+        mag_field: [D, H, W] gradient magnitudes at each voxel
+        ijk: [N, 3] voxel indices (z, y, x) to sample
+        eps: Magnitude threshold below which to use identity rotation
+
+    Returns:
+        rot: [N, 3, 3] orthonormal rotation matrices
+        fallback: [N] bool mask indicating identity fallback was used
+    """
     if ijk.numel() == 0:
-        return torch.empty(0, 3, 3, device=eigvecs.device), torch.empty(0, dtype=torch.bool, device=eigvecs.device)
+        return (
+            torch.empty(0, 3, 3, device=grad_field.device),
+            torch.empty(0, dtype=torch.bool, device=grad_field.device),
+        )
 
-    D, H, W = eigvecs.shape[:3]
-    idx = ijk.round().long()
-    idx[:, 0].clamp_(0, D - 1)
-    idx[:, 1].clamp_(0, H - 1)
-    idx[:, 2].clamp_(0, W - 1)
+    if grad_field.shape[:3] != mag_field.shape:
+        raise ValueError("Gradient and magnitude fields must share spatial dimensions.")
 
-    rot = eigvecs[idx[:, 0], idx[:, 1], idx[:, 2]]
-    vals = eigvals[idx[:, 0], idx[:, 1], idx[:, 2]]
+    device = grad_field.device
+    dtype = grad_field.dtype
+    D, H, W = grad_field.shape[:3]
 
-    fallback = vals.sum(dim=-1) < eps
-    if fallback.any():
-        print(f"Warning: Rotation fallback for {fallback.sum().item()} points.")
-        rot[fallback] = torch.eye(3, device=rot.device, dtype=rot.dtype)
+    # Debug: Check volume and index ranges (first call only)
+    if not hasattr(gather_rotation_from_gradient, "_printed"):
+        ijk_min = ijk.min(dim=0).values
+        ijk_max = ijk.max(dim=0).values
+        print(f"[gather_rotation_from_gradient] Gradient field shape: [{D}, {H}, {W}]")
+        print(
+            f"[gather_rotation_from_gradient] Index range: z=[{ijk_min[0]:.2f}, {ijk_max[0]:.2f}], "
+            f"y=[{ijk_min[1]:.2f}, {ijk_max[1]:.2f}], x=[{ijk_min[2]:.2f}, {ijk_max[2]:.2f}]"
+        )
+        gather_rotation_from_gradient._printed = True
 
+    # Convert voxel indices to normalized grid coordinates [-1, 1]
+    grid = torch.stack(
+        [
+            _normalize_index(ijk[:, 0], D),
+            _normalize_index(ijk[:, 1], H),
+            _normalize_index(ijk[:, 2], W),
+        ],
+        dim=-1,
+    ).to(device=device, dtype=dtype)
+    grid = grid.view(1, -1, 1, 1, 3)
+
+    # Prepare fields for grid_sample: [1, C, D, H, W]
+    vec_field = grad_field.permute(3, 0, 1, 2).unsqueeze(0)  # [1, 3, D, H, W]
+    mag_field_5d = mag_field.unsqueeze(0).unsqueeze(0)  # [1, 1, D, H, W]
+
+    # Sample gradient vectors and magnitudes at point locations
+    sampled_vecs = F.grid_sample(
+        vec_field,
+        grid,
+        mode="bilinear",
+        padding_mode="border",
+        align_corners=True,
+    )
+    sampled_mag = F.grid_sample(
+        mag_field_5d,
+        grid,
+        mode="bilinear",
+        padding_mode="border",
+        align_corners=True,
+    )
+
+    # Reshape to [N, 3] and [N]
+    grad = sampled_vecs.view(3, -1).t().contiguous()
+    mag = sampled_mag.view(-1)
+
+    # Clean up NaN/Inf values
+    grad = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+    mag = torch.nan_to_num(mag, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Identify low-magnitude points that need identity fallback
+    fallback = mag < eps
+
+    # Normalize gradient to get main direction (principal axis)
+    safe_mag = mag.clamp_min(_GRAD_EPS)
+    direction = grad / safe_mag.unsqueeze(1)
+
+    # Build orthonormal frame with gradient as primary axis
+    # Choose reference axis perpendicular to gradient
+    ref_axis = torch.zeros_like(direction)
+    ref_axis[:, 2] = 1.0  # Default: Z-axis
+
+    # Switch to Y-axis when gradient is nearly parallel to Z
+    close_to_z = direction[:, 2].abs() > 0.9
+    if close_to_z.any():
+        ref_axis[close_to_z] = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=dtype)
+
+    # Construct orthonormal basis via cross products
+    tangent = torch.cross(ref_axis, direction, dim=1)
+    tangent_norm = tangent.norm(dim=1, keepdim=True).clamp_min(_GRAD_EPS)
+    tangent = tangent / tangent_norm
+
+    bitangent = torch.cross(direction, tangent, dim=1)
+
+    # Stack into rotation matrix: columns are [tangent, bitangent, direction]
+    rot = torch.stack([tangent, bitangent, direction], dim=2)
+    rot = torch.nan_to_num(rot, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Ensure proper rotation matrix via QR decomposition
     q, _ = torch.linalg.qr(rot)
+
+    # Fix reflections (ensure determinant = +1)
     det = torch.det(q)
     neg = det < 0
     if neg.any():
         q[neg, :, 0] = -q[neg, :, 0]
+
+    # Apply identity rotation for low-magnitude fallbacks
+    if fallback.any():
+        q[fallback] = torch.eye(3, device=device, dtype=dtype)
+
+    # Debug logging - show actual magnitude statistics
+    fallback_count = fallback.sum().item()
+    total_count = len(fallback)
+    if fallback_count > 0 or _DEBUG_ORIENTATION:
+        mag_min = mag.min().item()
+        mag_max = mag.max().item()
+        mag_mean = mag.mean().item()
+        print(
+            f"[Orientation] {fallback_count}/{total_count} fallbacks ({fallback_count/total_count*100:.1f}%)"
+        )
+        print(
+            f"[Orientation] Magnitude: min={mag_min:.6f}, max={mag_max:.6f}, mean={mag_mean:.6f}, threshold={eps:.6f}"
+        )
+
+    _ORIENTATION_DEBUG_STATE["calls"] += 1
+
     return q.contiguous(), fallback
 
 

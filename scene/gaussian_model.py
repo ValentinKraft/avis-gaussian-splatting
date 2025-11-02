@@ -24,7 +24,7 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation
 from typing import Optional, Dict, Tuple, List, Union, Any
 
 from gaussian_splatting.utils.orientation_field import (
-    gather_rotation_from_field,
+    gather_rotation_from_gradient,
     random_quat_perturb,
     rotmat_to_quat,
     world_to_voxel,
@@ -1462,8 +1462,9 @@ class GaussianModel:
         field = getattr(self, "orientation_field", None)
         has_field = (
             isinstance(field, dict)
-            and field.get("eigvecs") is not None
-            and field["eigvecs"].numel() > 0
+            and field.get("gradient") is not None
+            and field.get("magnitude") is not None
+            and field["gradient"].numel() > 0
         )
         if not has_field:
             quats = random_quat_perturb(fallback_quats, 2.0)
@@ -1471,14 +1472,14 @@ class GaussianModel:
             quats = torch.nn.functional.normalize(quats, dim=1)
             return quats, mask
 
-        eigvecs = field["eigvecs"]
-        if eigvecs.device != device:
-            eigvecs = eigvecs.to(device)
-            field["eigvecs"] = eigvecs
-        eigvals = field["eigvals"]
-        if eigvals.device != device:
-            eigvals = eigvals.to(device)
-            field["eigvals"] = eigvals
+        grad_field = field["gradient"]
+        if grad_field.device != device:
+            grad_field = grad_field.to(device)
+            field["gradient"] = grad_field
+        mag_field = field["magnitude"]
+        if mag_field.device != device:
+            mag_field = mag_field.to(device)
+            field["magnitude"] = mag_field
         origin = field["origin"]
         if origin.device != device:
             origin = origin.to(device)
@@ -1496,7 +1497,9 @@ class GaussianModel:
             deg = float(deg_tensor.item())
 
         ijk = world_to_voxel(coords, origin, voxel)
-        rotmats, fallback_mask = gather_rotation_from_field(eigvecs, eigvals, ijk)
+        rotmats, fallback_mask = gather_rotation_from_gradient(
+            grad_field, mag_field, ijk
+        )
         quats = rotmat_to_quat(rotmats)
         if deg > 0.0:
             quats = random_quat_perturb(quats, deg)

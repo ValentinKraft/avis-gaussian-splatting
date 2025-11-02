@@ -23,9 +23,9 @@ from gaussian_splatting.utils.intensity_sampler import (
     update_intensities_and_opacities,
 )
 from gaussian_splatting.utils.orientation_field import (
-    compute_structure_field,
+    compute_gradient_field,
     default_origin_and_spacing,
-    gather_rotation_from_field,
+    gather_rotation_from_gradient,
     random_quat_perturb,
     rotmat_to_quat,
     world_to_voxel,
@@ -83,11 +83,11 @@ class VolumeSupervisor:
             )
 
         # Orientation defaults (no CLI controls for now)
-        self.orientation_sigma_grad = 1.5
-        self.orientation_sigma_tensor = 1.0
+        self.orientation_sigma_grad = 0.8  # Reduced for sharper gradients
+        self.orientation_sigma_tensor = 0.0  # No post-smoothing needed
         self.orientation_perturb_deg = 2.0
-        self._orientation_eigvecs: Optional[Tensor] = None
-        self._orientation_eigvals: Optional[Tensor] = None
+        self._orientation_grad: Optional[Tensor] = None
+        self._orientation_mag: Optional[Tensor] = None
 
         # Coordinate mapping assumes volume space normalised to [0, 1]
         origin, spacing = default_origin_and_spacing(
@@ -116,8 +116,8 @@ class VolumeSupervisor:
 
     def _orientation_source(self) -> Tensor:
         """Return the tensor used to derive orientations."""
-        if self.mask_volume is not None:
-            return self.mask_volume
+        # Use the intensity volume for orientation - it has richer gradients
+        # than binary/float masks which are mostly uniform
         return self.volume_gt
 
     def _volume_sampler(self, gaussians, indices: Optional[Tensor]) -> Tensor:
@@ -170,19 +170,31 @@ class VolumeSupervisor:
         return intensities
 
     def _ensure_orientation_field(self) -> None:
-        """Compute and cache structure tensor eigen-data if needed."""
-        if self._orientation_eigvecs is not None:
+        """Compute and cache gradient field if needed."""
+        if self._orientation_grad is not None:
             return
         source = self._orientation_source().to(self.device)
-        eigvecs, eigvals = compute_structure_field(
-            source,
-            sigma_grad=self.orientation_sigma_grad,
-            sigma_tensor=self.orientation_sigma_tensor,
+
+        # Print source statistics for debugging
+        print(
+            f"Computing orientation field from intensity volume (range: [{source.min().item():.4f}, {source.max().item():.4f}])"
         )
-        self._orientation_eigvecs = eigvecs
-        self._orientation_eigvals = eigvals
-        origin_name = "mask" if self.mask_volume is not None else "volume"
-        print(f"Computed orientation field from {origin_name} data.")
+
+        grad, mag = compute_gradient_field(
+            source,
+            sigma_pre=self.orientation_sigma_grad,
+            sigma_post=self.orientation_sigma_tensor,
+        )
+        self._orientation_grad = grad
+        self._orientation_mag = mag
+
+        # Print gradient field statistics
+        print(
+            f"Gradient magnitude range: [{mag.min().item():.6f}, {mag.max().item():.6f}], mean: {mag.mean().item():.6f}"
+        )
+        print(
+            f"Orientation field computed (sigma_pre={self.orientation_sigma_grad}, sigma_post={self.orientation_sigma_tensor})"
+        )
 
     def get_quat_for_points(self, xyz_world: Tensor) -> Tuple[Tensor, int]:
         """Return orientation quaternions and fallback count for points."""
@@ -191,9 +203,21 @@ class VolumeSupervisor:
             return torch.empty(0, 4, device=self.device), 0
 
         self._ensure_orientation_field()
+
+        # Debug: Print world coordinate statistics
+        print(f"[get_quat_for_points] Processing {xyz_world.shape[0]} points")
+        print(
+            f"[get_quat_for_points] World coords: x=[{xyz_world[:, 0].min():.4f}, {xyz_world[:, 0].max():.4f}], "
+            f"y=[{xyz_world[:, 1].min():.4f}, {xyz_world[:, 1].max():.4f}], "
+            f"z=[{xyz_world[:, 2].min():.4f}, {xyz_world[:, 2].max():.4f}]"
+        )
+        print(
+            f"[get_quat_for_points] Origin: {self.volume_origin.tolist()}, Voxel size: {self.voxel_size.tolist()}"
+        )
+
         ijk = world_to_voxel(xyz_world, self.volume_origin, self.voxel_size)
-        rotmats, fallback = gather_rotation_from_field(
-            self._orientation_eigvecs, self._orientation_eigvals, ijk
+        rotmats, fallback = gather_rotation_from_gradient(
+            self._orientation_grad, self._orientation_mag, ijk, eps=1e-6
         )
         quats = rotmat_to_quat(rotmats)
         quats = random_quat_perturb(quats, self.orientation_perturb_deg)
@@ -203,8 +227,8 @@ class VolumeSupervisor:
         """Expose cached orientation data for reuse by the Gaussian model."""
         self._ensure_orientation_field()
         return {
-            "eigvecs": self._orientation_eigvecs,
-            "eigvals": self._orientation_eigvals,
+            "gradient": self._orientation_grad,
+            "magnitude": self._orientation_mag,
             "origin": self.volume_origin,
             "voxel_size": self.voxel_size,
             "perturb_deg": torch.tensor(

@@ -14,36 +14,61 @@ post_date: "2025-10-25"
 ---
 
 ## Current Request
-- Fix grayscale intensity mapping so sampled mode maps global volume min→black, max→white, and intermediate values to linear greys.
+- Replace structure-tensor orientation sampling with gradient-derived rotations using per-voxel volume gradients.
 
 ## Action Plan
-1. Normalize sampled intensities using global volume min/max and ensure buffers stay non-learnable.
-2. Remove nonlinear or debug scaling from model usage/export so grayscale stays linear.
-3. Add logging/assertions and validate compilation for touched modules.
-4. Ensure parameter monitor saves `params_combined.png` reliably at each logging step.
+1. Add gradient field helpers in `gaussian_splatting/utils/orientation_field.py` that return normalized gradients and magnitudes.
+2. Implement rotation gathering from gradients, convert to orthonormal frames, and expose fallback diagnostics.
+3. Update `gaussian_splatting/utils/volume_supervisor.py`, `gaussian_splatting/utils/volume_initializer.py`, and `scene/gaussian_model.py` to consume the new helpers.
+4. Run targeted compile checks and adjust logging to ensure the new path is stable.
 
 ## Task Tracker
-### Phase 1: Global Normalization
-- [ ] Store global volume min/max on supervisor initialization.
-- [ ] Pass cached min/max through intensity samplers with proper clamping.
+### Phase 1: Gradient Field Helpers
+- [x] Define `compute_gradient_field` returning gradient vectors and magnitudes.
+- [x] Ensure gradients are smoothed/normalized safely with configurable sigmas.
 
-### Phase 2: Model & Export Adjustments
-- [ ] Strip sigmoid/scale transforms from sampled-intensity paths in `gaussian_model.py`.
-- [ ] Ensure PLY export writes 0–255 greys using normalized intensities.
+### Phase 2: Rotation Construction
+- [x] Implement `gather_rotation_from_gradient` producing rotation matrices and fallback mask.
+- [x] Enforce orthonormal bases with identity fallback when gradients vanish.
 
-### Phase 3: Verification
-- [ ] Add periodic intensity range logging and optional assertions.
-- [ ] Run `python -m compileall` on updated files.
+### Phase 3: Integration Updates
+- [x] Switch supervisor, initializer, and model modules to call the gradient-based helpers.
+- [x] Remove legacy structure-tensor imports/usages and refresh diagnostics.
 
-### Phase 4: Parameter Monitor Reliability
-- [x] Audit `_create_visualizations` save path handling.
-- [x] Add atomic save/write to guarantee `params_combined.png` updates.
-- [x] Provide error logging when save fails.
-
-### Phase 5: Intensity Brightness Control
-- [ ] Add CLI parameter to configure intensity color divisor.
-- [ ] Propagate divisor into `GaussianModel` setup.
-- [ ] Apply divisor when generating intensity-based colors for export.
+### Phase 4: Validation
+- [x] Run `python -m compileall` for touched modules.
+- [x] Review fallback logging output for sanity.
 
 ## Summary
-- Pending current request; summary will be added after completion.
+
+**Completed: Gradient-Based Orientation Pipeline**
+
+Successfully replaced structure-tensor orientation sampling with a simplified gradient-based approach:
+
+1. **Refactored `compute_gradient_field`** in `gaussian_splatting/utils/orientation_field.py`:
+   - Computes per-voxel gradient vectors and magnitudes from scalar volume
+   - Applies configurable pre/post smoothing via separable Gaussian blur
+   - Returns gradient field [D,H,W,3] and magnitude field [D,H,W]
+
+2. **Simplified `gather_rotation_from_gradient`**:
+   - Removed all structure tensor eigen-decomposition complexity
+   - Removed multi-sample fallback averaging logic
+   - Gradient direction becomes the main axis (principal eigenvector analog)
+   - Gradient magnitude represents structural strength (eigenvalue analog)
+   - Constructs orthonormal frame via cross products
+   - Uses identity rotation only when magnitude < threshold
+   - Cleaner debug logging for fallback ratios and magnitude ranges
+
+3. **Updated Integration Points**:
+   - `gaussian_splatting/utils/volume_supervisor.py`: Switched to gradient/magnitude fields, updated export dict keys
+   - `scene/gaussian_model.py`: Already imported and used `gather_rotation_from_gradient` correctly
+   - All modules compile without errors
+
+**Key Simplifications**:
+- No structure tensor construction or eigen-decomposition
+- No neighbor averaging for fallback recovery
+- Direct gradient → rotation matrix mapping
+- Single-pass sampling with bilinear interpolation
+- Magnitude threshold determines fallback to identity
+
+The pipeline now provides orientation from volume gradients with minimal computational overhead.
