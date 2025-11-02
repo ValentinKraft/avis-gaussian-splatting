@@ -97,7 +97,7 @@ class GaussianModel:
         self._prev_xyz = None
         self._prev_scaling = None
         self._prev_rotation = None
-        self.intensity_color_divisor = 255.0
+        self.intensity_color_divisor = 1.0
 
         # Set up activation functions
         self._setup_activation_functions()
@@ -941,7 +941,7 @@ class GaussianModel:
 
             normalized = np.clip(normalized, 0.0, 1.0)
             divisor = getattr(self, "intensity_color_divisor", 1.0)
-            scaled = (normalized * 255.0) / max(divisor, 1e-8)
+            scaled = normalized / np.abs(divisor)
             rgb_values = np.round(np.clip(scaled, 0.0, 255.0)).astype(np.float32)
             f_dc = np.repeat(rgb_values[:, None], 3, axis=1)
         else:

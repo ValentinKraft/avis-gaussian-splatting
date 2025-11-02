@@ -99,7 +99,7 @@ class OptimizationParams(ParamGroup):
         self.optimizer_type = "default"
         self.intensity_mode = "sampled"
         self.intensity_update_interval = 10
-        self.intensity_color_divisor = 255.0
+        self.intensity_color_divisor = 1.0
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):
