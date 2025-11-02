@@ -761,8 +761,8 @@ module LoadNIfTI {
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1509 613 420 274"
-        relativePosition = "-0.0003 -0.0589"
+        geometry = "1507 613 420 274"
+        relativePosition = "-0.0009 -0.0589"
         sizeHint = "420 274"
         wasOpen = no
       }
@@ -770,7 +770,7 @@ module LoadNIfTI {
   }
   fields {
     instanceName = LoadNIfTI1
-    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_test-data_/vesselmask-float.nii.gz
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_test-data_/vesselmask-binary.nii.gz
     inApplyMode = AutoLoad
   }
 }
@@ -802,10 +802,10 @@ module View3D {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "425 215 1181 894"
-        relativePosition = "-0.2047 -0.3448"
+        geometry = "424 215 1181 894"
+        relativePosition = "-0.2049 -0.3448"
         sizeHint = "1005 629"
-        wasOpen = no
+        wasOpen = yes
       }
     }
   }
@@ -829,17 +829,17 @@ module View3D {
     orientationLocation = LOWER_RIGHT
     orientationOn = TRUE
     orientationModel = CUBE
-    greyCenter = 0.5
-    greyWidth = 0.5
+    greyCenter = 0
+    greyWidth = 0.985000014305115
     alphaFactor = 1
     colorFactor = "1 1 1"
     camType = TRUE
-    camPosition = "28.1548957824707 -496.255340576172 -216.815032958984"
-    camOrientation = "0.987740695476532 0.154606744647026 -0.0215666238218546 1.6575779914856"
+    camPosition = "248.527954101563 -813.512390136719 -272.570007324219"
+    camOrientation = "0.972390651702881 0.184011816978455 0.143513575196266 1.66153514385223"
     initialCameraOrientation = CAMERA_KEEP_AS_IS
-    camFar = 555.96814
-    camNear = 158.44897
-    camFocal = 348.41745
+    camFar = 942.8006
+    camNear = 497.66077
+    camFocal = 720.00873
     camHeight = 0.78539801
     decoration = FALSE
     annotations = TRUE
@@ -923,8 +923,8 @@ module MinMaxScan {
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1495 593 472 314"
-        relativePosition = "0.0032 -0.0733"
+        geometry = "1492 591 472 314"
+        relativePosition = "0.0023 -0.0747"
         sizeHint = "449 314"
         wasOpen = no
       }
@@ -939,34 +939,34 @@ module MinMaxScan {
 }
 module SoLUTEditor {
   internal {
-    frame = "1485 853 104 56"
+    frame = "1477 853 104 56"
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1652 309 513 459"
-        relativePosition = "0.0549 -0.2773"
+        geometry = "1628 225 513 459"
+        relativePosition = "0.0480 -0.3376"
         sizeHint = "513 459"
-        wasOpen = no
+        wasOpen = yes
       }
     }
   }
   fields {
     instanceName = SoLUTEditor
     rangeMin = 0
-    rangeMax = 1867.4177
+    rangeMax = 3145
     viewMin = 0
-    viewMax = 1867.4177
+    viewMax = 3145
     window = 1
     level = 0.5
     allowNewPoints = TRUE
     updateLutWhileDragging = TRUE
     relativeLut = FALSE
     colorInterpolation = InterpolateRGB
-    colorPoints = "[ 0 0 0 0, 1867.41772460938 1 1 1 ]"
-    alphaPoints = "[ 0 0, 1867.41772460938 1 ]"
+    colorPoints = "[ 0 0 0 0, 3144.99682617188 1 1 1, 3145 1 1 1 ]"
+    alphaPoints = "[ 0 0, 3144.99682617188 1, 3145 1 ]"
     alphaFactor = 1
     newRangeMin = 0
-    newRangeMax = 1867.4177
+    newRangeMax = 3145
     newRangeMode = ClipFormerLUT
     colorEditorHeight = 24
     showColorEditor = TRUE
@@ -1083,7 +1083,8 @@ connections {
   Arithmetic2.input1 = LoadNIfTI1.outImage
   View3D.inImage = Arithmetic2.output0
   View3D.inInvPostLUT = SoLUTEditor.outInventorLUT
-  MinMaxScan.input0 = Arithmetic2.output0
+  MinMaxScan.input0 = LoadNIfTI.outImage
+  SoLUTEditor.newRangeMin = MinMaxScan.trueMinValue
   SoLUTEditor.newRangeMax = MinMaxScan.trueMaxValue
 }
 networkModel = ""
