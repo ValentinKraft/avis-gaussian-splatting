@@ -98,6 +98,9 @@ class GaussianModel:
         self._prev_scaling = None
         self._prev_rotation = None
         self.intensity_color_divisor = 1.0
+        self.intensity_large_splat_threshold = 0.03
+        self.mean_covered_radius = 2.5
+        self.mean_covered_interval = 10
 
         # Set up activation functions
         self._setup_activation_functions()
@@ -170,6 +173,56 @@ class GaussianModel:
                 f"Applying intensity color divisor {safe_divisor:.6f} (was {self.intensity_color_divisor:.6f})."
             )
         self.intensity_color_divisor = safe_divisor
+
+    def configure_mean_covered_sampling(
+        self,
+        *,
+        large_splat_threshold: float,
+        radius_scale: float,
+        update_interval: int,
+    ) -> None:
+        """
+        Set thresholds and cadence for mean-covered-voxel intensity sampling.
+
+        Args:
+            large_splat_threshold: Minimum max-axis scale to treat a splat as large.
+            radius_scale: Multiplier applied to per-axis scales when gathering voxels.
+            update_interval: Iteration cadence used when refreshing cached samples.
+        """
+        self.intensity_large_splat_threshold = max(float(large_splat_threshold), 0.0)
+        self.mean_covered_radius = max(float(radius_scale), 0.0)
+        self.mean_covered_interval = max(int(update_interval), 1)
+
+    def large_splat_mask(self, threshold: Optional[float] = None) -> torch.Tensor:
+        """Return boolean mask identifying splats exceeding the large-splat threshold."""
+        if self._xyz.numel() == 0:
+            return torch.zeros(0, dtype=torch.bool, device=self._xyz.device)
+
+        current_threshold = (
+            self.intensity_large_splat_threshold
+            if threshold is None
+            else float(threshold)
+        )
+        scales = self.get_scaling.detach()
+        if scales.dim() != 2:
+            raise ValueError("Scaling tensor expected to have shape [N,3] or [3,N].")
+        if scales.shape[1] == 3:
+            scales_n3 = scales
+        elif scales.shape[0] == 3:
+            scales_n3 = scales.transpose(0, 1)
+        else:
+            raise ValueError("Scaling tensor must provide three components per splat.")
+
+        metric = scales_n3.max(dim=1).values
+        threshold_val = max(float(current_threshold), 0.0)
+        return metric >= threshold_val
+
+    def large_splat_indices(self, threshold: Optional[float] = None) -> torch.Tensor:
+        """Return indices of splats considered large under the configured threshold."""
+        mask = self.large_splat_mask(threshold)
+        if mask.numel() == 0:
+            return torch.empty(0, dtype=torch.long, device=mask.device)
+        return torch.nonzero(mask, as_tuple=False).view(-1)
 
     def _ensure_prev_buffers(self) -> None:
         """Ensure previous-parameter buffers exist and match current shapes."""
@@ -255,7 +308,7 @@ class GaussianModel:
         indices: Optional[torch.Tensor] = None,
     ) -> int:
         """Update intensity buffer using provided sampler for selected indices."""
-        if self.intensity_mode != "sampled":
+        if self.intensity_mode not in {"sampled", "sampled_mean_covered"}:
             return 0
 
         if self._xyz.numel() == 0:
@@ -483,7 +536,10 @@ class GaussianModel:
         """
         param_groups = []
 
-        allow_feature_params = getattr(self, "intensity_mode", "learned") != "sampled"
+        allow_feature_params = getattr(self, "intensity_mode", "learned") not in {
+            "sampled",
+            "sampled_mean_covered",
+        }
 
         # Only add feature parameters if enabled and they exist
         if (
@@ -857,7 +913,10 @@ class GaussianModel:
         Returns:
             Array of color values in appropriate format for PLY export
         """
-        if getattr(self, "intensity_mode", "learned") == "sampled":
+        if getattr(self, "intensity_mode", "learned") in {
+            "sampled",
+            "sampled_mean_covered",
+        }:
             return self._create_colors_from_intensities(num_points)
 
         # Check if we have valid feature tensors
@@ -1828,7 +1887,10 @@ class GaussianModel:
             print(
                 f"DEBUG GaussianModel: Before update_intensities_and_opacities, xyz.shape={self.get_xyz.shape}"
             )
-            normalize_samples = getattr(self, "intensity_mode", "learned") == "sampled"
+            normalize_samples = getattr(self, "intensity_mode", "learned") in {
+                "sampled",
+                "sampled_mean_covered",
+            }
             global_min = float(volume.min().item()) if normalize_samples else None
             global_max = float(volume.max().item()) if normalize_samples else None
             intensities, opacities, volume_min, volume_max = (

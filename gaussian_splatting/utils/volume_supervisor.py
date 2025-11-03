@@ -20,7 +20,9 @@ from torch.utils.checkpoint import checkpoint
 from gaussian_splatting.utils.splat_to_volume import splat_to_volume
 from gaussian_splatting.data.volume_loader import VolumeLoader
 from gaussian_splatting.utils.intensity_sampler import (
+    sample_mean_covered_voxel_intensities,
     update_intensities_and_opacities,
+    update_opacities,
 )
 from gaussian_splatting.utils.orientation_field import (
     compute_gradient_field,
@@ -127,20 +129,64 @@ class VolumeSupervisor:
         if indices is None:
             pts = xyz
             scales = scaling_full if scaling_full.numel() > 0 else None
+            idx_tensor = None
         else:
             idx = indices.long()
             pts = xyz[:, idx] if xyz.shape[0] == 3 else xyz[idx]
-            scales = scaling_full[idx] if scaling_full.numel() > 0 else None
+            if scaling_full.numel() > 0:
+                if (
+                    scaling_full.dim() == 2
+                    and scaling_full.shape[0] == 3
+                    and scaling_full.shape[1] != 3
+                ):
+                    scales = scaling_full[:, idx]
+                else:
+                    scales = scaling_full[idx]
+            else:
+                scales = None
+            idx_tensor = idx
 
-        intensities, opacities, v_min, v_max = update_intensities_and_opacities(
-            pts,
-            self.volume_gt,
-            mask=self.mask_volume,
-            scale=scales,
-            normalize=True,
-            min_val=self.global_intensity_min,
-            max_val=self.global_intensity_max,
-        )
+        intensity_mode = getattr(gaussians, "intensity_mode", "learned")
+        use_mean_cover = intensity_mode == "sampled_mean_covered"
+        coverage_mask: Optional[Tensor] = None
+
+        if use_mean_cover:
+            large_mask = gaussians.large_splat_mask(
+                getattr(gaussians, "intensity_large_splat_threshold", 0.0)
+            )
+            large_mask = large_mask.to(device=pts.device)
+            if idx_tensor is None:
+                coverage_mask = large_mask
+            else:
+                coverage_mask = large_mask[idx_tensor]
+
+            intensities, v_min, v_max = sample_mean_covered_voxel_intensities(
+                pts,
+                self.volume_gt,
+                scales,
+                self.volume_origin,
+                self.voxel_size,
+                radius_scale=getattr(gaussians, "mean_covered_radius", 2.5),
+                coverage_mask=coverage_mask,
+                normalize=True,
+                min_val=self.global_intensity_min,
+                max_val=self.global_intensity_max,
+            )
+
+            if self.mask_volume is not None:
+                opacities, _, _ = update_opacities(pts, self.mask_volume, scales)
+            else:
+                opacities = None
+        else:
+            intensities, opacities, v_min, v_max = update_intensities_and_opacities(
+                pts,
+                self.volume_gt,
+                mask=self.mask_volume,
+                scale=scales,
+                normalize=True,
+                min_val=self.global_intensity_min,
+                max_val=self.global_intensity_max,
+            )
 
         if indices is None:
             gaussians.volume_min = v_min
@@ -272,7 +318,7 @@ class VolumeSupervisor:
         intensity_mode = getattr(gaussians, "intensity_mode", "learned")
 
         use_intensities: Tensor
-        if intensity_mode == "sampled":
+        if intensity_mode in {"sampled", "sampled_mean_covered"}:
             gaussians.reference_volume = self.volume_gt
             if self.mask_volume is not None:
                 gaussians.reference_mask = self.mask_volume
@@ -283,25 +329,64 @@ class VolumeSupervisor:
                 or gaussians.intensities.shape[0] != n_points
             )
 
-            update_due = ((self._step - 1) % self.intensity_update_interval) == 0
-            dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
-            if active_idx is not None and active_idx.numel() > 0:
-                dirty_subset = gaussians.dirty_indices(
-                    active_idx,
-                    self.dirty_threshold_xyz,
-                    self.dirty_threshold_scale,
-                    self.dirty_threshold_rot,
-                )
+            is_mean_mode = intensity_mode == "sampled_mean_covered"
+            interval = (
+                getattr(gaussians, "mean_covered_interval", 1)
+                if is_mean_mode
+                else self.intensity_update_interval
+            )
+            interval = max(int(interval), 1)
+            update_due = ((self._step - 1) % interval) == 0
+
+            if is_mean_mode:
+                dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
+            else:
+                dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
+                if active_idx is not None and active_idx.numel() > 0:
+                    dirty_subset = gaussians.dirty_indices(
+                        active_idx,
+                        self.dirty_threshold_xyz,
+                        self.dirty_threshold_scale,
+                        self.dirty_threshold_rot,
+                    )
 
             indices_for_update: Optional[Tensor]
             if needs_resize:
                 indices_for_update = None
-            elif dirty_subset.numel() > 0:
-                indices_for_update = dirty_subset
-            elif update_due:
-                indices_for_update = active_idx
             else:
-                indices_for_update = None
+                if is_mean_mode:
+                    large_mask = gaussians.large_splat_mask(
+                        getattr(gaussians, "intensity_large_splat_threshold", 0.0)
+                    )
+                    large_mask = large_mask.to(device=xyz.device)
+                    if active_idx is not None and active_idx.numel() > 0:
+                        active_idx_long = active_idx.long().to(device=xyz.device)
+                        subset_mask = large_mask[active_idx_long]
+                        candidate = active_idx_long[subset_mask]
+                        if candidate.numel() == 0:
+                            candidate = torch.nonzero(large_mask, as_tuple=False).view(
+                                -1
+                            )
+                    else:
+                        candidate = torch.nonzero(large_mask, as_tuple=False).view(-1)
+
+                    if update_due and candidate.numel() > 0:
+                        if getattr(self, "debug_intensity", False):
+                            total_large = int(large_mask.sum().item())
+                            print(
+                                f"[Intensity] mean-covered refresh updating {int(candidate.numel())}"
+                                f" large splats (total tracked: {total_large})."
+                            )
+                        indices_for_update = candidate
+                    else:
+                        indices_for_update = None
+                else:
+                    if dirty_subset.numel() > 0:
+                        indices_for_update = dirty_subset
+                    elif update_due:
+                        indices_for_update = active_idx
+                    else:
+                        indices_for_update = None
 
             if indices_for_update is not None or needs_resize:
                 updated = gaussians.update_sampled_intensities(
@@ -414,7 +499,7 @@ class VolumeSupervisor:
 
         if (
             getattr(self, "debug_intensity", False)
-            and intensity_mode == "sampled"
+            and intensity_mode in {"sampled", "sampled_mean_covered"}
             and use_intensities.numel() > 0
         ):
             if not torch.isfinite(use_intensities).all():

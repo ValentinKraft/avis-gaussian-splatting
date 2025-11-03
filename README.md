@@ -14,6 +14,20 @@ Synthetic test dataset:
 python train.py --volume_supervision --model_path output/synthetic-data-test --init_from_mask --mask_path _test-data_/synthetic-mask-float.nii.gz --volume_path _test-data_/synthetic-gradient.nii.gz --iterations 500 --volume_loss_type dice --init_n_points 10000 --save_ply_every 100
 ```
 
+### Intensity Sampling Modes
+
+- `--intensity_mode sampled_mean_covered`
+  Enables voxel-coverage sampling for intensities. Large splats use the mean
+  of covered voxels while smaller splats keep their last cached values.
+- `--intensity_large_splat_threshold`
+  Maximum per-axis scale (in normalized units) required to classify a splat as
+  large. Only those splats participate in covered-voxel resampling.
+- `--intensity_mean_cover_radius`
+  Multiplier applied to each scale axis when expanding the voxel coverage
+  region around a large splat.
+- `--intensity_mean_cover_interval`
+  Iteration cadence controlling how often the large-splat cache refresh runs.
+
 # 3D Gaussian Splatting for Real-Time Radiance Field Rendering
 Bernhard Kerbl*, Georgios Kopanas*, Thomas Leimkühler, George Drettakis (* indicates equal contribution)<br>
 | [Webpage](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) | [Full Paper](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_high.pdf) | [Video](https://youtu.be/T_kXY43VZnk) | [Other GRAPHDECO Publications](http://www-sop.inria.fr/reves/publis/gdindex.php) | [FUNGRAPH project page](https://fungraph.inria.fr) |<br>

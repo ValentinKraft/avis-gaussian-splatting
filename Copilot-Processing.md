@@ -1,74 +1,45 @@
----
-post_title: "Copilot Processing Log"
-author1: "GitHub Copilot"
-post_slug: "copilot-processing-log"
-microsoft_alias: "copilot"
-featured_image: ""
-categories:
-	- internal
-tags:
-	- tracking
-ai_note: "Generated with AI assistance."
-summary: "Tracking the current Copilot request workflow."
-post_date: "2025-10-25"
----
 
-## Current Request
-- Replace structure-tensor orientation sampling with gradient-derived rotations using per-voxel volume gradients.
+# User Request Details
+- Add mean-covered-voxel intensity sampling restricted to large splats.
+- Refresh samples on a configurable cadence (every k intensity updates).
+- Integrate the option through Gaussian model and training utilities without regressing existing modes.
 
 ## Action Plan
-1. Add gradient field helpers in `gaussian_splatting/utils/orientation_field.py` that return normalized gradients and magnitudes.
-2. Implement rotation gathering from gradients, convert to orthonormal frames, and expose fallback diagnostics.
-3. Update `gaussian_splatting/utils/volume_supervisor.py`, `gaussian_splatting/utils/volume_initializer.py`, and `scene/gaussian_model.py` to consume the new helpers.
-4. Run targeted compile checks and adjust logging to ensure the new path is stable.
+1. Introduce configuration hooks for the new sampling mode, large-splat threshold, and refresh cadence.
+2. Implement mean-covered-voxel intensity sampling utilities with support for filtering by splat size.
+3. Integrate gated sampling into `GaussianModel` intensity updates, caching results between refresh cycles.
+4. Update training/volume supervision loops to honor the cadence and mode selection without affecting existing pathways.
+5. Add targeted validation to confirm behavior and document any new knobs.
 
 ## Task Tracker
-### Phase 1: Gradient Field Helpers
-- [x] Define `compute_gradient_field` returning gradient vectors and magnitudes.
-- [x] Ensure gradients are smoothed/normalized safely with configurable sigmas.
+### Phase 1: Configuration Hooks
+- [x] Expose mode/threshold/cadence flags in `arguments/__init__.py`.
+- [x] Thread configuration through `train.py` into the Gaussian model state.
 
-### Phase 2: Rotation Construction
-- [x] Implement `gather_rotation_from_gradient` producing rotation matrices and fallback mask.
-- [x] Enforce orthonormal bases with identity fallback when gradients vanish.
+### Phase 2: Sampling Utility
+- [x] Add mean-covered-voxel sampler guarded by splat-size filtering in `gaussian_splatting/utils/intensity_sampler.py`.
+- [x] Ensure sampler gracefully falls back when coverage data is absent.
 
-### Phase 3: Integration Updates
-- [x] Switch supervisor, initializer, and model modules to call the gradient-based helpers.
-- [x] Remove legacy structure-tensor imports/usages and refresh diagnostics.
+### Phase 3: Model Integration
+- [x] Gate intensity refresh in `scene/gaussian_model.py` using cadence and cache previous samples.
+- [x] Mark large splats for sampling via existing scale or covariance metrics.
 
-### Phase 4: Validation
-- [x] Run `python -m compileall` for touched modules.
-- [x] Review fallback logging output for sanity.
+### Phase 4: Loop Updates
+- [x] Update `gaussian_splatting/utils/volume_supervisor.py` to respect new cadence/mode.
+- [x] Keep legacy modes unchanged and confirm scheduling logic remains stable.
+
+### Phase 5: Validation & Docs
+- [x] Add sanity test or logging to verify cadence and large-splat filtering.
+- [x] Document new options in release notes or README snippet if needed.
+
 
 ## Summary
+- Added CLI knobs for mean-covered sampling cadence, threshold, and radius, and
+	threaded them through model setup.
+- Implemented voxel coverage averaging with graceful fallbacks and wired it
+	into the Gaussian sampler, gating updates to large splats only.
+- Extended volume supervision scheduling to honour the new cadence and emit
+	optional debug metrics.
+- Documented the new intensity options in the training guide.
 
-**Completed: Gradient-Based Orientation Pipeline**
 
-Successfully replaced structure-tensor orientation sampling with a simplified gradient-based approach:
-
-1. **Refactored `compute_gradient_field`** in `gaussian_splatting/utils/orientation_field.py`:
-   - Computes per-voxel gradient vectors and magnitudes from scalar volume
-   - Applies configurable pre/post smoothing via separable Gaussian blur
-   - Returns gradient field [D,H,W,3] and magnitude field [D,H,W]
-
-2. **Simplified `gather_rotation_from_gradient`**:
-   - Removed all structure tensor eigen-decomposition complexity
-   - Removed multi-sample fallback averaging logic
-   - Gradient direction becomes the main axis (principal eigenvector analog)
-   - Gradient magnitude represents structural strength (eigenvalue analog)
-   - Constructs orthonormal frame via cross products
-   - Uses identity rotation only when magnitude < threshold
-   - Cleaner debug logging for fallback ratios and magnitude ranges
-
-3. **Updated Integration Points**:
-   - `gaussian_splatting/utils/volume_supervisor.py`: Switched to gradient/magnitude fields, updated export dict keys
-   - `scene/gaussian_model.py`: Already imported and used `gather_rotation_from_gradient` correctly
-   - All modules compile without errors
-
-**Key Simplifications**:
-- No structure tensor construction or eigen-decomposition
-- No neighbor averaging for fallback recovery
-- Direct gradient → rotation matrix mapping
-- Single-pass sampling with bilinear interpolation
-- Magnitude threshold determines fallback to identity
-
-The pipeline now provides orientation from volume gradients with minimal computational overhead.

@@ -100,6 +100,9 @@ class OptimizationParams(ParamGroup):
         self.intensity_mode = "sampled"
         self.intensity_update_interval = 10
         self.intensity_color_divisor = 1.0
+        self.intensity_large_splat_threshold = 0.03
+        self.intensity_mean_cover_radius = 2.5
+        self.intensity_mean_cover_interval = 20
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

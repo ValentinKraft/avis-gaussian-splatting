@@ -177,6 +177,15 @@ def training(
         0, opt.optimizer_type
     )  # Use degree 0 for volume-only training
     gaussians.set_intensity_mode(getattr(opt, "intensity_mode", "learned"))
+    gaussians.configure_mean_covered_sampling(
+        large_splat_threshold=getattr(opt, "intensity_large_splat_threshold", 0.03),
+        radius_scale=getattr(opt, "intensity_mean_cover_radius", 2.5),
+        update_interval=getattr(
+            opt,
+            "intensity_mean_cover_interval",
+            getattr(opt, "intensity_update_interval", 10),
+        ),
+    )
     # gaussians.set_intensity_color_divisor(COLOR_DIVISOR)
 
     # Initialize parameter monitoring with increased log interval for better performance

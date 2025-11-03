@@ -19,6 +19,7 @@ from typing import Optional, Tuple
 from gaussian_splatting.utils.orientation_field import (
     default_origin_and_spacing,
     world_to_grid,
+    world_to_voxel,
 )
 
 _SAMPLING_VALIDATED = False
@@ -180,6 +181,132 @@ def sample_opacities_from_mask(
     opacities = min_opacity + raw_opacities * (max_opacity - min_opacity)
 
     return opacities, mask_min, mask_max
+
+
+def sample_mean_covered_voxel_intensities(
+    points: Tensor,
+    volume: Tensor,
+    scales: Optional[Tensor],
+    origin: Tensor,
+    voxel_size: Tensor,
+    *,
+    radius_scale: float = 2.5,
+    coverage_mask: Optional[Tensor] = None,
+    normalize: bool = False,
+    min_val: Optional[float] = None,
+    max_val: Optional[float] = None,
+) -> Tuple[Tensor, float, float]:
+    """Average voxel intensities across mean-covered regions for each splat."""
+    if points.numel() == 0:
+        device = volume.device
+        empty = torch.empty(0, 1, device=device, dtype=volume.dtype)
+        default_min = (
+            float(min_val) if min_val is not None else float(volume.min().item())
+        )
+        default_max = (
+            float(max_val) if max_val is not None else float(volume.max().item())
+        )
+        return empty, default_min, default_max
+
+    device = volume.device
+    work_dtype = torch.float32
+
+    volume_f = volume.to(device=device, dtype=work_dtype)
+    points_n3 = _ensure_n3(points).to(device=device, dtype=work_dtype)
+
+    if min_val is not None and max_val is not None:
+        volume_min = float(min_val)
+        volume_max = float(max_val)
+    else:
+        volume_min = float(volume_f.min().item())
+        volume_max = float(volume_f.max().item())
+
+    base_samples, _, _ = sample_intensities_from_volume(
+        points_n3,
+        volume_f,
+        normalize=False,
+        min_val=volume_min,
+        max_val=volume_max,
+    )
+    raw_values = base_samples.view(-1)
+
+    if coverage_mask is None:
+        coverage_mask = torch.ones_like(raw_values, dtype=torch.bool, device=device)
+    else:
+        coverage_mask = coverage_mask.to(device=device, dtype=torch.bool)
+
+    if (
+        scales is None
+        or scales.numel() == 0
+        or radius_scale <= 0.0
+        or not coverage_mask.any()
+    ):
+        processed = raw_values
+    else:
+        scales_n3 = _ensure_n3(scales).to(device=device, dtype=work_dtype)
+        scale_indices = coverage_mask.nonzero(as_tuple=False).view(-1)
+
+        if scale_indices.numel() == 0:
+            processed = raw_values
+        else:
+            origin_xyz = origin.to(device=device, dtype=work_dtype)
+            voxel_size_xyz = voxel_size.to(device=device, dtype=work_dtype).clamp_min(
+                1e-8
+            )
+
+            pts_cov = points_n3[scale_indices]
+            scale_cov = scales_n3[scale_indices] * float(radius_scale)
+
+            centers = world_to_voxel(pts_cov, origin_xyz, voxel_size_xyz)
+            extent_xyz = scale_cov / voxel_size_xyz.unsqueeze(0)
+            extent_zyx = extent_xyz[:, [2, 1, 0]]
+
+            min_idx = torch.floor(centers - extent_zyx)
+            max_idx = torch.ceil(centers + extent_zyx)
+
+            zeros_vec = torch.zeros(3, device=device, dtype=work_dtype)
+            dims = torch.tensor(
+                [volume.shape[0] - 1, volume.shape[1] - 1, volume.shape[2] - 1],
+                device=device,
+                dtype=work_dtype,
+            )
+            min_idx = torch.maximum(min_idx, zeros_vec)
+            max_idx = torch.minimum(max_idx, dims)
+
+            min_idx_long = min_idx.to(torch.long).cpu()
+            max_idx_long = max_idx.to(torch.long).cpu()
+
+            updated_samples = raw_values.clone()
+            subset = updated_samples[scale_indices].clone()
+
+            for i in range(scale_indices.shape[0]):
+                z0 = int(min_idx_long[i, 0])
+                y0 = int(min_idx_long[i, 1])
+                x0 = int(min_idx_long[i, 2])
+                z1 = int(max_idx_long[i, 0])
+                y1 = int(max_idx_long[i, 1])
+                x1 = int(max_idx_long[i, 2])
+
+                if z1 < z0 or y1 < y0 or x1 < x0:
+                    continue
+
+                region = volume_f[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1]
+                if region.numel() == 0:
+                    continue
+                subset[i] = region.mean()
+
+            updated_samples[scale_indices] = subset
+            processed = updated_samples
+
+    if normalize:
+        if volume_max > volume_min + 1e-8:
+            denom = max(volume_max - volume_min, 1e-8)
+            processed = (processed - volume_min) / denom
+            processed = processed.clamp_(0.0, 1.0)
+        else:
+            processed = torch.full_like(processed, 0.5)
+
+    return processed.view(-1, 1).to(volume.dtype), volume_min, volume_max
 
 
 def update_intensities(

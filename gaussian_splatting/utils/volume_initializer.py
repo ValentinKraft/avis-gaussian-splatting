@@ -319,7 +319,10 @@ def _setup_feature_tensors(
     print(f"Initialized {num_points} Gaussians with intensity values")
     print(f"Stored volume min/max values: [{volume_min:.4f}, {volume_max:.4f}]")
 
-    if getattr(model, "intensity_mode", "learned") == "sampled":
+    if getattr(model, "intensity_mode", "learned") in {
+        "sampled",
+        "sampled_mean_covered",
+    }:
         # Disable SH features; rely entirely on sampled intensities
         model._features_dc = torch.zeros((num_points, 0, 3), device=device)
         model._features_rest = torch.zeros((num_points, 0, 3), device=device)
@@ -489,7 +492,10 @@ def initialize_gaussians(
         volume = loader.load_volume(volume_path)
         global_min = float(volume.min().item())
         global_max = float(volume.max().item())
-        normalize_samples = getattr(model, "intensity_mode", "learned") == "sampled"
+        normalize_samples = getattr(model, "intensity_mode", "learned") in {
+            "sampled",
+            "sampled_mean_covered",
+        }
 
         # Sample intensities using the utility function
         print("Sampling intensity values from volume...")
