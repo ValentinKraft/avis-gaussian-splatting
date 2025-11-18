@@ -395,6 +395,7 @@ def add_parameter_regularization_loss(
     # ====================== SCALE DIVERSITY LOSSES ======================
     if hasattr(model, "_scaling") and model._scaling is not None and model._scaling.numel() > 0:
         scaling = model.get_scaling  # Get actual (non-log) scaling
+        scale_total_contrib = torch.tensor(0.0, device=scaling.device)
 
         if scaling.shape[1] == 3:  # If we have per-axis scaling
             # 1. Orthogonality Loss: Encourage differences between x,y,z scale components
@@ -427,6 +428,10 @@ def add_parameter_regularization_loss(
             modified_loss = modified_loss + range_loss
             loss_metrics["scale_range_loss"] = range_loss.item()
 
+            scale_total_contrib = orthogonality_loss + variance_loss + range_loss
+
+        loss_metrics["scale_total"] = scale_total_contrib.item()
+
     # ====================== ROTATION DIVERSITY LOSSES ======================
     if (
         hasattr(model, "_rotation")
@@ -434,6 +439,7 @@ def add_parameter_regularization_loss(
         and model._rotation.numel() > 0
     ):
         rot = model.get_rotation
+        rotation_total_contrib = torch.tensor(0.0, device=rot.device)
         if rot.shape[1] == 4:  # If we have quaternion rotations
             # 1. Quaternion Dispersion Loss: Encourage deviation from identity [1,0,0,0]
             identity_distance = torch.abs(rot[:, 0] - 1.0) + torch.norm(
@@ -450,6 +456,8 @@ def add_parameter_regularization_loss(
             modified_loss = modified_loss + entropy_loss
             loss_metrics["rotation_entropy_loss"] = entropy_loss.item()
 
+            rotation_total_contrib = quaternion_loss + entropy_loss
+
             # 3. Principal Direction Loss: Align with volume gradients if available
             if volume_gt is not None and principal_dir_weight > 0:
                 # Compute volume gradients (simplified - in real implementation compute proper gradients)
@@ -459,5 +467,14 @@ def add_parameter_regularization_loss(
                     principal_dir_loss = torch.tensor(0.0, device=rot.device)
                     modified_loss = modified_loss + principal_dir_loss
                     loss_metrics["principal_dir_loss"] = principal_dir_loss.item()
+                    rotation_total_contrib = rotation_total_contrib + principal_dir_loss
+
+        loss_metrics["rotation_total"] = rotation_total_contrib.item()
+
+    if loss is not None:
+        reg_delta = (modified_loss - loss).detach()
+        loss_metrics["total"] = reg_delta.item()
+    else:
+        loss_metrics["total"] = modified_loss.detach().item()
 
     return modified_loss, loss_metrics

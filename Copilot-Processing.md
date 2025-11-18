@@ -1,45 +1,34 @@
 
 # User Request Details
-- Add mean-covered-voxel intensity sampling restricted to large splats.
-- Refresh samples on a configurable cadence (every k intensity updates).
-- Integrate the option through Gaussian model and training utilities without regressing existing modes.
+- Activate the diversity warmup (Option A) so scale/rotation regularizers contribute during the initial training window with tunable duration and logging hooks.
+- Apply the adaptive scaling/rotation tweaks and Option A GaussianModel refactor without regressing existing training behaviors.
+- Run focused validation (py_compile plus a targeted smoke test) after the edits land.
 
 ## Action Plan
-1. Introduce configuration hooks for the new sampling mode, large-splat threshold, and refresh cadence.
-2. Implement mean-covered-voxel intensity sampling utilities with support for filtering by splat size.
-3. Integrate gated sampling into `GaussianModel` intensity updates, caching results between refresh cycles.
-4. Update training/volume supervision loops to honor the cadence and mode selection without affecting existing pathways.
-5. Add targeted validation to confirm behavior and document any new knobs.
+1. Reinstate the diversity warmup path in `train.py`, exposing configuration knobs and telemetry so the early-iteration regularization is active and observable.
+2. Layer in the adaptive scaling/rotation safeguards inside `scene/gaussian_model.py`, keeping existing tensor contracts intact while capturing the requested diagnostics.
+3. Carve the GaussianModel refactor into cohesive helper modules per Option A, ensuring the public API and downstream callers remain stable.
+4. Execute syntax checks and a constrained training smoke test to confirm the integrated changes behave as expected.
 
 ## Task Tracker
-### Phase 1: Configuration Hooks
-- [x] Expose mode/threshold/cadence flags in `arguments/__init__.py`.
-- [x] Thread configuration through `train.py` into the Gaussian model state.
+### Phase 1 – Diversity Warmup Reactivation
+- [x] Audit CLI/arg defaults for diversity warmup controls and add any missing parameters (count, weights, logging cadence).
+- [x] Re-enable `add_parameter_regularization_loss` usage during the configured warmup window with clear gating and loss dictionary entries.
+- [x] Extend monitoring/logging so warmup contributions are emitted to TensorBoard/stdout for early-iteration visibility.
 
-### Phase 2: Sampling Utility
-- [x] Add mean-covered-voxel sampler guarded by splat-size filtering in `gaussian_splatting/utils/intensity_sampler.py`.
-- [x] Ensure sampler gracefully falls back when coverage data is absent.
+### Phase 2 – Adaptive Scaling/Rotation Tweaks
+- [x] Instrument `gaussian_model.py` with early-iteration stats collectors and relaxed scaling constraints that ramp to full enforcement.
+- [x] Tie rotation learning-rate multipliers and xyz boost hooks into the adaptive path without breaking optimizer state.
+- [x] Preserve densification/pruning snapshots when new adaptive buffers are introduced.
 
-### Phase 3: Model Integration
-- [x] Gate intensity refresh in `scene/gaussian_model.py` using cadence and cache previous samples.
-- [x] Mark large splats for sampling via existing scale or covariance metrics.
+### Phase 3 – GaussianModel Refactor
+- [ ] Define module boundaries (core state, densification, schedulers, IO/volume, diagnostics) and migrate code incrementally.
+- [ ] Update imports/call sites to use the new helper modules while maintaining backward-compatible methods.
+- [ ] Document the new structure and ensure unit/doc references remain accurate.
 
-### Phase 4: Loop Updates
-- [x] Update `gaussian_splatting/utils/volume_supervisor.py` to respect new cadence/mode.
-- [x] Keep legacy modes unchanged and confirm scheduling logic remains stable.
+### Phase 4 – Validation
+- [x] Run `py_compile` (or equivalent) across touched Python files.
+- [ ] Launch an abbreviated training smoke test covering the warmup/adaptive flows and record metrics.
 
-### Phase 5: Validation & Docs
-- [x] Add sanity test or logging to verify cadence and large-splat filtering.
-- [x] Document new options in release notes or README snippet if needed.
-
-
-## Summary
-- Added CLI knobs for mean-covered sampling cadence, threshold, and radius, and
-	threaded them through model setup.
-- Implemented voxel coverage averaging with graceful fallbacks and wired it
-	into the Gaussian sampler, gating updates to large splats only.
-- Extended volume supervision scheduling to honour the new cadence and emit
-	optional debug metrics.
-- Documented the new intensity options in the training guide.
 
 

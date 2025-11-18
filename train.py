@@ -23,6 +23,7 @@ from typing import Optional
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from gaussian_splatting.utils.parameter_monitor import (
     ParameterMonitor,
+    add_parameter_regularization_loss,
 )
 from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
 from torch.cuda.amp import autocast, GradScaler
@@ -302,6 +303,29 @@ def training(
     ema_vol_loss_for_log = 0.0
     param_stats = {"scale_change_rate": 0.0, "rot_change_rate": 0.0}
 
+    diversity_warmup_iters = getattr(opt, "diversity_warmup_iterations", 0)
+    diversity_log_interval = max(1, getattr(opt, "diversity_log_interval", 25))
+    diversity_scale_weight = getattr(opt, "diversity_scale_weight", 0.0)
+    diversity_rotation_weight = getattr(opt, "diversity_rotation_weight", 0.0)
+    diversity_scale_variance_weight = getattr(
+        opt, "diversity_scale_variance_weight", 0.2
+    )
+    diversity_scale_range_weight = getattr(
+        opt, "diversity_scale_range_weight", 0.2
+    )
+    diversity_target_range_weight = getattr(
+        opt, "diversity_target_range_weight", 0.2
+    )
+    diversity_rotation_entropy_weight = getattr(
+        opt, "diversity_rotation_entropy_weight", 0.2
+    )
+    diversity_dispersion_weight = getattr(opt, "diversity_dispersion_weight", 0.2)
+    diversity_alignment_weight = getattr(opt, "diversity_alignment_weight", 0.1)
+    diversity_enabled = (
+        diversity_warmup_iters > 0
+        and (diversity_scale_weight > 0 or diversity_rotation_weight > 0)
+    )
+
     class _NoopCudaEvent:
         """Minimal stand-in when CUDA timing events are unavailable."""
 
@@ -370,6 +394,9 @@ def training(
         loss = 0.0
         # Volume supervision loss
         volume_loss = 0.0
+        reg_loss_value = None
+        reg_metrics = None
+        warmup_active = diversity_enabled and iteration <= diversity_warmup_iters
 
         if args.volume_supervision and volume_supervisor is not None:
             # Compute the volume loss and get volume gradients for parameter diversity loss
@@ -390,27 +417,39 @@ def training(
             # Store value for logging only
             volume_loss = vol_loss.detach().item()
 
-            # Configure loss weights based on training stage
-            # Use stronger weights for parameter diversity to force gradient flow
-            # Temporarily increased for testing
-            scale_diversity_weight = 0.05
-            rotation_diversity_weight = 0.05
+            # Apply diversity warmup regularization when requested
+            if warmup_active:
+                base_loss = loss
+                loss, reg_metrics = add_parameter_regularization_loss(
+                    model=gaussians,
+                    loss=loss,
+                    scale_diversity_weight=diversity_scale_weight,
+                    rotation_diversity_weight=diversity_rotation_weight,
+                    scale_variance_weight=diversity_scale_variance_weight,
+                    scale_range_weight=diversity_scale_range_weight,
+                    rotation_entropy_weight=diversity_rotation_entropy_weight,
+                    target_range_weight=diversity_target_range_weight,
+                    dispersion_weight=diversity_dispersion_weight,
+                    alignment_weight=diversity_alignment_weight,
+                    volume_gradients=vol_gradients,
+                )
+                reg_loss_value = reg_metrics.get("total") if reg_metrics else None
+                if reg_loss_value is None:
+                    reg_loss_value = (loss - base_loss).detach().item()
 
-            # Add parameter diversity losses to encourage scaling and rotation diversity
-            # This includes scale diversity, orthogonality, target range, quaternion dispersion,
-            # rotation entropy, and principal direction alignment
-            # reg_loss = add_parameter_regularization_loss(
-            #     model=gaussians,
-            #     loss=loss,
-            #     scale_diversity_weight=scale_diversity_weight,
-            #     rotation_diversity_weight=rotation_diversity_weight,
-            #     scale_variance_weight=0.2,
-            #     target_range_weight=0.2,
-            #     dispersion_weight=0.2,
-            #     alignment_weight=0.2,
-            #     volume_gradients=vol_gradients,
-            # )
-            # loss = reg_loss  # Use the regularized loss
+                if iteration <= 3 or iteration % diversity_log_interval == 0:
+                    remaining = diversity_warmup_iters - iteration
+                    scale_total = reg_metrics.get("scale_total", 0.0) if reg_metrics else 0.0
+                    rotation_total = (
+                        reg_metrics.get("rotation_total", 0.0) if reg_metrics else 0.0
+                    )
+                    print(
+                        (
+                            f"[REG][iter={iteration}] total={reg_loss_value:.6f} "
+                            f"scale={scale_total:.6f} rotation={rotation_total:.6f} "
+                            f"remaining={max(0, remaining)}"
+                        )
+                    )
 
             # Track parameter statistics for monitoring (only on every 50th iteration)
             if iteration % 50 == 0:
@@ -421,7 +460,7 @@ def training(
                     gaussians.get_rotation,
                     loss=loss.item(),
                     volume_loss=vol_loss.item() if vol_loss is not None else None,
-                    reg_loss=None,  # No regularization loss yet
+                    reg_loss=reg_loss_value,
                 )
                 # Update our param_stats dictionary with new values
                 if new_stats:
@@ -434,13 +473,20 @@ def training(
 
                 # Also log diversity loss components
                 tb_writer.add_scalar(
-                    "diversity/scale_weight", scale_diversity_weight, iteration
+                    "diversity/scale_weight", diversity_scale_weight, iteration
                 )
                 tb_writer.add_scalar(
-                    "diversity/rotation_weight", rotation_diversity_weight, iteration
+                    "diversity/rotation_weight", diversity_rotation_weight, iteration
                 )
-                # Log regularization loss
-                # tb_writer.add_scalar("loss/regularization", reg_loss.item(), iteration)
+                if reg_loss_value is not None:
+                    tb_writer.add_scalar(
+                        "loss/regularization", reg_loss_value, iteration
+                    )
+                    if reg_metrics:
+                        for metric_name, metric_value in reg_metrics.items():
+                            tb_writer.add_scalar(
+                                f"diversity/{metric_name}", metric_value, iteration
+                            )
 
         # Make sure the loss requires gradients before calling backward
         if loss.requires_grad:

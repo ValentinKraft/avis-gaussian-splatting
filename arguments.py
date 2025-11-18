@@ -38,6 +38,21 @@ class OptimizationParams:
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
+        self.scaling_constraint_warmup_iters = 1500
+        self.scaling_constraint_relaxation = 3.0
+        self.early_stats_window = 256
+
+        # Parameter diversity warmup (Option A)
+        self.diversity_warmup_iterations = 2000
+        self.diversity_log_interval = 25
+        self.diversity_scale_weight = 0.05
+        self.diversity_rotation_weight = 0.05
+        self.diversity_scale_variance_weight = 0.2
+        self.diversity_scale_range_weight = 0.2
+        self.diversity_target_range_weight = 0.2
+        self.diversity_rotation_entropy_weight = 0.2
+        self.diversity_dispersion_weight = 0.2
+        self.diversity_alignment_weight = 0.1
 
         # Volume supervision parameters
         self.rgb_supervision = True
@@ -69,6 +84,84 @@ class OptimizationParams:
         parser.add_argument('--densify_from_iter', type=int, default=self.densify_from_iter)
         parser.add_argument('--densify_until_iter', type=int, default=self.densify_until_iter)
         parser.add_argument('--densify_grad_threshold', type=float, default=self.densify_grad_threshold)
+        parser.add_argument(
+            '--scaling_constraint_warmup_iters',
+            type=int,
+            default=self.scaling_constraint_warmup_iters,
+            help='Iterations over which the scaling constraint linearly tightens to the configured maximum.'
+        )
+        parser.add_argument(
+            '--scaling_constraint_relaxation',
+            type=float,
+            default=self.scaling_constraint_relaxation,
+            help='Multiplier applied to the max scale factor at iteration 0; decays to 1.0 over the warmup window.'
+        )
+        parser.add_argument(
+            '--early_stats_window',
+            type=int,
+            default=self.early_stats_window,
+            help='How many early iterations to capture detailed Gaussian statistics for debugging.'
+        )
+        parser.add_argument(
+            '--diversity_warmup_iterations',
+            type=int,
+            default=self.diversity_warmup_iterations,
+            help='Number of iterations to apply parameter diversity warmup (0 disables).'
+        )
+        parser.add_argument(
+            '--diversity_log_interval',
+            type=int,
+            default=self.diversity_log_interval,
+            help='Logging interval (iterations) for diversity warmup diagnostics.'
+        )
+        parser.add_argument(
+            '--diversity_scale_weight',
+            type=float,
+            default=self.diversity_scale_weight,
+            help='Weight for scale diversity loss during warmup.'
+        )
+        parser.add_argument(
+            '--diversity_rotation_weight',
+            type=float,
+            default=self.diversity_rotation_weight,
+            help='Weight for rotation diversity loss during warmup.'
+        )
+        parser.add_argument(
+            '--diversity_scale_variance_weight',
+            type=float,
+            default=self.diversity_scale_variance_weight,
+            help='Variance component weight used inside the scale diversity loss.'
+        )
+        parser.add_argument(
+            '--diversity_scale_range_weight',
+            type=float,
+            default=self.diversity_scale_range_weight,
+            help='Penalty weight for keeping scales within the desired range.'
+        )
+        parser.add_argument(
+            '--diversity_target_range_weight',
+            type=float,
+            default=self.diversity_target_range_weight,
+            help='Additional clamp weight pushing scales toward the target interval.'
+        )
+        parser.add_argument(
+            '--diversity_rotation_entropy_weight',
+            type=float,
+            default=self.diversity_rotation_entropy_weight,
+            help='Weight for the rotation entropy component.'
+        )
+        parser.add_argument(
+            '--diversity_dispersion_weight',
+            type=float,
+            default=self.diversity_dispersion_weight,
+            help='Weight for quaternion dispersion away from identity.'
+        )
+        parser.add_argument(
+            '--diversity_alignment_weight',
+            type=float,
+            default=self.diversity_alignment_weight,
+            help='Weight for optional alignment with volume gradients.'
+        )
 
         # Volume supervision arguments
         parser.add_argument('--rgb_supervision', action='store_true', default=True,
