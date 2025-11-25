@@ -411,6 +411,16 @@ def training(
                 # This would break the computation graph
                 loss = vol_loss
 
+                # Optional global scale L2 regularization to discourage oversized splats
+                if getattr(args, "scale_l2_weight", 0.0) > 0.0:
+                    scales = gaussians.get_scaling
+                    if scales.numel() > 0:
+                        # Penalize physical scale magnitude (per-point L2 over axes)
+                        scale_norm = scales.norm(dim=1)
+                        scale_reg = scale_norm.mean() * float(args.scale_l2_weight)
+                        loss = loss + scale_reg
+                        vol_metrics["scale_l2_reg"] = float(scale_reg.detach().item())
+
             if log_mem and total_points > 0:
                 _log_gpu_memory("after_forward", iteration, total_points, active_points)
 

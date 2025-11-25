@@ -42,6 +42,12 @@ class OptimizationParams:
         self.scaling_constraint_relaxation = 3.0
         self.early_stats_window = 256
 
+        # Global scale regularization (volume supervision)
+        # L2 penalty on physical scales; keep default 0.0 for backward compatibility
+        self.scale_l2_weight = 0.005
+        # Optional global clamp on relative scale growth, used alongside per-point constraint
+        self.max_scale_factor = 3.0
+
         # Parameter diversity warmup (Option A)
         self.diversity_warmup_iterations = 2000
         self.diversity_log_interval = 25
@@ -103,10 +109,22 @@ class OptimizationParams:
             help='How many early iterations to capture detailed Gaussian statistics for debugging.'
         )
         parser.add_argument(
-            '--diversity_warmup_iterations',
+            "--scale_l2_weight",
+            type=float,
+            default=self.scale_l2_weight,
+            help="L2 regularization weight applied to physical Gaussian scales during volume supervision runs.",
+        )
+        parser.add_argument(
+            "--max_scale_factor",
+            type=float,
+            default=self.max_scale_factor,
+            help="Global upper bound multiplier for per-point scales relative to their initial values.",
+        )
+        parser.add_argument(
+            "--diversity_warmup_iterations",
             type=int,
             default=self.diversity_warmup_iterations,
-            help='Number of iterations to apply parameter diversity warmup (0 disables).'
+            help="Number of iterations to apply parameter diversity warmup (0 disables).",
         )
         parser.add_argument(
             '--diversity_log_interval',
@@ -213,9 +231,12 @@ class OptimizationParams:
     def extract(self, args):
         """Extract parameters from parsed arguments."""
         group = GroupParams()
+        # Prefer attributes coming from the parsed Namespace, but fall back to
+        # the OptimizationParams defaults when the CLI did not register them.
+        arg_dict = vars(args)
         for key, value in vars(self).items():
-            if key in vars(args):
-                setattr(group, key, getattr(args, key))
+            if key in arg_dict:
+                setattr(group, key, arg_dict[key])
             else:
                 setattr(group, key, value)
         return group

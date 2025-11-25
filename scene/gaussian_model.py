@@ -2149,11 +2149,17 @@ class GaussianModel:
         new_xyz = new_xyz.T.contiguous()
 
         # Create scaled-down versions of other attributes
+        # Use smaller children so splits refine structure instead of propagating blobs
         anisotropic = parent_scaling.repeat(N, 1)
         anisotropic[:, :2] *= self.vessel_radial_scale
         anisotropic[:, 2] *= self.vessel_axial_scale
+        # Radial axes shrink more aggressively; axial shrinks moderately
+        shrink_radial = 2.0 * max(float(N), 1.0)
+        shrink_axial = max(float(N) ** 0.5, 1.0)
+        anisotropic[:, :2] = anisotropic[:, :2] / shrink_radial
+        anisotropic[:, 2] = anisotropic[:, 2] / shrink_axial
         anisotropic = anisotropic.clamp_min(1e-6)
-        new_scaling = self.scaling_inverse_activation(anisotropic / max(float(N), 1.0))
+        new_scaling = self.scaling_inverse_activation(anisotropic)
         parent_quats = self.get_rotation[selected_pts_mask].detach()
         fallback_quats = parent_quats.repeat(N, 1)
         new_rotation, fallback_mask = self._sample_orientation_quats(
@@ -2303,7 +2309,11 @@ class GaussianModel:
             new_features_rest = None
 
         new_opacities = self._opacity[selected_pts_mask]
-        new_scaling = self._scaling[selected_pts_mask]
+        # Slightly shrink cloned scales so clones act as refinements, not duplicate blobs
+        parent_scaling = self.get_scaling[selected_pts_mask]
+        shrink_factor = 0.8
+        shrunk_scaling = (parent_scaling * shrink_factor).clamp_min(1e-6)
+        new_scaling = self.scaling_inverse_activation(shrunk_scaling)
         parent_quats = self.get_rotation[selected_pts_mask].detach()
         new_rotation, fallback_mask = self._sample_orientation_quats(
             new_xyz, parent_quats
