@@ -233,6 +233,8 @@ def splat_to_volume(
         )
     min_sigma = voxel_spacing * scale_ratio
     min_sigma = torch.maximum(min_sigma, 0.5 * voxel_spacing)
+    min_sigma = min_sigma.to(accum_dtype)
+    min_sigma_broadcast = min_sigma.unsqueeze(0)
 
     # Handle scaling parameters
     # point_scales, point_opacities, point_intensities already passed as parameters
@@ -314,7 +316,15 @@ def splat_to_volume(
         if small_shape != volume_shape:
             scales_batch = scales_batch * 0.5
 
-        scales_batch = torch.maximum(scales_batch, min_sigma.unsqueeze(0))
+        # Keep splats from collapsing below voxel resolution while preserving gradients
+        below_min = scales_batch < min_sigma_broadcast
+        if below_min.any():
+            scales_batch = torch.where(
+                below_min,
+                min_sigma_broadcast
+                + (scales_batch - scales_batch.detach()),
+                scales_batch,
+            )
 
         if rot_mats is not None:
             rb = rot_mats[s:e]  # (B,3,3)

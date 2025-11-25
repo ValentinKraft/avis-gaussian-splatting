@@ -29,8 +29,8 @@ class OptimizationParams:
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
         # Increased scaling and rotation learning rates for better optimization
-        self.scaling_lr = 0.3
-        self.rotation_lr = 0.2
+        self.scaling_lr = 0.1
+        self.rotation_lr = 0.1
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
         self.densification_interval = 100
@@ -58,7 +58,7 @@ class OptimizationParams:
         self.rgb_supervision = True
         self.volume_supervision = False
         self.volume_path = ""
-        self.volume_loss_type = "mse"
+        self.volume_loss_type = "dice"
         self.volume_loss_weight = 1.0
         self.volume_shape = [64, 64, 64]
         self.volume_transform = ""

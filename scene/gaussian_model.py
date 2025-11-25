@@ -71,7 +71,7 @@ class GaussianModel:
 
         # Store initial scaling values for maximum size constraint
         self._initial_scaling = torch.empty(0)  # Initial log-scale values [N, 3]
-        self.max_scale_factor = 10.0  # Maximum allowed scale compared to initial scale
+        self.max_scale_factor = 3.0  # Maximum allowed scale compared to initial scale
 
         # Runtime state
         self.max_radii2D = torch.empty(0)  # Maximum 2D radii for each point
