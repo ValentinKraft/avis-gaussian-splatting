@@ -1,319 +1,694 @@
-#
-# Copyright (C) 2023, Inria
-# GRAPHDECO research group, https://team.inria.fr/graphdeco
-# All rights reserved.
-#
-# This software is free for non-commercial, research and evaluation use
-# under the terms of the LICENSE.md file.
+"""Unified, well-documented CLI surface for the volume-only trainer."""
 
-"""
-Pipeline parameters for Gaussian Splatting with volume supervision.
-"""
+from __future__ import annotations
 
 from argparse import ArgumentParser, Namespace
-from typing import List, Optional
+from types import SimpleNamespace
 import os
 import sys
 
-class GroupParams:
-    pass
 
-class OptimizationParams:
-    def __init__(self, parser):
-        # Original optimization parameters
-        self.iterations = 30_000
-        self.position_lr_init = 0.0016
-        self.position_lr_final = 0.0000016
-        self.position_lr_delay_mult = 0.01
-        self.position_lr_max_steps = 30_000
-        self.feature_lr = 0.0025
-        self.opacity_lr = 0.05
-        # Increased scaling and rotation learning rates for better optimization
-        self.scaling_lr = 0.1
-        self.rotation_lr = 0.1
-        self.percent_dense = 0.01
-        self.lambda_dssim = 0.2
-        self.densification_interval = 100
-        self.opacity_reset_interval = 3000
-        self.densify_from_iter = 100
-        self.densify_until_iter = 15_000
-        self.densify_grad_threshold = 0.0002
-        self.scaling_constraint_warmup_iters = 1500
-        self.scaling_constraint_relaxation = 3.0
-        self.early_stats_window = 256
+class GroupParams(SimpleNamespace):
+    """Simple namespace used for legacy compatibility in training/render scripts."""
 
-        # Global scale regularization (volume supervision)
-        # L2 penalty on physical scales; keep default 0.0 for backward compatibility
-        self.scale_l2_weight = 0.005
-        # Optional global clamp on relative scale growth, used alongside per-point constraint
-        self.max_scale_factor = 3.0
 
-        # Parameter diversity warmup (Option A)
-        self.diversity_warmup_iterations = 2000
-        self.diversity_log_interval = 25
-        self.diversity_scale_weight = 0.05
-        self.diversity_rotation_weight = 0.05
-        self.diversity_scale_variance_weight = 0.2
-        self.diversity_scale_range_weight = 0.2
-        self.diversity_target_range_weight = 0.2
-        self.diversity_rotation_entropy_weight = 0.2
-        self.diversity_dispersion_weight = 0.2
-        self.diversity_alignment_weight = 0.1
+class ParamGroup:
+    """Tracks which flags belong to a parameter block so `.extract` can copy them."""
 
-        # Volume supervision parameters
-        self.volume_path = ""
-        self.volume_loss_type = "dice"
-        self.volume_loss_weight = 1.0
-        self.volume_shape = [64, 64, 64]
-        self.volume_transform = ""
+    def __init__(self) -> None:
+        self._fields: list[str] = []
 
-        # Initialization from mask
-        self.mask_path = ""
+    def _register(self, name: str) -> None:
+        self._fields.append(name)
 
-        # Add arguments to parser
-        parser.add_argument('--iterations', type=int, default=self.iterations)
-        parser.add_argument('--position_lr_init', type=float, default=self.position_lr_init)
-        parser.add_argument('--position_lr_final', type=float, default=self.position_lr_final)
-        parser.add_argument('--position_lr_delay_mult', type=float, default=self.position_lr_delay_mult)
-        parser.add_argument('--position_lr_max_steps', type=int, default=self.position_lr_max_steps)
-        parser.add_argument('--feature_lr', type=float, default=self.feature_lr)
-        parser.add_argument('--opacity_lr', type=float, default=self.opacity_lr)
-        parser.add_argument('--scaling_lr', type=float, default=self.scaling_lr)
-        parser.add_argument('--rotation_lr', type=float, default=self.rotation_lr)
-        parser.add_argument('--percent_dense', type=float, default=self.percent_dense)
-        parser.add_argument('--lambda_dssim', type=float, default=self.lambda_dssim)
-        parser.add_argument('--densification_interval', type=int, default=self.densification_interval)
-        parser.add_argument('--opacity_reset_interval', type=int, default=self.opacity_reset_interval)
-        parser.add_argument('--densify_from_iter', type=int, default=self.densify_from_iter)
-        parser.add_argument('--densify_until_iter', type=int, default=self.densify_until_iter)
-        parser.add_argument('--densify_grad_threshold', type=float, default=self.densify_grad_threshold)
-        parser.add_argument(
-            '--scaling_constraint_warmup_iters',
-            type=int,
-            default=self.scaling_constraint_warmup_iters,
-            help='Iterations over which the scaling constraint linearly tightens to the configured maximum.'
-        )
-        parser.add_argument(
-            '--scaling_constraint_relaxation',
-            type=float,
-            default=self.scaling_constraint_relaxation,
-            help='Multiplier applied to the max scale factor at iteration 0; decays to 1.0 over the warmup window.'
-        )
-        parser.add_argument(
-            '--early_stats_window',
-            type=int,
-            default=self.early_stats_window,
-            help='How many early iterations to capture detailed Gaussian statistics for debugging.'
-        )
-        parser.add_argument(
-            "--scale_l2_weight",
-            type=float,
-            default=self.scale_l2_weight,
-            help="L2 regularization weight applied to physical Gaussian scales during volume supervision runs.",
-        )
-        parser.add_argument(
-            "--max_scale_factor",
-            type=float,
-            default=self.max_scale_factor,
-            help="Global upper bound multiplier for per-point scales relative to their initial values.",
-        )
-        parser.add_argument(
-            "--diversity_warmup_iterations",
-            type=int,
-            default=self.diversity_warmup_iterations,
-            help="Number of iterations to apply parameter diversity warmup (0 disables).",
-        )
-        parser.add_argument(
-            '--diversity_log_interval',
-            type=int,
-            default=self.diversity_log_interval,
-            help='Logging interval (iterations) for diversity warmup diagnostics.'
-        )
-        parser.add_argument(
-            '--diversity_scale_weight',
-            type=float,
-            default=self.diversity_scale_weight,
-            help='Weight for scale diversity loss during warmup.'
-        )
-        parser.add_argument(
-            '--diversity_rotation_weight',
-            type=float,
-            default=self.diversity_rotation_weight,
-            help='Weight for rotation diversity loss during warmup.'
-        )
-        parser.add_argument(
-            '--diversity_scale_variance_weight',
-            type=float,
-            default=self.diversity_scale_variance_weight,
-            help='Variance component weight used inside the scale diversity loss.'
-        )
-        parser.add_argument(
-            '--diversity_scale_range_weight',
-            type=float,
-            default=self.diversity_scale_range_weight,
-            help='Penalty weight for keeping scales within the desired range.'
-        )
-        parser.add_argument(
-            '--diversity_target_range_weight',
-            type=float,
-            default=self.diversity_target_range_weight,
-            help='Additional clamp weight pushing scales toward the target interval.'
-        )
-        parser.add_argument(
-            '--diversity_rotation_entropy_weight',
-            type=float,
-            default=self.diversity_rotation_entropy_weight,
-            help='Weight for the rotation entropy component.'
-        )
-        parser.add_argument(
-            '--diversity_dispersion_weight',
-            type=float,
-            default=self.diversity_dispersion_weight,
-            help='Weight for quaternion dispersion away from identity.'
-        )
-        parser.add_argument(
-            '--diversity_alignment_weight',
-            type=float,
-            default=self.diversity_alignment_weight,
-            help='Weight for optional alignment with volume gradients.'
-        )
+    def extract(self, args: Namespace) -> GroupParams:
+        params = GroupParams()
+        for field in self._fields:
+            setattr(params, field, getattr(args, field))
+        return params
 
-        # Volume supervision arguments (now mandatory)
-        parser.add_argument(
+
+class ModelParams(ParamGroup):
+    """Filesystem inputs and data-shaping configuration exposed to end users."""
+
+    def __init__(self, parser: ArgumentParser, sentinel: bool = False) -> None:
+        super().__init__()
+
+        core = parser.add_argument_group("Core Volume Inputs")
+
+        # Where checkpoints and exported PLYs live.
+        core.add_argument(
+            "--model_path",
+            type=str,
+            required=not sentinel,
+            help="Output directory that stores checkpoints, logs, and PLY exports.",
+        )
+        self._register("model_path")
+
+        # Supervision volume (nii/npy/mhd) resampled during training.
+        core.add_argument(
             "--volume_path",
             type=str,
             required=True,
-            help="Path to ground truth volume file (.nii, .npy, .mhd)",
+            help="Path to the CT/MR volume that acts as the optimization target.",
         )
-        parser.add_argument('--volume_loss_type', type=str, default='dice',
-                          choices=['mse', 'dice', 'tversky', 'kl'],
-                          help='Type of volume supervision loss')
-        parser.add_argument('--volume_loss_weight', type=float, default=1.0,
-                          help='Weight for volume supervision loss')
-        parser.add_argument('--volume_shape', type=int, nargs=3, default=[64, 64, 64],
-                          help='Target shape for volume supervision (D, H, W)')
+        self._register("volume_path")
 
-        # Volume initialization arguments
-        parser.add_argument(
+        # Segmentation mask for initializing Gaussian seeds.
+        core.add_argument(
             "--mask_path",
             type=str,
             required=True,
-            help="Path to segmentation mask file (.nii, .npy, .mhd)",
+            help="Binary/probability mask used to sample initial Gaussians.",
         )
-        parser.add_argument(
+        self._register("mask_path")
+
+        # Output resolution for voxelized supervision.
+        core.add_argument(
+            "--volume_shape",
+            type=int,
+            nargs=3,
+            default=[64, 64, 64],
+            metavar=("D", "H", "W"),
+            help="Voxel grid resolution used when loading and supervising the volume.",
+        )
+        self._register("volume_shape")
+
+        # Optional 4x4 transform to align volume/mask with world coordinates.
+        core.add_argument(
             "--volume_transform",
             type=str,
             default="",
-            help="Path to 4x4 transform matrix for volume alignment (.npy)",
+            help="Numpy 4x4 transform bringing volume voxels into the training frame.",
         )
-        parser.add_argument(
+        self._register("volume_transform")
+
+        # Loss family used when comparing rendered splats to the target volume.
+        core.add_argument(
+            "--volume_loss_type",
+            type=str,
+            default="dice",
+            choices=["mse", "dice", "tversky", "kl"],
+            help="Volume-domain loss to optimize (dice/mse/tversky/kl).",
+        )
+        self._register("volume_loss_type")
+
+        # Scalar weight applied to the chosen volume loss.
+        core.add_argument(
+            "--volume_loss_weight",
+            type=float,
+            default=1.0,
+            help="Weight applied to the chosen volume supervision loss.",
+        )
+        self._register("volume_loss_weight")
+
+        # Number of Gaussians sampled from the mask.
+        core.add_argument(
             "--init_n_points",
             type=int,
             default=5000,
-            help="Number of points to sample from mask",
+            help="How many Gaussians to sample from the mask during initialization.",
         )
-        parser.add_argument(
+        self._register("init_n_points")
+
+        # Random jitter applied to initial Gaussian positions.
+        core.add_argument(
             "--position_noise",
             type=float,
             default=0.01,
-            help="Standard deviation of position noise for initialization",
+            help="Std-dev of positional noise added to mask samples at init time.",
         )
+        self._register("position_noise")
 
-    def extract(self, args):
-        """Extract parameters from parsed arguments."""
-        group = GroupParams()
-        # Prefer attributes coming from the parsed Namespace, but fall back to
-        # the OptimizationParams defaults when the CLI did not register them.
-        arg_dict = vars(args)
-        for key, value in vars(self).items():
-            if key in arg_dict:
-                setattr(group, key, arg_dict[key])
-            else:
-                setattr(group, key, value)
-        return group
+        legacy = parser.add_argument_group("Legacy RGB Inputs (kept for compatibility)")
 
-class ModelParams:
-    def __init__(self, parser, sentinel=False):
-        self.source_path = ""
-        self.model_path = ""
-        self.images = "images"
-        self.resolution = -1
-        self.sh_degree = 3
-        self.white_background = False
-        self.data_device = "cuda"
-
-        # Add arguments
-        parser.add_argument(
+        # COLMAP/SfM dataset directory.
+        legacy.add_argument(
             "--source_path",
             type=str,
             default="",
-            help="Path to source directory containing images (only needed for RGB data)",
+            help="Directory with RGB assets (ignored for pure volume training).",
         )
-        parser.add_argument('--model_path', type=str, required=not sentinel,
-                          help='Path to save model')
-        parser.add_argument(
+        self._register("source_path")
+
+        # Relative image folder.
+        legacy.add_argument(
             "--images",
             type=str,
-            default=self.images,
-            help="Image folder (only needed with RGB supervision)",
+            default="images",
+            help="Image folder name inside --source_path (RGB workflows only).",
         )
-        parser.add_argument(
+        self._register("images")
+
+        # Relative depth folder.
+        legacy.add_argument(
+            "--depths",
+            type=str,
+            default="",
+            help="Depth folder name inside --source_path (RGB workflows only).",
+        )
+        self._register("depths")
+
+        # Target render resolution.
+        legacy.add_argument(
             "--resolution",
             type=int,
-            default=self.resolution,
-            help="Resolution of images (only needed with RGB supervision)",
+            default=-1,
+            help="Image resolution override for RGB renders (ignored for volumes).",
         )
-        parser.add_argument('--sh_degree', type=int, default=self.sh_degree,
-                          help='Degree of spherical harmonics')
-        parser.add_argument('--white_background', action='store_true',
-                          help='Render with white background')
-        parser.add_argument('--data_device', type=str, default=self.data_device,
-                          help='Device to store data')
+        self._register("resolution")
 
-    def extract(self, args):
-        """Extract parameters from parsed arguments."""
-        group = GroupParams()
-        for key, value in vars(self).items():
-            if key in vars(args):
-                setattr(group, key, getattr(args, key))
-            else:
-                setattr(group, key, value)
-        return group
+        # Spherical-harmonics degree for RGB appearance.
+        legacy.add_argument(
+            "--sh_degree",
+            type=int,
+            default=3,
+            help="Maximum SH degree used when RGB rendering is enabled.",
+        )
+        self._register("sh_degree")
 
-class PipelineParams:
-    def __init__(self, parser):
-        self.convert_SHs_python = False
-        self.compute_cov3D_python = False
-        self.debug = False
-        
-        # Add arguments
-        parser.add_argument('--convert_SHs_python', action='store_true',
-                          help='Convert spherical harmonics in Python')
-        parser.add_argument('--compute_cov3D_python', action='store_true',
-                          help='Compute 3D covariance in Python')
-        parser.add_argument('--debug', action='store_true',
-                          help='Enable debug mode')
+        # Background color toggle for legacy renders.
+        legacy.add_argument(
+            "--white_background",
+            action="store_true",
+            help="Render RGB frames on white instead of black background.",
+        )
+        self._register("white_background")
 
-    def extract(self, args):
-        """Extract parameters from parsed arguments."""
-        group = GroupParams()
-        for key, value in vars(self).items():
-            if key in vars(args):
-                setattr(group, key, getattr(args, key))
-            else:
-                setattr(group, key, value)
-        return group
+        # Device used to stage datasets before training.
+        legacy.add_argument(
+            "--data_device",
+            type=str,
+            default="cuda",
+            help="Device used to host dataset tensors (cuda or cpu).",
+        )
+        self._register("data_device")
 
-def get_combined_args(parser : ArgumentParser):
-    """Combine command line arguments with config file."""
-    cmdlne_string = sys.argv[1:]
-    cfgfile_string = "Namespace()"
-    args_cmdline = parser.parse_args(cmdlne_string)
-    args_cfgfile = eval(cfgfile_string)
-    
-    # Merge arguments
-    merged_dict = vars(args_cfgfile).copy()
-    for k,v in vars(args_cmdline).items():
-        if v is not None:
-            merged_dict[k] = v
-    return Namespace(**merged_dict)
+        # Toggles train/test exposure split (RGB feature, retained for parity).
+        legacy.add_argument(
+            "--train_test_exp",
+            action="store_true",
+            help="Enable separate train/test exposure parameters (RGB only).",
+        )
+        self._register("train_test_exp")
+
+        # Evaluation-only flag.
+        legacy.add_argument(
+            "--eval",
+            action="store_true",
+            help="Skip training and run evaluation only (legacy behavior).",
+        )
+        self._register("eval")
+
+    def extract(self, args: Namespace) -> GroupParams:  # type: ignore[override]
+        params = super().extract(args)
+        params.source_path = os.path.abspath(params.source_path)
+        return params
+
+
+class OptimizationParams(ParamGroup):
+    """Learning schedules, densification knobs, and regularization weights."""
+
+    def __init__(self, parser: ArgumentParser) -> None:
+        super().__init__()
+
+        schedule = parser.add_argument_group("Training Schedule & Optimizer")
+
+        # Total number of optimization iterations.
+        schedule.add_argument(
+            "--iterations",
+            type=int,
+            default=30_000,
+            help="Total number of gradient steps to run before finishing training.",
+        )
+        self._register("iterations")
+
+        # Choice of optimizer backend.
+        schedule.add_argument(
+            "--optimizer_type",
+            type=str,
+            default="default",
+            choices=["default", "sparse_adam"],
+            help="Optimizer backend (use 'sparse_adam' only when supported).",
+        )
+        self._register("optimizer_type")
+
+        # Random background blending for RGB rendering.
+        schedule.add_argument(
+            "--random_background",
+            action="store_true",
+            help="Enable random background colors for RGB supervision.",
+        )
+        self._register("random_background")
+
+        lr = parser.add_argument_group("Learning-Rate Schedule")
+
+        # Initial center learning rate.
+        lr.add_argument(
+            "--position_lr_init",
+            type=float,
+            default=0.00016,
+            help="Initial learning rate for Gaussian centers.",
+        )
+        self._register("position_lr_init")
+
+        # Final center learning rate.
+        lr.add_argument(
+            "--position_lr_final",
+            type=float,
+            default=0.0000016,
+            help="Final learning rate for Gaussian centers.",
+        )
+        self._register("position_lr_final")
+
+        # Delay multiplier for the LR ramp.
+        lr.add_argument(
+            "--position_lr_delay_mult",
+            type=float,
+            default=0.01,
+            help="Multiplier that delays how fast the position LR ramps up.",
+        )
+        self._register("position_lr_delay_mult")
+
+        # Steps used to transition between LR endpoints.
+        lr.add_argument(
+            "--position_lr_max_steps",
+            type=int,
+            default=30_000,
+            help="Iterations over which the position LR decays from init to final.",
+        )
+        self._register("position_lr_max_steps")
+
+        # Appearance-feature LR.
+        lr.add_argument(
+            "--feature_lr",
+            type=float,
+            default=0.0025,
+            help="Learning rate for SH feature coefficients.",
+        )
+        self._register("feature_lr")
+
+        # Opacity LR.
+        lr.add_argument(
+            "--opacity_lr",
+            type=float,
+            default=0.025,
+            help="Learning rate applied to Gaussian opacity logits.",
+        )
+        self._register("opacity_lr")
+
+        # Scale LR.
+        lr.add_argument(
+            "--scaling_lr",
+            type=float,
+            default=0.005,
+            help="Learning rate driving Gaussian scale updates.",
+        )
+        self._register("scaling_lr")
+
+        # Rotation LR.
+        lr.add_argument(
+            "--rotation_lr",
+            type=float,
+            default=0.001,
+            help="Learning rate for quaternion rotations.",
+        )
+        self._register("rotation_lr")
+
+        # Exposure LR init (legacy RGB).
+        lr.add_argument(
+            "--exposure_lr_init",
+            type=float,
+            default=0.01,
+            help="Initial exposure LR (legacy RGB feature).",
+        )
+        self._register("exposure_lr_init")
+
+        # Exposure LR final (legacy RGB).
+        lr.add_argument(
+            "--exposure_lr_final",
+            type=float,
+            default=0.001,
+            help="Final exposure LR after scheduling (legacy RGB feature).",
+        )
+        self._register("exposure_lr_final")
+
+        # Delay before exposure LR decay.
+        lr.add_argument(
+            "--exposure_lr_delay_steps",
+            type=int,
+            default=0,
+            help="Iterations before exposure LR decay starts (legacy RGB feature).",
+        )
+        self._register("exposure_lr_delay_steps")
+
+        # Exposure LR decay multiplier.
+        lr.add_argument(
+            "--exposure_lr_delay_mult",
+            type=float,
+            default=0.0,
+            help="Multiplier applied to exposure LR after the delay window.",
+        )
+        self._register("exposure_lr_delay_mult")
+
+        densify = parser.add_argument_group("Densification & Regularization")
+
+        # Dense fraction (legacy compatibility).
+        densify.add_argument(
+            "--percent_dense",
+            type=float,
+            default=0.01,
+            help="Fraction of Gaussians kept dense (legacy RGB compatibility).",
+        )
+        self._register("percent_dense")
+
+        # DSSIM weight when RGB supervision is active.
+        densify.add_argument(
+            "--lambda_dssim",
+            type=float,
+            default=0.2,
+            help="DSSIM loss weight (RGB workflows).",
+        )
+        self._register("lambda_dssim")
+
+        # Interval between densification passes.
+        densify.add_argument(
+            "--densification_interval",
+            type=int,
+            default=100,
+            help="Iterations between densification/splitting passes.",
+        )
+        self._register("densification_interval")
+
+        # Opacity reset cadence.
+        densify.add_argument(
+            "--opacity_reset_interval",
+            type=int,
+            default=3000,
+            help="Iterations between global opacity resets.",
+        )
+        self._register("opacity_reset_interval")
+
+        # Iteration at which densification starts.
+        densify.add_argument(
+            "--densify_from_iter",
+            type=int,
+            default=500,
+            help="Iteration to begin spawning/splitting Gaussians.",
+        )
+        self._register("densify_from_iter")
+
+        # Iteration after which densification stops.
+        densify.add_argument(
+            "--densify_until_iter",
+            type=int,
+            default=15_000,
+            help="Iteration after which densification/pruning stops.",
+        )
+        self._register("densify_until_iter")
+
+        # Gradient magnitude threshold for densification.
+        densify.add_argument(
+            "--densify_grad_threshold",
+            type=float,
+            default=0.0002,
+            help="Gradient energy required for a Gaussian to be split.",
+        )
+        self._register("densify_grad_threshold")
+
+        # Depth L1 initial weight (RGB compatibility).
+        densify.add_argument(
+            "--depth_l1_weight_init",
+            type=float,
+            default=1.0,
+            help="Initial depth-L1 weight (legacy RGB feature).",
+        )
+        self._register("depth_l1_weight_init")
+
+        # Depth L1 final weight (RGB compatibility).
+        densify.add_argument(
+            "--depth_l1_weight_final",
+            type=float,
+            default=0.01,
+            help="Final depth-L1 weight after scheduling (legacy RGB feature).",
+        )
+        self._register("depth_l1_weight_final")
+
+        intensity = parser.add_argument_group("Intensity & Appearance Controls")
+
+        # How grayscale intensities are produced.
+        intensity.add_argument(
+            "--intensity_mode",
+            type=str,
+            default="sampled",
+            choices=["sampled", "learned", "sampled_mean_covered"],
+            help="Strategy for assigning per-Gaussian intensity values.",
+        )
+        self._register("intensity_mode")
+
+        # Interval between intensity statistic updates.
+        intensity.add_argument(
+            "--intensity_update_interval",
+            type=int,
+            default=10,
+            help="Iterations between intensity statistic updates.",
+        )
+        self._register("intensity_update_interval")
+
+        # Brightness divisor for intensity-to-color mapping.
+        intensity.add_argument(
+            "--intensity_color_divisor",
+            type=float,
+            default=1.0,
+            help="Divisor applied when mapping intensities to pseudo-RGB colors.",
+        )
+        self._register("intensity_color_divisor")
+
+        # Threshold for classifying large splats.
+        intensity.add_argument(
+            "--intensity_large_splat_threshold",
+            type=float,
+            default=0.03,
+            help='Radius threshold used to treat splats as "large" during sampling.',
+        )
+        self._register("intensity_large_splat_threshold")
+
+        # Radius multiplier for mean-covered sampling.
+        intensity.add_argument(
+            "--intensity_mean_cover_radius",
+            type=float,
+            default=2.5,
+            help="Neighborhood radius multiplier for mean-covered sampling.",
+        )
+        self._register("intensity_mean_cover_radius")
+
+        # Interval for recomputing mean-covered intensities.
+        intensity.add_argument(
+            "--intensity_mean_cover_interval",
+            type=int,
+            default=20,
+            help="Iterations between mean-covered intensity updates.",
+        )
+        self._register("intensity_mean_cover_interval")
+
+        constraint = parser.add_argument_group("Scale Constraints & Diagnostics")
+
+        # Optional L2 penalty on absolute scales.
+        constraint.add_argument(
+            "--scale_l2_weight",
+            type=float,
+            default=0.005,
+            help="Weight for the L2 penalty applied to physical Gaussian scales.",
+        )
+        self._register("scale_l2_weight")
+
+        # Max growth relative to the initial scale.
+        constraint.add_argument(
+            "--max_scale_factor",
+            type=float,
+            default=3.0,
+            help="Cap on how much a Gaussian scale may grow vs. initialization.",
+        )
+        self._register("max_scale_factor")
+
+        # Warmup iterations for the scaling constraint.
+        constraint.add_argument(
+            "--scaling_constraint_warmup_iters",
+            type=int,
+            default=1500,
+            help="Iterations over which the scale constraint tightens to its final value.",
+        )
+        self._register("scaling_constraint_warmup_iters")
+
+        # Initial relaxation multiplier for the constraint.
+        constraint.add_argument(
+            "--scaling_constraint_relaxation",
+            type=float,
+            default=3.0,
+            help="Initial relaxation multiplier applied to the scale constraint.",
+        )
+        self._register("scaling_constraint_relaxation")
+
+        # Window for logging early Gaussian statistics.
+        constraint.add_argument(
+            "--early_stats_window",
+            type=int,
+            default=256,
+            help="Number of early iterations that log detailed Gaussian statistics.",
+        )
+        self._register("early_stats_window")
+
+        diversity = parser.add_argument_group("Parameter Diversity Warmup")
+
+        # Duration of the diversity warmup phase.
+        diversity.add_argument(
+            "--diversity_warmup_iterations",
+            type=int,
+            default=2000,
+            help="Iterations to keep diversity losses enabled (0 disables).",
+        )
+        self._register("diversity_warmup_iterations")
+
+        # Logging cadence for diversity diagnostics.
+        diversity.add_argument(
+            "--diversity_log_interval",
+            type=int,
+            default=25,
+            help="Iterations between diversity diagnostic prints.",
+        )
+        self._register("diversity_log_interval")
+
+        # Base weight for the scale diversity loss.
+        diversity.add_argument(
+            "--diversity_scale_weight",
+            type=float,
+            default=0.05,
+            help="Overall strength of the scale diversity loss.",
+        )
+        self._register("diversity_scale_weight")
+
+        # Base weight for the rotation diversity loss.
+        diversity.add_argument(
+            "--diversity_rotation_weight",
+            type=float,
+            default=0.05,
+            help="Overall strength of the rotation diversity loss.",
+        )
+        self._register("diversity_rotation_weight")
+
+        # Variance component weight for scale diversity.
+        diversity.add_argument(
+            "--diversity_scale_variance_weight",
+            type=float,
+            default=0.2,
+            help="Weight on the per-axis variance component of the scale loss.",
+        )
+        self._register("diversity_scale_variance_weight")
+
+        # Range penalty weight for scale diversity.
+        diversity.add_argument(
+            "--diversity_scale_range_weight",
+            type=float,
+            default=0.2,
+            help="Penalty pushing scales toward a desired range.",
+        )
+        self._register("diversity_scale_range_weight")
+
+        # Target clamp weight for scale diversity.
+        diversity.add_argument(
+            "--diversity_target_range_weight",
+            type=float,
+            default=0.2,
+            help="Clamp weight reinforcing the preferred scale interval.",
+        )
+        self._register("diversity_target_range_weight")
+
+        # Rotation entropy weight.
+        diversity.add_argument(
+            "--diversity_rotation_entropy_weight",
+            type=float,
+            default=0.2,
+            help="Encourages diverse quaternion orientations.",
+        )
+        self._register("diversity_rotation_entropy_weight")
+
+        # Quaternion dispersion weight.
+        diversity.add_argument(
+            "--diversity_dispersion_weight",
+            type=float,
+            default=0.2,
+            help="Penalizes quaternions collapsing toward identity.",
+        )
+        self._register("diversity_dispersion_weight")
+
+        # Alignment weight with gradient-derived directions.
+        diversity.add_argument(
+            "--diversity_alignment_weight",
+            type=float,
+            default=0.1,
+            help="Aligns Gaussians with local volume gradients when set > 0.",
+        )
+        self._register("diversity_alignment_weight")
+
+
+class PipelineParams(ParamGroup):
+    """Low-level pipeline toggles retained for debugging/compatibility."""
+
+    def __init__(self, parser: ArgumentParser) -> None:
+        super().__init__()
+        group = parser.add_argument_group("Pipeline Toggles")
+
+        # Forces SH conversion to happen on the Python side.
+        group.add_argument(
+            "--convert_SHs_python",
+            action="store_true",
+            help="Convert spherical harmonics coefficients on CPU/Python for debugging.",
+        )
+        self._register("convert_SHs_python")
+
+        # Forces covariance computation to happen on CPU/Python.
+        group.add_argument(
+            "--compute_cov3D_python",
+            action="store_true",
+            help="Compute 3D covariance matrices on CPU/Python for debugging.",
+        )
+        self._register("compute_cov3D_python")
+
+        # Enables verbose diagnostics in the rasterization pipeline.
+        group.add_argument(
+            "--debug",
+            action="store_true",
+            help="Enable verbose debugging prints inside the rasterizer.",
+        )
+        self._register("debug")
+
+        # Enables antialiasing when using the legacy RGB rasterizer.
+        group.add_argument(
+            "--antialiasing",
+            action="store_true",
+            help="Turn on rasterizer anti-aliasing (legacy RGB workflows).",
+        )
+        self._register("antialiasing")
+
+
+def get_combined_args(parser: ArgumentParser) -> Namespace:
+    """Merge CLI arguments with a saved cfg_args file when present."""
+
+    cmdline_args = parser.parse_args(sys.argv[1:])
+    cfg_contents = "Namespace()"
+
+    try:
+        cfg_path = os.path.join(cmdline_args.model_path, "cfg_args")
+        print("Looking for config file in", cfg_path)
+        with open(cfg_path) as cfg_file:
+            print(f"Config file found: {cfg_path}")
+            cfg_contents = cfg_file.read()
+    except (TypeError, FileNotFoundError):
+        print("Config file not found; using command-line arguments only.")
+
+    cfg_args = eval(cfg_contents)
+    merged = vars(cfg_args).copy()
+    for key, value in vars(cmdline_args).items():
+        if value is not None:
+            merged[key] = value
+    return Namespace(**merged)

@@ -189,6 +189,19 @@ def training(
     )
     gaussians.set_intensity_color_divisor(getattr(opt, "intensity_color_divisor", 1.0))
 
+    # Propagate constraint-related knobs from CLI into the Gaussian model.
+    gaussians.max_scale_factor = getattr(opt, "max_scale_factor", gaussians.max_scale_factor)
+    gaussians._max_scale_factor_base = gaussians.max_scale_factor
+    gaussians.scaling_constraint_warmup_iters = getattr(
+        opt, "scaling_constraint_warmup_iters", gaussians.scaling_constraint_warmup_iters
+    )
+    gaussians.scaling_constraint_relaxation = getattr(
+        opt, "scaling_constraint_relaxation", gaussians.scaling_constraint_relaxation
+    )
+    gaussians.early_stats_window = getattr(
+        opt, "early_stats_window", gaussians.early_stats_window
+    )
+
     # Initialize parameter monitoring with increased log interval for better performance
     parameter_monitor = ParameterMonitor(
         args.model_path, log_interval=50
