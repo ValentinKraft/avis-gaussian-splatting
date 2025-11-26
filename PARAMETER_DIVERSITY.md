@@ -45,8 +45,8 @@ This implementation adds specialized loss functions to encourage parameter diver
 To train with parameter diversity losses:
 
 ```bash
-python train.py --volume_supervision --model_path output/your_model \
-    --init_from_mask --mask_path path/to/mask.nii.gz \
+python train.py --model_path output/your_model \
+    --mask_path path/to/mask.nii.gz \
     --volume_path path/to/volume.nii.gz \
     --save_ply_every 10 --iterations 2000 --init_n_points 1000
 ```

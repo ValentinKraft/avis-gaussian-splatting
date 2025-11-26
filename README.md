@@ -5,13 +5,13 @@
 Clinical test dataset:
 
 ```shell
-python train.py --volume_supervision --model_path output/test --init_from_mask --mask_path _test-data_/vesselmask-float.nii.gz --volume_path _test-data_/volume.nii.gz --iterations 500 --volume_loss_type dice --init_n_points 10000 --save_ply_every 100
+python train.py --model_path output/test --mask_path _test-data_/vesselmask-float.nii.gz --volume_path _test-data_/volume.nii.gz --iterations 500 --volume_loss_type dice --init_n_points 10000 --save_ply_every 100
 ```
 
 Synthetic test dataset:
 
 ```shell
-python train.py --volume_supervision --model_path output/synthetic-data-test --init_from_mask --mask_path _test-data_/synthetic-mask-float.nii.gz --volume_path _test-data_/synthetic-gradient.nii.gz --iterations 500 --volume_loss_type dice --init_n_points 10000 --save_ply_every 100
+python train.py --model_path output/synthetic-data-test --mask_path _test-data_/synthetic-mask-float.nii.gz --volume_path _test-data_/synthetic-gradient.nii.gz --iterations 500 --volume_loss_type dice --init_n_points 10000 --save_ply_every 100
 ```
 
 ### Intensity Sampling Modes

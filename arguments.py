@@ -61,8 +61,6 @@ class OptimizationParams:
         self.diversity_alignment_weight = 0.1
 
         # Volume supervision parameters
-        self.rgb_supervision = True
-        self.volume_supervision = False
         self.volume_path = ""
         self.volume_loss_type = "dice"
         self.volume_loss_weight = 1.0
@@ -70,7 +68,6 @@ class OptimizationParams:
         self.volume_transform = ""
 
         # Initialization from mask
-        self.init_from_mask = False
         self.mask_path = ""
 
         # Add arguments to parser
@@ -181,13 +178,13 @@ class OptimizationParams:
             help='Weight for optional alignment with volume gradients.'
         )
 
-        # Volume supervision arguments
-        parser.add_argument('--rgb_supervision', action='store_true', default=True,
-                          help='Enable RGB image supervision')
-        parser.add_argument('--volume_supervision', action='store_true', default=False,
-                          help='Enable volume supervision loss')
-        parser.add_argument('--volume_path', type=str, default="",
-                          help='Path to ground truth volume file (.nii, .npy, .mhd)')
+        # Volume supervision arguments (now mandatory)
+        parser.add_argument(
+            "--volume_path",
+            type=str,
+            required=True,
+            help="Path to ground truth volume file (.nii, .npy, .mhd)",
+        )
         parser.add_argument('--volume_loss_type', type=str, default='dice',
                           choices=['mse', 'dice', 'tversky', 'kl'],
                           help='Type of volume supervision loss')
@@ -198,15 +195,9 @@ class OptimizationParams:
 
         # Volume initialization arguments
         parser.add_argument(
-            "--init_from_mask",
-            action="store_true",
-            default=False,
-            help="Initialize Gaussian points by sampling from segmentation mask",
-        )
-        parser.add_argument(
             "--mask_path",
             type=str,
-            default="",
+            required=True,
             help="Path to segmentation mask file (.nii, .npy, .mhd)",
         )
         parser.add_argument(
@@ -256,7 +247,7 @@ class ModelParams:
             "--source_path",
             type=str,
             default="",
-            help="Path to source directory containing images (optional if using --init_from_mask)",
+            help="Path to source directory containing images (only needed for RGB data)",
         )
         parser.add_argument('--model_path', type=str, required=not sentinel,
                           help='Path to save model')

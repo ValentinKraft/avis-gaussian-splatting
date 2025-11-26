@@ -103,6 +103,25 @@ class OptimizationParams(ParamGroup):
         self.intensity_large_splat_threshold = 0.03
         self.intensity_mean_cover_radius = 2.5
         self.intensity_mean_cover_interval = 20
+
+        # Volume supervision parameters (volume-only training)
+        # Path to ground truth volume (CT, MRI, etc.)
+        self.volume_path = ""
+        # Loss settings for comparing rendered splats to the target volume
+        self.volume_loss_type = "dice"
+        self.volume_loss_weight = 1.0
+        # Target voxel grid shape (D, H, W) used for supervision
+        self.volume_shape = [64, 64, 64]
+        # Optional 4x4 world transform for the volume
+        self.volume_transform = ""
+
+        # Initialization from segmentation mask
+        # Path to segmentation/probability mask used to sample initial Gaussians
+        self.mask_path = ""
+        # Number of Gaussians sampled from the mask at initialization
+        self.init_n_points = 5000
+        # Standard deviation of positional noise applied to initial samples
+        self.position_noise = 0.01
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

@@ -187,7 +187,7 @@ def training(
             getattr(opt, "intensity_update_interval", 10),
         ),
     )
-    # gaussians.set_intensity_color_divisor(COLOR_DIVISOR)
+    gaussians.set_intensity_color_divisor(getattr(opt, "intensity_color_divisor", 1.0))
 
     # Initialize parameter monitoring with increased log interval for better performance
     parameter_monitor = ParameterMonitor(
@@ -202,79 +202,70 @@ def training(
     # Create scene for volume-based training
     scene = VolumeScene(args, gaussians)
 
-    volume_supervisor: Optional[VolumeSupervisor] = None
-    if getattr(args, "volume_path", None):
-        volume_shape = tuple(
-            args.volume_shape if hasattr(args, "volume_shape") else opt.volume_shape
-        )
-        loss_type = (
-            args.volume_loss_type
-            if hasattr(args, "volume_loss_type")
-            else opt.volume_loss_type
-        )
-        loss_weight = (
-            args.volume_loss_weight
-            if hasattr(args, "volume_loss_weight")
-            else opt.volume_loss_weight
-        )
-        volume_supervisor = VolumeSupervisor(
-            volume_path=args.volume_path,
-            volume_shape=volume_shape,
-            mask_path=args.mask_path if hasattr(args, "mask_path") else None,
-            loss_type=loss_type,
-            loss_weight=loss_weight,
-            intensity_update_interval=getattr(opt, "intensity_update_interval", 10),
-        )
+    volume_shape = tuple(
+        args.volume_shape if hasattr(args, "volume_shape") else opt.volume_shape
+    )
+    loss_type = (
+        args.volume_loss_type
+        if hasattr(args, "volume_loss_type")
+        else opt.volume_loss_type
+    )
+    loss_weight = (
+        args.volume_loss_weight
+        if hasattr(args, "volume_loss_weight")
+        else opt.volume_loss_weight
+    )
+    volume_supervisor = VolumeSupervisor(
+        volume_path=args.volume_path,
+        volume_shape=volume_shape,
+        mask_path=args.mask_path if hasattr(args, "mask_path") else None,
+        loss_type=loss_type,
+        loss_weight=loss_weight,
+        intensity_update_interval=getattr(opt, "intensity_update_interval", 10),
+    )
 
-    # Initialize from segmentation mask if requested
-    if args.init_from_mask:
-        if not args.mask_path:
-            sys.exit("Error: --mask_path required when using --init_from_mask")
+    from gaussian_splatting.utils.volume_initializer import initialize_gaussians
 
-        from gaussian_splatting.utils.volume_initializer import initialize_gaussians
-
-        # Load volume transform if provided
-        volume_transform = None
-        if args.volume_transform:
-            volume_transform = (
-                torch.from_numpy(np.load(args.volume_transform)).float().cuda()
-            )
-
-        # Get scene bounds for scaling
-        scene_bounds = None
-        if dataset.cameras_extent is not None:
-            scene_bounds = (
-                torch.tensor([-dataset.cameras_extent], device="cuda"),
-                torch.tensor([dataset.cameras_extent], device="cuda"),
-            )
-
-        # Initialize gaussians by sampling from mask
-        initialize_gaussians(
-            model=gaussians,  # Make the argument explicit
-            mask_path=args.mask_path,
-            volume_path=args.volume_path,  # Added volume_path for proper intensity sampling
-            n_points=args.init_n_points,
-            volume_transform=volume_transform,
-            scene_bounds=scene_bounds,
-            noise_std=(
-                args.position_noise
-                if hasattr(args, "position_noise")
-                else opt.position_noise
-            ),
-            orientation_helper=volume_supervisor,
+    # Load volume transform if provided
+    volume_transform = None
+    if args.volume_transform:
+        volume_transform = (
+            torch.from_numpy(np.load(args.volume_transform)).float().cuda()
         )
 
-        # Set spatial_lr_scale after volume initialization
-        # This is critical for position learning rate to be non-zero
-        if hasattr(dataset, "cameras_extent") and dataset.cameras_extent is not None:
-            gaussians.spatial_lr_scale = dataset.cameras_extent
-        else:
-            gaussians.spatial_lr_scale = 1.0  # Default fallback
+    # Get scene bounds for scaling
+    scene_bounds = None
+    if dataset.cameras_extent is not None:
+        scene_bounds = (
+            torch.tensor([-dataset.cameras_extent], device="cuda"),
+            torch.tensor([dataset.cameras_extent], device="cuda"),
+        )
 
-        print(f"Set spatial_lr_scale to {gaussians.spatial_lr_scale}")
+    # Initialize gaussians by sampling from mask/volume inputs
+    initialize_gaussians(
+        model=gaussians,
+        mask_path=args.mask_path,
+        volume_path=args.volume_path,
+        n_points=args.init_n_points,
+        volume_transform=volume_transform,
+        scene_bounds=scene_bounds,
+        noise_std=(
+            args.position_noise
+            if hasattr(args, "position_noise")
+            else opt.position_noise
+        ),
+        orientation_helper=volume_supervisor,
+    )
 
-    if args.volume_supervision and volume_supervisor is None:
-        sys.exit("Volume supervision requested but no volume path provided.")
+    # Set spatial_lr_scale after volume initialization
+    if hasattr(dataset, "cameras_extent") and dataset.cameras_extent is not None:
+        gaussians.spatial_lr_scale = dataset.cameras_extent
+    else:
+        gaussians.spatial_lr_scale = 1.0
+
+    print(
+        f"Initialized {gaussians._xyz.shape[1]} Gaussians; spatial_lr_scale={gaussians.spatial_lr_scale:.3f}"
+    )
 
     gaussians.training_setup(opt)
     if checkpoint:
@@ -370,23 +361,15 @@ def training(
         gaussians.update_learning_rate(iteration)
         gaussians.optimizer.zero_grad(set_to_none=True)
 
-        active_idx: Optional[torch.Tensor] = None
-        total_points = 0
-        active_points = 0
-        if args.volume_supervision and volume_supervisor is not None:
-            xyz_for_sampling = gaussians.get_xyz
-            active_idx, total_points = _select_active_indices(xyz_for_sampling)
-            active_points = (
-                active_idx.numel() if active_idx is not None else total_points
-            )
-            if log_mem and total_points > 0:
-                _log_gpu_memory(
-                    "before_forward", iteration, total_points, active_points
+        xyz_for_sampling = gaussians.get_xyz
+        active_idx, total_points = _select_active_indices(xyz_for_sampling)
+        active_points = active_idx.numel() if active_idx is not None else total_points
+        if log_mem and total_points > 0:
+            _log_gpu_memory("before_forward", iteration, total_points, active_points)
+            if active_idx is not None:
+                print(
+                    f"[Points][iter={iteration}] using {active_points} / {total_points} splats"
                 )
-                if active_idx is not None:
-                    print(
-                        f"[Points][iter={iteration}] using {active_points} / {total_points} splats"
-                    )
 
         # No SH updates needed for volume-only training
 
@@ -398,105 +381,100 @@ def training(
         reg_metrics = None
         warmup_active = diversity_enabled and iteration <= diversity_warmup_iters
 
-        if args.volume_supervision and volume_supervisor is not None:
-            # Compute the volume loss and get volume gradients for parameter diversity loss
-            with autocast(enabled=use_amp, dtype=amp_dtype if use_amp else None):
-                vol_loss, vol_metrics, vol_gradients = volume_supervisor.compute_loss(
-                    gaussians,
-                    active_idx=active_idx,
-                    total_points=total_points,
+        # Compute the volume loss and get volume gradients for parameter diversity loss
+        with autocast(enabled=use_amp, dtype=amp_dtype if use_amp else None):
+            vol_loss, vol_metrics, vol_gradients = volume_supervisor.compute_loss(
+                gaussians,
+                active_idx=active_idx,
+                total_points=total_points,
+            )
+
+            # CRITICAL: Don't call item() on the loss until after backward() is called!
+            loss = vol_loss
+
+            # Optional global scale L2 regularization to discourage oversized splats
+            if getattr(args, "scale_l2_weight", 0.0) > 0.0:
+                scales = gaussians.get_scaling
+                if scales.numel() > 0:
+                    scale_norm = scales.norm(dim=1)
+                    scale_reg = scale_norm.mean() * float(args.scale_l2_weight)
+                    loss = loss + scale_reg
+                    vol_metrics["scale_l2_reg"] = float(scale_reg.detach().item())
+
+        if log_mem and total_points > 0:
+            _log_gpu_memory("after_forward", iteration, total_points, active_points)
+
+        # Store value for logging only
+        volume_loss = vol_loss.detach().item()
+
+        # Apply diversity warmup regularization when requested
+        if warmup_active:
+            base_loss = loss
+            loss, reg_metrics = add_parameter_regularization_loss(
+                model=gaussians,
+                loss=loss,
+                scale_diversity_weight=diversity_scale_weight,
+                rotation_diversity_weight=diversity_rotation_weight,
+                scale_variance_weight=diversity_scale_variance_weight,
+                scale_range_weight=diversity_scale_range_weight,
+                rotation_entropy_weight=diversity_rotation_entropy_weight,
+                target_range_weight=diversity_target_range_weight,
+                dispersion_weight=diversity_dispersion_weight,
+                alignment_weight=diversity_alignment_weight,
+                volume_gradients=vol_gradients,
+            )
+            reg_loss_value = reg_metrics.get("total") if reg_metrics else None
+            if reg_loss_value is None:
+                reg_loss_value = (loss - base_loss).detach().item()
+
+            if iteration <= 3 or iteration % diversity_log_interval == 0:
+                remaining = diversity_warmup_iters - iteration
+                scale_total = (
+                    reg_metrics.get("scale_total", 0.0) if reg_metrics else 0.0
                 )
-
-                # CRITICAL: Don't call item() on the loss until after backward() is called!
-                # This would break the computation graph
-                loss = vol_loss
-
-                # Optional global scale L2 regularization to discourage oversized splats
-                if getattr(args, "scale_l2_weight", 0.0) > 0.0:
-                    scales = gaussians.get_scaling
-                    if scales.numel() > 0:
-                        # Penalize physical scale magnitude (per-point L2 over axes)
-                        scale_norm = scales.norm(dim=1)
-                        scale_reg = scale_norm.mean() * float(args.scale_l2_weight)
-                        loss = loss + scale_reg
-                        vol_metrics["scale_l2_reg"] = float(scale_reg.detach().item())
-
-            if log_mem and total_points > 0:
-                _log_gpu_memory("after_forward", iteration, total_points, active_points)
-
-            # Store value for logging only
-            volume_loss = vol_loss.detach().item()
-
-            # Apply diversity warmup regularization when requested
-            if warmup_active:
-                base_loss = loss
-                loss, reg_metrics = add_parameter_regularization_loss(
-                    model=gaussians,
-                    loss=loss,
-                    scale_diversity_weight=diversity_scale_weight,
-                    rotation_diversity_weight=diversity_rotation_weight,
-                    scale_variance_weight=diversity_scale_variance_weight,
-                    scale_range_weight=diversity_scale_range_weight,
-                    rotation_entropy_weight=diversity_rotation_entropy_weight,
-                    target_range_weight=diversity_target_range_weight,
-                    dispersion_weight=diversity_dispersion_weight,
-                    alignment_weight=diversity_alignment_weight,
-                    volume_gradients=vol_gradients,
+                rotation_total = (
+                    reg_metrics.get("rotation_total", 0.0) if reg_metrics else 0.0
                 )
-                reg_loss_value = reg_metrics.get("total") if reg_metrics else None
-                if reg_loss_value is None:
-                    reg_loss_value = (loss - base_loss).detach().item()
-
-                if iteration <= 3 or iteration % diversity_log_interval == 0:
-                    remaining = diversity_warmup_iters - iteration
-                    scale_total = reg_metrics.get("scale_total", 0.0) if reg_metrics else 0.0
-                    rotation_total = (
-                        reg_metrics.get("rotation_total", 0.0) if reg_metrics else 0.0
+                print(
+                    (
+                        f"[REG][iter={iteration}] total={reg_loss_value:.6f} "
+                        f"scale={scale_total:.6f} rotation={rotation_total:.6f} "
+                        f"remaining={max(0, remaining)}"
                     )
-                    print(
-                        (
-                            f"[REG][iter={iteration}] total={reg_loss_value:.6f} "
-                            f"scale={scale_total:.6f} rotation={rotation_total:.6f} "
-                            f"remaining={max(0, remaining)}"
+                )
+
+        # Track parameter statistics for monitoring (only on every 50th iteration)
+        if iteration % 50 == 0:
+            new_stats = parameter_monitor.update(
+                iteration,
+                gaussians._xyz,
+                gaussians.get_scaling,
+                gaussians.get_rotation,
+                loss=loss.item(),
+                volume_loss=vol_loss.item() if vol_loss is not None else None,
+                reg_loss=reg_loss_value,
+            )
+            if new_stats:
+                param_stats.update(new_stats)
+
+        # Log volume metrics
+        if tb_writer and iteration % 10 == 0:
+            for name, value in vol_metrics.items():
+                tb_writer.add_scalar(f"volume/{name}", value, iteration)
+
+            tb_writer.add_scalar(
+                "diversity/scale_weight", diversity_scale_weight, iteration
+            )
+            tb_writer.add_scalar(
+                "diversity/rotation_weight", diversity_rotation_weight, iteration
+            )
+            if reg_loss_value is not None:
+                tb_writer.add_scalar("loss/regularization", reg_loss_value, iteration)
+                if reg_metrics:
+                    for metric_name, metric_value in reg_metrics.items():
+                        tb_writer.add_scalar(
+                            f"diversity/{metric_name}", metric_value, iteration
                         )
-                    )
-
-            # Track parameter statistics for monitoring (only on every 50th iteration)
-            if iteration % 50 == 0:
-                new_stats = parameter_monitor.update(
-                    iteration,
-                    gaussians._xyz,
-                    gaussians.get_scaling,
-                    gaussians.get_rotation,
-                    loss=loss.item(),
-                    volume_loss=vol_loss.item() if vol_loss is not None else None,
-                    reg_loss=reg_loss_value,
-                )
-                # Update our param_stats dictionary with new values
-                if new_stats:
-                    param_stats.update(new_stats)
-
-            # Log volume metrics
-            if tb_writer and iteration % 10 == 0:
-                for name, value in vol_metrics.items():
-                    tb_writer.add_scalar(f"volume/{name}", value, iteration)
-
-                # Also log diversity loss components
-                tb_writer.add_scalar(
-                    "diversity/scale_weight", diversity_scale_weight, iteration
-                )
-                tb_writer.add_scalar(
-                    "diversity/rotation_weight", diversity_rotation_weight, iteration
-                )
-                if reg_loss_value is not None:
-                    tb_writer.add_scalar(
-                        "loss/regularization", reg_loss_value, iteration
-                    )
-                    if reg_metrics:
-                        for metric_name, metric_value in reg_metrics.items():
-                            tb_writer.add_scalar(
-                                f"diversity/{metric_name}", metric_value, iteration
-                            )
 
         # Make sure the loss requires gradients before calling backward
         if loss.requires_grad:
@@ -803,72 +781,6 @@ if __name__ == "__main__":
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
 
-    # Volume supervision arguments
-    volume_group = parser.add_argument_group("Volume Supervision")
-    volume_group.add_argument(
-        "--volume_supervision",
-        action="store_true",
-        help="Enable volume supervision loss",
-    )
-    volume_group.add_argument(
-        "--volume_path",
-        type=str,
-        default="",
-        help="Path to ground truth volume file (.nii, .npy, .mhd)",
-    )
-    volume_group.add_argument(
-        "--volume_loss_type",
-        type=str,
-        default="mse",
-        choices=["mse", "dice", "tversky", "kl"],
-        help="Type of volume supervision loss",
-    )
-    volume_group.add_argument(
-        "--volume_loss_weight",
-        type=float,
-        default=1.0,
-        help="Weight for volume supervision loss",
-    )
-    volume_group.add_argument(
-        "--volume_shape",
-        type=int,
-        nargs=3,
-        default=[64, 64, 64],
-        help="Target shape for volume supervision (D, H, W)",
-    )
-
-    # Volume initialization arguments
-    init_group = parser.add_argument_group("Volume Initialization")
-    init_group.add_argument(
-        "--init_from_mask",
-        action="store_true",
-        help="Initialize Gaussian points by sampling from segmentation mask",
-    )
-    init_group.add_argument(
-        "--mask_path",
-        type=str,
-        default="",
-        help="Path to segmentation mask file (.nii, .npy, .mhd)",
-    )
-    init_group.add_argument(
-        "--volume_transform",
-        type=str,
-        default="",
-        help="Path to 4x4 transform matrix for volume alignment (.npy)",
-    )
-    init_group.add_argument(
-        "--init_n_points",
-        type=int,
-        default=5000,
-        help="Number of points to sample from mask",
-    )
-    init_group.add_argument(
-        "--position_noise",
-        type=float,
-        default=0.01,
-        help="Standard deviation of position noise for initialization",
-    )
-
     # PLY saving options
     ply_group = parser.add_argument_group("PLY Export Options")
     ply_group.add_argument(
@@ -905,20 +817,15 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    # Create dummy dataset for volume-only mode
-    if not args.source_path and args.init_from_mask:
+    class VolumeDataset:
+        def __init__(self, model_path: str):
+            self.cameras_extent = 1.0
+            self.white_background = False
+            self.model_path = model_path
+            self.source_path = ""
+            self.sh_degree = 0
 
-        class DummyDataset:
-            def __init__(self, model_path):
-                self.cameras_extent = 1.0  # Default extent
-                self.white_background = False
-                self.model_path = model_path
-                self.source_path = ""
-                self.sh_degree = 0
-
-        dataset = DummyDataset(args.model_path)
-    else:
-        dataset = lp.extract(args)
+    dataset = VolumeDataset(args.model_path)
 
     # Start training
     torch.autograd.set_detect_anomaly(args.detect_anomaly)

@@ -5,8 +5,8 @@
 **Date**: October 4, 2025  
 **Command**:
 ```bash
-python train.py --volume_supervision --model_path output/optimization-test \
-  --init_from_mask --mask_path _test-data_/vesselmask-float.nii.gz \
+python train.py --model_path output/optimization-test \
+   --mask_path _test-data_/vesselmask-float.nii.gz \
   --volume_path _test-data_/volume.nii.gz --iterations 300 \
   --save_ply_every 10 --volume_loss_type mse --init_n_points 1000
 ```

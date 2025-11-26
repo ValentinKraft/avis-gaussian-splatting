@@ -133,13 +133,13 @@ Expected:
 
 ### Test 3: Run Short Training with Densification
 ```bash
-python train.py --volume_supervision --model_path output/densification-test \
-  --init_from_mask --mask_path _test-data_/vesselmask-float.nii.gz \
-  --volume_path _test-data_/volume.nii.gz \
-  --iterations 1500 \
-  --save_ply_every 100 \
-  --volume_loss_type mse \
-  --init_n_points 500
+python train.py --model_path output/densification-test \
+    --mask_path _test-data_/vesselmask-float.nii.gz \
+    --volume_path _test-data_/volume.nii.gz \
+    --iterations 1500 \
+    --save_ply_every 100 \
+    --volume_loss_type mse \
+    --init_n_points 500
 ```
 
 Expected outputs:

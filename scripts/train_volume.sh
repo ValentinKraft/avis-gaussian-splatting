@@ -8,9 +8,7 @@ OUTPUT_DIR="output/volume-model"
 
 # Basic training command
 python train.py \
-  --volume_supervision \
   --model_path ${OUTPUT_DIR} \
-  --init_from_mask \
   --mask_path ${MASK_PATH} \
   --volume_path ${VOLUME_PATH} \
   --init_n_points 5000 \

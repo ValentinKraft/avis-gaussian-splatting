@@ -39,9 +39,8 @@ if iteration % 10 == 0 or gaussians.intensities[0, 0] == 0.5:
 
 ### Phase 1: Basic Volume Fitting (Iterations 1-100)
 ```bash
-python train.py --volume_supervision \
+python train.py \
     --model_path output/phase1-basic \
-    --init_from_mask \
     --mask_path _test-data_/vesselmask-float.nii.gz \
     --volume_path _test-data_/volume.nii.gz \
     --iterations 100 \
@@ -54,9 +53,10 @@ python train.py --volume_supervision \
 ### Phase 2: Dice Loss Transition (Iterations 101-200)
 ```bash
 # Continue from phase 1 with Dice loss
-python train.py --volume_supervision \
+python train.py \
     --model_path output/phase2-dice \
-    --init_from_mask \
+    --mask_path _test-data_/vesselmask-float.nii.gz \
+    --volume_path _test-data_/volume.nii.gz \
     --volume_loss_type dice \
     --iterations 200 \
     --start_checkpoint output/phase1-basic/chkpnt100.pth
@@ -65,8 +65,10 @@ python train.py --volume_supervision \
 ### Phase 3: Full Regularization (Iterations 201+)
 ```bash
 # Add full parameter diversity
-python train.py --volume_supervision \
+python train.py \
     --model_path output/phase3-full \
+    --mask_path _test-data_/vesselmask-float.nii.gz \
+    --volume_path _test-data_/volume.nii.gz \
     --volume_loss_type dice \
     --iterations 500 \
     --start_checkpoint output/phase2-dice/chkpnt200.pth

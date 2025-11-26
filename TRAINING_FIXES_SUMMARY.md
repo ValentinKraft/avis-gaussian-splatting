@@ -121,15 +121,21 @@ Densification working: 1000 → 1002 splats at iteration 500
 
 ### Test 1: 20 Iterations (Gradient Flow Verification)
 ```bash
-python train.py --volume_supervision --iterations 20 --init_n_points 500
+python train.py --model_path output/debug-20 \
+   --mask_path /path/to/mask.nii.gz \
+   --volume_path /path/to/volume.nii.gz \
+   --iterations 20 --init_n_points 500
 ```
 **Result**: ✅ Features changing (-0.444 → -0.383), loss decreasing (0.9999 → 0.9997)
 
 ### Test 2: 500 Iterations (Stability Test) 
 ```bash
-python train.py --volume_supervision --iterations 500 \
-    --position_lr_init 0.0008 --scaling_lr 0.025 --rotation_lr 0.005 \
-    --volume_loss_type dice --init_n_points 1000
+python train.py --model_path output/stability-500 \
+   --mask_path /path/to/mask.nii.gz \
+   --volume_path /path/to/volume.nii.gz \
+   --iterations 500 \
+   --position_lr_init 0.0008 --scaling_lr 0.025 --rotation_lr 0.005 \
+   --volume_loss_type dice --init_n_points 1000
 ```
 **Result**: ✅ No NaN, smooth loss decrease 0.9999 → 0.95, gradient clipping working
 
@@ -145,8 +151,7 @@ python train.py --volume_supervision --iterations 500 \
 
 ```bash
 python train.py \
-    --volume_supervision \
-    --init_from_mask \
+   --model_path output/medical-run \
     --mask_path /path/to/vesselmask.nii.gz \
     --volume_path /path/to/volume.nii.gz \
     --iterations 15000 \

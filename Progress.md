@@ -158,9 +158,7 @@ Extending 3D Gaussian Splatting to optimize directly from volumetric medical dat
 ### Standard Training (Optimized)
 ```bash
 python train.py \
-  --volume_supervision \
   --model_path output/optimization-test \
-  --init_from_mask \
   --mask_path _test-data_/vesselmask-float.nii.gz \
   --volume_path _test-data_/volume.nii.gz \
   --iterations 300 \
@@ -172,9 +170,7 @@ python train.py \
 ### Disable Mixed Precision (If Issues)
 ```bash
 python train.py \
-  --volume_supervision \
   --model_path output/test \
-  --init_from_mask \
   --mask_path _test-data_/vesselmask-float.nii.gz \
   --volume_path _test-data_/volume.nii.gz \
   --iterations 300 \

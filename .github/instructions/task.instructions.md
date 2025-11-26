@@ -179,9 +179,7 @@ class ParameterMonitor:
 ```bash
 # Test with synthetic data first
 python train.py \
-  --volume_supervision \
   --model_path output \
-  --init_from_mask \
   --mask_path _test-data_/vesselmask-float.nii.gz \
   --volume_path _test-data_/volume.nii.gz
 ```
