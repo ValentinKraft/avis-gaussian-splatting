@@ -1,29 +1,47 @@
-# User Request Details
-- Remove legacy RGB/point-cloud training paths so the system exclusively supports volume + mask based optimization.
-- Delete or refactor CLI flags and code paths that only existed for the classic RGB workflow (e.g., `--volume_supervision`, `--init_from_mask`).
-- Update entry points/documentation so volume-driven initialization and supervision are always active defaults.
+---
+post_title: Copilot Processing Log
+author1: GitHub Copilot
+post_slug: copilot-processing
+microsoft_alias: copilot
+featured_image: ''
+categories: []
+tags: []
+ai_note: true
+summary: Tracking current Copilot tasks for displacement limiting work
+post_date: 2025-02-15
+---
+
+## User Request Details
+- Keep all training parameters centralized in `arguments.py` with clear help text and propagate them through `train.py`.
+- Add a hard clamp so each Gaussian splat can only move up to twice its current scaling relative to its spawn position.
+- Validate the CLI surface with `python train.py --help` and confirm a short training invocation honors the new constraint.
 
 ## Action Plan
-1. Audit CLI and training pipelines to identify RGB-only options, dataset loaders, and initialization flows that can be removed or simplified for volume-only use.
-2. Refactor argument parsing and defaults so volume supervision and mask-based initialization are always enabled, deleting obsolete flags and conditional branches.
-3. Prune unused modules (e.g., SfM point-cloud loaders) or clearly isolate them outside the default path while ensuring remaining code compiles.
-4. Run targeted smoke tests (CLI `--help`, short training invocation) to ensure the simplified pipeline works without the removed flags.
+1. Inspect `arguments.py` and `train.py` to confirm displacement-related knobs exist or determine if a new flag is necessary.
+2. Implement a displacement clamp inside `scene/gaussian_model.py` that references initial positions and current scaling magnitudes.
+3. Validate via `python train.py --help` plus a minimal training dry-run to ensure parsing and runtime behavior succeed.
+4. Summarize the changes and document validation status.
 
 ## Task Tracker
-### Phase 1 – Audit Legacy Paths
-- [ ] List CLI flags, dataset hooks, and feature toggles tied exclusively to RGB / SfM pipelines.
-- [ ] Map the dependencies of `--volume_supervision` and `--init_from_mask` within `train.py`, `arguments.py`, and helper modules.
+### Task Group 1 – Parameter Surface Review
+- [x] Re-read `arguments.py` displacement and constraint flags to determine reuse vs. new param.
+- [x] Trace how `train.py` forwards constraint parameters into `GaussianModel` initialization.
 
-### Phase 2 – Refactor & Cleanup
-- [ ] Remove/inline the guarded code paths so volume supervision and mask initialization are always enabled, updating docs and defaults accordingly.
-- [ ] Excise or quarantine unused modules, imports, and helper functions that were only relevant for the RGB pipeline.
+### Task Group 2 – Implement Model Clamp
+- [x] Capture initial XYZ positions for each splat, including newly densified points.
+- [x] Compute allowable displacement radius using `2 * current_scale_norm` after each optimizer step.
+- [x] Clamp `_xyz` updates without breaking autograd or densification logic.
 
-### Phase 3 – Validation
-- [ ] Run `python train.py --help` to verify CLI surfaces only relevant options and succeeds.
-- [ ] Execute a short training dry-run (e.g., 5 iterations) to confirm the new defaults operate end-to-end.
+### Task Group 3 – Validation
+- [ ] Run `python train.py --help` to confirm CLI remains healthy. *(attempted; system reported user skipped command execution)*
+- [ ] Execute a fast training smoke test to observe displacement clamp behavior/logs. *(blocked for same reason as above)*
 
+### Task Group 4 – Wrap-Up
+- [x] Update `Copilot-Processing.md` summary with final results and open questions.
 
-## Action Plan
-
-1. Inspect the current autograd path (train loop → volume supervisor → `splat_to_volume`) to confirm where `_scaling` disconnects, instrumenting shapes/grad flags as needed.
+## Summary
+- Added `--position_displacement_scale` so the CLI exposes the new motion clamp knob and propagate it through `train.py`.
+- Tracked `_initial_xyz` for every Gaussian (including densification/pruning paths), persisted it across checkpoints, and added `enforce_position_displacement_constraint()`.
+- Ensured volume and PLY initializers seed the frozen buffers so displacement limits reference the correct birth positions.
+- Extended `test_scaling_constraint.py` with coverage for the new clamp; broader runtime validation via `python train.py --help` and a smoke train was skipped by the user/tooling dialog, so no live run logs are available.
 

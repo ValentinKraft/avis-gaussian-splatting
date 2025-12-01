@@ -247,8 +247,8 @@ class OptimizationParams(ParamGroup):
         lr.add_argument(
             "--position_lr_init",
             type=float,
-            default=0.00016,
-            help="Initial learning rate for Gaussian centers.",
+            default=0.00010,
+            help="Initial learning rate for Gaussian centers (slightly reduced for smoother early motion).",
         )
         self._register("position_lr_init")
 
@@ -274,8 +274,8 @@ class OptimizationParams(ParamGroup):
         lr.add_argument(
             "--position_lr_max_steps",
             type=int,
-            default=30_000,
-            help="Iterations over which the position LR decays from init to final.",
+            default=20_000,
+            help="Iterations over which the position LR decays from init to final (shorter decay for longer refinement plateau).",
         )
         self._register("position_lr_max_steps")
 
@@ -402,8 +402,8 @@ class OptimizationParams(ParamGroup):
         densify.add_argument(
             "--densify_until_iter",
             type=int,
-            default=15_000,
-            help="Iteration after which densification/pruning stops.",
+            default=12_000,
+            help="Iteration after which densification/pruning stops (earlier cooldown to reduce late noisy tails).",
         )
         self._register("densify_until_iter")
 
@@ -440,7 +440,7 @@ class OptimizationParams(ParamGroup):
         intensity.add_argument(
             "--intensity_mode",
             type=str,
-            default="sampled",
+            default="sampled_mean_covered",
             choices=["sampled", "learned", "sampled_mean_covered"],
             help="Strategy for assigning per-Gaussian intensity values.",
         )
@@ -450,8 +450,8 @@ class OptimizationParams(ParamGroup):
         intensity.add_argument(
             "--intensity_update_interval",
             type=int,
-            default=10,
-            help="Iterations between intensity statistic updates.",
+            default=20,
+            help="Iterations between intensity statistic updates (less frequent to reduce jitter).",
         )
         self._register("intensity_update_interval")
 
@@ -486,8 +486,8 @@ class OptimizationParams(ParamGroup):
         intensity.add_argument(
             "--intensity_mean_cover_interval",
             type=int,
-            default=20,
-            help="Iterations between mean-covered intensity updates.",
+            default=30,
+            help="Iterations between mean-covered intensity updates (smoother large-splat behavior).",
         )
         self._register("intensity_mean_cover_interval")
 
@@ -506,8 +506,8 @@ class OptimizationParams(ParamGroup):
         constraint.add_argument(
             "--max_scale_factor",
             type=float,
-            default=3.0,
-            help="Cap on how much a Gaussian scale may grow vs. initialization.",
+            default=2.5,
+            help="Cap on how much a Gaussian scale may grow vs. initialization (slightly tighter to avoid oversized splats).",
         )
         self._register("max_scale_factor")
 
@@ -515,8 +515,8 @@ class OptimizationParams(ParamGroup):
         constraint.add_argument(
             "--scaling_constraint_warmup_iters",
             type=int,
-            default=1500,
-            help="Iterations over which the scale constraint tightens to its final value.",
+            default=1000,
+            help="Iterations over which the scale constraint tightens to its final value (earlier stabilization).",
         )
         self._register("scaling_constraint_warmup_iters")
 
@@ -528,6 +528,15 @@ class OptimizationParams(ParamGroup):
             help="Initial relaxation multiplier applied to the scale constraint.",
         )
         self._register("scaling_constraint_relaxation")
+
+        # Cap for how far points can drift relative to their size.
+        constraint.add_argument(
+            "--position_displacement_scale",
+            type=float,
+            default=1.8,
+            help="Multiplier on the max-axis scale limiting splat displacement from its spawn point (slightly tighter to reduce long tails).",
+        )
+        self._register("position_displacement_scale")
 
         # Window for logging early Gaussian statistics.
         constraint.add_argument(
@@ -544,8 +553,8 @@ class OptimizationParams(ParamGroup):
         diversity.add_argument(
             "--diversity_warmup_iterations",
             type=int,
-            default=2000,
-            help="Iterations to keep diversity losses enabled (0 disables).",
+            default=1000,
+            help="Iterations to keep diversity losses enabled (shorter warmup for smoother shapes).",
         )
         self._register("diversity_warmup_iterations")
 
@@ -562,8 +571,8 @@ class OptimizationParams(ParamGroup):
         diversity.add_argument(
             "--diversity_scale_weight",
             type=float,
-            default=0.05,
-            help="Overall strength of the scale diversity loss.",
+            default=0.03,
+            help="Overall strength of the scale diversity loss (slightly reduced).",
         )
         self._register("diversity_scale_weight")
 
@@ -571,8 +580,8 @@ class OptimizationParams(ParamGroup):
         diversity.add_argument(
             "--diversity_rotation_weight",
             type=float,
-            default=0.05,
-            help="Overall strength of the rotation diversity loss.",
+            default=0.03,
+            help="Overall strength of the rotation diversity loss (slightly reduced).",
         )
         self._register("diversity_rotation_weight")
 

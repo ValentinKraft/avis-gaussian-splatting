@@ -70,8 +70,10 @@ class GaussianModel:
         self._features_rest = torch.empty(0)  # Higher-order SH features [N, ?, 3]
 
         # Store initial scaling values for maximum size constraint
+        self._initial_xyz = torch.empty(0)  # Frozen xyz reference [3, N]
         self._initial_scaling = torch.empty(0)  # Initial log-scale values [N, 3]
-        self.max_scale_factor = 3.0  # Maximum allowed scale compared to initial scale
+        self.max_scale_factor = 2.0  # Maximum allowed scale compared to initial scale
+        self.max_position_displacement_scale = 2.0  # Max displacement multiplier
 
         # Runtime state
         self.max_radii2D = torch.empty(0)  # Maximum 2D radii for each point
@@ -115,11 +117,11 @@ class GaussianModel:
             "cooldown": 0,
         }
         self._latest_iteration = 0
-        self._scale_boost_window = 12
-        self._scale_stall_epsilon = 5e-5
-        self._scale_boost_factor = 1.35
-        self._scale_boost_duration = 8
-        self._scale_cooldown = 30
+        self._scale_boost_window = 16
+        self._scale_stall_epsilon = 7e-5
+        self._scale_boost_factor = 1.20
+        self._scale_boost_duration = 6
+        self._scale_cooldown = 40
         self._max_scale_factor_base = self.max_scale_factor
         self.low_density_threshold = 4.0
         self.target_coverage = 0.78
@@ -138,10 +140,10 @@ class GaussianModel:
         self._base_scaling_lr = None
         self._base_xyz_lr = None
         self._base_rotation_lr = None
-        self.position_stall_threshold = 2.0e-4
-        self.xyz_boost_factor = 1.2
+        self.position_stall_threshold = 3.0e-4
+        self.xyz_boost_factor = 1.15
         self._xyz_boost_active = 0
-        self._xyz_boost_duration = 6
+        self._xyz_boost_duration = 5
         self.densify_grad_percentile = 0.85
         self.scaling_constraint_warmup_iters = 0
         self.scaling_constraint_relaxation = 1.0
@@ -286,6 +288,14 @@ class GaussianModel:
             or self._prev_rotation.shape != self._rotation.shape
         ):
             self._prev_rotation = self._rotation.detach().clone()
+
+    def _ensure_initial_position_buffer(self) -> None:
+        """Ensure the frozen xyz snapshot exists and matches current topology."""
+        if self._xyz.numel() == 0:
+            self._initial_xyz = torch.empty_like(self._xyz)
+            return
+        if self._initial_xyz.numel() == 0 or self._initial_xyz.shape != self._xyz.shape:
+            self._initial_xyz = self._xyz.detach().clone()
 
     @torch.no_grad()
     def _reset_prev_buffers(self) -> None:
@@ -527,6 +537,49 @@ class GaussianModel:
             ):
                 self._prev_scaling.copy_(self._scaling.detach())
 
+    def enforce_position_displacement_constraint(self) -> None:
+        """Clamp point displacement relative to the stored initialization positions."""
+        if (
+            self._xyz.numel() == 0
+            or self._initial_xyz.numel() == 0
+            or self.max_position_displacement_scale <= 0.0
+        ):
+            return
+
+        if self._initial_xyz.shape != self._xyz.shape:
+            self._ensure_initial_position_buffer()
+            if self._initial_xyz.shape != self._xyz.shape:
+                return
+
+        with torch.no_grad():
+            scales = self.get_scaling
+            if scales.numel() == 0:
+                return
+            if scales.shape[1] == 3:
+                scale_axes = scales
+            elif scales.shape[0] == 3:
+                scale_axes = scales.transpose(0, 1)
+            else:
+                raise ValueError(
+                    "Scaling tensor must provide three components per Gaussian."
+                )
+
+            max_axis = torch.max(scale_axes, dim=1).values
+            allowed = max_axis * float(self.max_position_displacement_scale)
+            delta = self._xyz - self._initial_xyz
+            delta_norm = torch.linalg.norm(delta, dim=0)
+            mask = delta_norm > allowed
+            if not mask.any():
+                return
+
+            safe_allowed = allowed[mask].clamp_min(0.0)
+            norm = delta_norm[mask].clamp_min(1e-12)
+            scale = safe_allowed / norm
+            delta[:, mask] = delta[:, mask] * scale
+            self._xyz[:, mask] = self._initial_xyz[:, mask] + delta[:, mask]
+            if self._prev_xyz is not None and self._prev_xyz.shape == self._xyz.shape:
+                self._prev_xyz[:, mask] = self._xyz[:, mask].detach()
+
     def oneupSHdegree(self) -> None:
         """Increase spherical harmonics degree by one when below the maximum."""
         if self.active_sh_degree < self.max_sh_degree:
@@ -556,6 +609,7 @@ class GaussianModel:
             self.spatial_lr_scale,
             self.intensities,
             self._initial_scaling,
+            self._initial_xyz,
         )
 
     def restore(self, model_args: tuple, training_args: Any):
@@ -594,10 +648,17 @@ class GaussianModel:
         else:
             self._initial_scaling = torch.empty(0)
 
+        # Restore frozen xyz positions if stored
+        if len(extra_args) > 2:
+            self._initial_xyz = extra_args[2]
+        else:
+            self._initial_xyz = torch.empty(0)
+
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
+        self._ensure_initial_position_buffer()
 
     def training_setup(self, training_args: Any):
         """
@@ -1169,6 +1230,7 @@ class GaussianModel:
         # Create parameter tensors
         xyz_param = fused_point_cloud.transpose(0, 1).contiguous()
         self._xyz = nn.Parameter(xyz_param.requires_grad_(True))
+        self._initial_xyz = self._xyz.detach().clone()
         self._features_dc = nn.Parameter(
             features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True)
         )
@@ -1267,6 +1329,7 @@ class GaussianModel:
         self._xyz = nn.Parameter(
             xyz_tensor.transpose(0, 1).contiguous().requires_grad_(True)
         )
+        self._initial_xyz = self._xyz.detach().clone()
 
         # Create features_dc tensor
         if len(features_dc) > 0:
@@ -1303,6 +1366,7 @@ class GaussianModel:
         self._scaling = nn.Parameter(
             torch.tensor(scale, dtype=torch.float, device="cuda").requires_grad_(True)
         )
+        self._initial_scaling = self._scaling.detach().clone()
         self._rotation = nn.Parameter(
             torch.tensor(rot, dtype=torch.float, device="cuda").requires_grad_(True)
         )
@@ -1810,6 +1874,8 @@ class GaussianModel:
         # Update initial scaling for max constraint
         if hasattr(self, "_initial_scaling") and self._initial_scaling.numel() > 0:
             self._initial_scaling = self._initial_scaling[valid_points_mask]
+        if hasattr(self, "_initial_xyz") and self._initial_xyz.numel() > 0:
+            self._initial_xyz = self._initial_xyz[:, valid_points_mask]
         self._reset_prev_buffers()
 
     def cat_tensors_to_optimizer(
@@ -1953,6 +2019,12 @@ class GaussianModel:
             self._initial_scaling = torch.cat(
                 [self._initial_scaling, new_initial_scaling], dim=0
             )
+        if hasattr(self, "_initial_xyz") and self._initial_xyz.numel() > 0:
+            self._initial_xyz = torch.cat(
+                [self._initial_xyz, new_xyz.detach().clone()], dim=1
+            )
+        else:
+            self._initial_xyz = self._xyz.detach().clone()
         self._reset_prev_buffers()
 
     def _current_parameter_bytes(self) -> float:

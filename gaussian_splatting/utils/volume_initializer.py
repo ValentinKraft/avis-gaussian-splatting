@@ -257,6 +257,7 @@ def _setup_model_parameters(
     model._xyz = nn.Parameter(
         points.T.contiguous().requires_grad_(True)
     )  # Convert [N, 3] -> [3, N]
+    model._initial_xyz = model._xyz.detach().clone()
     model._scaling = nn.Parameter(
         torch.log(scales).contiguous().requires_grad_(True)
     )  # [N, 3], model expects log-scales

@@ -201,6 +201,11 @@ def training(
     gaussians.early_stats_window = getattr(
         opt, "early_stats_window", gaussians.early_stats_window
     )
+    gaussians.max_position_displacement_scale = getattr(
+        opt,
+        "position_displacement_scale",
+        gaussians.max_position_displacement_scale,
+    )
 
     # Initialize parameter monitoring with increased log interval for better performance
     parameter_monitor = ParameterMonitor(
@@ -563,6 +568,7 @@ def training(
 
             # Enforce maximum scaling constraint (2x initial size)
             gaussians.enforce_scaling_constraint()
+            gaussians.enforce_position_displacement_constraint()
 
             # Adaptive density control for volume-based training
             with torch.no_grad():
