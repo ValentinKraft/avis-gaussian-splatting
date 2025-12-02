@@ -66,6 +66,29 @@ def _log_gpu_memory(
     )
 
 
+def _maybe_reset_opacity(
+    gaussians: GaussianModel, iteration: int, interval: int
+) -> bool:
+    """Reset learnable opacities when enabled and no mask buffer is active."""
+    if interval <= 0 or iteration % interval != 0:
+        return False
+
+    mask_check = getattr(gaussians, "_mask_opacity_active", None)
+    if callable(mask_check) and mask_check():
+        return False
+
+    has_mask_buffer = (
+        hasattr(gaussians, "opacities")
+        and isinstance(gaussians.opacities, torch.Tensor)
+        and gaussians.opacities.numel() > 0
+    )
+    if has_mask_buffer:
+        return False
+
+    gaussians.reset_opacity()
+    return True
+
+
 def _ensure_core_params_require_grad(gaussians: GaussianModel) -> None:
     """Make sure the core tensors stay connected to the optimizer graph."""
     for name in ("_xyz", "_scaling", "_rotation"):
@@ -733,9 +756,9 @@ def training(
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
-            # Reset opacity periodically
-            if iteration % opt.opacity_reset_interval == 0:
-                gaussians.reset_opacity()
+            # Reset opacity only when learnable opacities are active
+            reset_interval = getattr(opt, "opacity_reset_interval", 0)
+            _maybe_reset_opacity(gaussians, iteration, reset_interval)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))

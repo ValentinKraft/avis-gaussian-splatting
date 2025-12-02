@@ -268,7 +268,8 @@ def _setup_model_parameters(
     # Initialize opacity based on whether we're using volume-based opacity or not
     if opacity_values is not None:
         # Store non-learnable opacity values from the mask
-        model.opacities = opacity_values
+        model.opacities = opacity_values.detach().contiguous()
+        model.opacities.requires_grad = False
         # Also keep the _opacity parameter but without gradients (for backward compatibility)
         model._opacity = nn.Parameter(
             torch.log(opacities).detach().contiguous().requires_grad_(False)

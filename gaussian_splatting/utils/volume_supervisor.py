@@ -172,9 +172,19 @@ class VolumeSupervisor:
                 min_val=self.global_intensity_min,
                 max_val=self.global_intensity_max,
             )
-
             if self.mask_volume is not None:
-                opacities, _, _ = update_opacities(pts, self.mask_volume, scales)
+                opacities, _, _ = sample_mean_covered_voxel_intensities(
+                    pts,
+                    self.mask_volume,
+                    scales,
+                    self.volume_origin,
+                    self.voxel_size,
+                    radius_scale=getattr(gaussians, "mean_covered_radius", 2.5),
+                    coverage_mask=coverage_mask,
+                    normalize=False,
+                    min_val=0.0,
+                    max_val=1.0,
+                )
             else:
                 opacities = None
         else:
@@ -187,6 +197,36 @@ class VolumeSupervisor:
                 min_val=self.global_intensity_min,
                 max_val=self.global_intensity_max,
             )
+
+            if (
+                self.mask_volume is not None
+                and opacities is not None
+                and scales is not None
+                and scales.numel() > 0
+            ):
+                large_mask_global = gaussians.large_splat_mask(
+                    getattr(gaussians, "intensity_large_splat_threshold", 0.0)
+                ).to(device=pts.device)
+                if indices is None:
+                    coverage_mask = large_mask_global
+                else:
+                    coverage_mask = large_mask_global[indices.long()]
+
+                if coverage_mask is not None and coverage_mask.any():
+                    refined, _, _ = sample_mean_covered_voxel_intensities(
+                        pts,
+                        self.mask_volume,
+                        scales,
+                        self.volume_origin,
+                        self.voxel_size,
+                        radius_scale=getattr(gaussians, "mean_covered_radius", 2.5),
+                        coverage_mask=coverage_mask,
+                        normalize=False,
+                        min_val=0.0,
+                        max_val=1.0,
+                    )
+                    opacities = opacities.clone()
+                    opacities[coverage_mask] = refined[coverage_mask]
 
         if indices is None:
             gaussians.volume_min = v_min
@@ -338,17 +378,14 @@ class VolumeSupervisor:
             interval = max(int(interval), 1)
             update_due = ((self._step - 1) % interval) == 0
 
-            if is_mean_mode:
-                dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
-            else:
-                dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
-                if active_idx is not None and active_idx.numel() > 0:
-                    dirty_subset = gaussians.dirty_indices(
-                        active_idx,
-                        self.dirty_threshold_xyz,
-                        self.dirty_threshold_scale,
-                        self.dirty_threshold_rot,
-                    )
+            dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
+            if active_idx is not None and active_idx.numel() > 0:
+                dirty_subset = gaussians.dirty_indices(
+                    active_idx,
+                    self.dirty_threshold_xyz,
+                    self.dirty_threshold_scale,
+                    self.dirty_threshold_rot,
+                )
 
             indices_for_update: Optional[Tensor]
             if needs_resize:
@@ -370,7 +407,9 @@ class VolumeSupervisor:
                     else:
                         candidate = torch.nonzero(large_mask, as_tuple=False).view(-1)
 
-                    if update_due and candidate.numel() > 0:
+                    if dirty_subset.numel() > 0:
+                        indices_for_update = dirty_subset
+                    elif update_due and candidate.numel() > 0:
                         if getattr(self, "debug_intensity", False):
                             total_large = int(large_mask.sum().item())
                             print(
@@ -378,6 +417,8 @@ class VolumeSupervisor:
                                 f" large splats (total tracked: {total_large})."
                             )
                         indices_for_update = candidate
+                    elif update_due:
+                        indices_for_update = active_idx
                     else:
                         indices_for_update = None
                 else:

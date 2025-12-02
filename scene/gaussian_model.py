@@ -14,6 +14,7 @@ import numpy as np
 from collections import deque
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
+import torch.nn.functional as F
 import os
 import json
 from utils.system_utils import mkdir_p
@@ -28,6 +29,7 @@ from gaussian_splatting.utils.orientation_field import (
     gather_rotation_from_gradient,
     random_quat_perturb,
     rotmat_to_quat,
+    world_to_grid,
     world_to_voxel,
 )
 
@@ -135,8 +137,11 @@ class GaussianModel:
         self._low_density_mask = None
         self._hole_fill_fraction = 0.05
         self._max_memory_bytes = None
-        self.vessel_axial_scale = 1.6
-        self.vessel_radial_scale = 0.65
+        self.vessel_axial_scale = 2.2
+        self.vessel_radial_scale = 0.55
+        self.structure_gradient_boost = 0.0
+        self.structure_gradient_exponent = 1.0
+        self.structure_gradient_threshold = 0.1
         self._base_scaling_lr = None
         self._base_xyz_lr = None
         self._base_rotation_lr = None
@@ -195,7 +200,11 @@ class GaussianModel:
             )
             self._rotation.requires_grad_(True)
 
-        if self._opacity.numel() > 0 and not self._opacity.requires_grad:
+        if (
+            self._opacity.numel() > 0
+            and not self._opacity.requires_grad
+            and not self._mask_opacity_active()
+        ):
             print(
                 "WARNING: Opacity parameters do not require gradients. Setting requires_grad=True."
             )
@@ -221,6 +230,20 @@ class GaussianModel:
                 f"Applying intensity color divisor {safe_divisor:.6f} (was {self.intensity_color_divisor:.6f})."
             )
         self.intensity_color_divisor = safe_divisor
+
+    def _mask_opacity_active(self) -> bool:
+        """Return True when a mask-derived opacity buffer is populated."""
+        return (
+            hasattr(self, "opacities")
+            and self.opacities is not None
+            and self.opacities.numel() > 0
+        )
+
+    def _optimizer_has_group(self, name: str) -> bool:
+        """Return True when the optimizer tracks a parameter group with the given name."""
+        if self.optimizer is None:
+            return False
+        return any(group.get("name") == name for group in self.optimizer.param_groups)
 
     def configure_mean_covered_sampling(
         self,
@@ -375,7 +398,7 @@ class GaussianModel:
         sampler,
         indices: Optional[torch.Tensor] = None,
     ) -> int:
-        """Update intensity buffer using provided sampler for selected indices."""
+        """Refresh cached intensities for the requested subset of splats."""
         if self.intensity_mode not in {"sampled", "sampled_mean_covered"}:
             return 0
 
@@ -395,56 +418,45 @@ class GaussianModel:
         if sampled is None or sampled.numel() == 0:
             return 0
 
+        sampled = sampled.detach()
+        if sampled.dim() != 2:
+            raise ValueError("Sampler must return [N, C] intensity values.")
+
         total_points = self._xyz.shape[1]
-        if (
-            hasattr(self, "intensities")
-            and self.intensities.numel() > 0
-            and self.intensities.shape[0] != total_points
-        ):
-            channels = self.intensities.shape[1]
+        channels = sampled.shape[1]
+        needs_realloc = (
+            not hasattr(self, "intensities")
+            or self.intensities is None
+            or self.intensities.numel() == 0
+            or self.intensities.shape[0] != total_points
+            or self.intensities.shape[1] != channels
+        )
+
+        if needs_realloc:
             new_buf = torch.zeros(
                 (total_points, channels),
                 device=device,
-                dtype=self.intensities.dtype,
-            )
-            count = min(self.intensities.shape[0], total_points)
-            if count > 0:
-                new_buf[:count] = self.intensities[:count]
-            self.intensities = new_buf
-
-        if not hasattr(self, "intensities") or self.intensities.numel() == 0:
-            self.intensities = torch.zeros(
-                (total_points, sampled.shape[1]),
-                device=device,
                 dtype=sampled.dtype,
             )
-        elif self.intensities.shape[1] != sampled.shape[1]:
-            # Resize to match channel count (e.g. grayscale vs RGB)
-            new_buf = torch.zeros(
-                (total_points, sampled.shape[1]),
-                device=device,
-                dtype=sampled.dtype,
-            )
-            count = min(self.intensities.shape[1], sampled.shape[1])
-            new_buf[:, :count] = self.intensities[:, :count]
+            if (
+                hasattr(self, "intensities")
+                and self.intensities is not None
+                and self.intensities.numel() > 0
+            ):
+                copy_rows = min(self.intensities.shape[0], total_points)
+                copy_cols = min(self.intensities.shape[1], channels)
+                new_buf[:copy_rows, :copy_cols] = self.intensities[
+                    :copy_rows, :copy_cols
+                ]
             self.intensities = new_buf
 
         self.intensities[idx] = sampled
-        self.intensities.requires_grad = False
         self.snapshot_params_for_dirty_check(idx)
         return idx.numel()
 
-    # ===== Properties for accessing model parameters =====
-
     @property
     def get_xyz(self) -> torch.Tensor:
-        """Get point positions as [3, N] tensor."""
-        if self._xyz.numel() == 0:
-            return self._xyz
-        if self._xyz.dim() != 2 or self._xyz.shape[0] != 3:
-            raise ValueError(
-                f"Expected _xyz to have shape [3, N], found {tuple(self._xyz.shape)}."
-            )
+        """Expose raw xyz tensor for compatibility with legacy call-sites."""
         return self._xyz
 
     @property
@@ -477,6 +489,8 @@ class GaussianModel:
     @property
     def get_opacity(self) -> torch.Tensor:
         """Get point opacity values (converted from log-space)."""
+        if self._mask_opacity_active():
+            return self.opacities
         return self.opacity_activation(self._opacity)
 
     @property
@@ -608,6 +622,7 @@ class GaussianModel:
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
             self.intensities,
+            self.opacities,
             self._initial_scaling,
             self._initial_xyz,
         )
@@ -636,23 +651,41 @@ class GaussianModel:
             *extra_args,
         ) = model_args
 
-        # Restore intensity values if available
-        if len(extra_args) > 0:
-            self.intensities = extra_args[0]
-        else:
-            self.intensities = torch.empty(0)
+        device_xyz = (
+            self._xyz.device
+            if isinstance(self._xyz, torch.Tensor) and self._xyz.numel() > 0
+            else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        device_scale = (
+            self._scaling.device
+            if isinstance(self._scaling, torch.Tensor) and self._scaling.numel() > 0
+            else device_xyz
+        )
 
-        # Restore initial scaling values if available
-        if len(extra_args) > 1:
-            self._initial_scaling = extra_args[1]
-        else:
-            self._initial_scaling = torch.empty(0)
+        extras: list[Any] = list(extra_args)
+        while len(extras) < 4:
+            extras.append(None)
 
-        # Restore frozen xyz positions if stored
-        if len(extra_args) > 2:
-            self._initial_xyz = extra_args[2]
-        else:
-            self._initial_xyz = torch.empty(0)
+        self.intensities = (
+            extras[0]
+            if isinstance(extras[0], torch.Tensor)
+            else torch.empty(0, device=device_xyz)
+        )
+        self.opacities = (
+            extras[1]
+            if isinstance(extras[1], torch.Tensor)
+            else torch.empty(0, device=device_xyz)
+        )
+        self._initial_scaling = (
+            extras[2]
+            if isinstance(extras[2], torch.Tensor)
+            else torch.empty(0, device=device_scale)
+        )
+        self._initial_xyz = (
+            extras[3]
+            if isinstance(extras[3], torch.Tensor)
+            else torch.empty(0, device=device_xyz)
+        )
 
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
@@ -709,6 +742,27 @@ class GaussianModel:
         )
         self.vessel_radial_scale = getattr(
             training_args, "vessel_radial_scale", self.vessel_radial_scale
+        )
+        self.structure_gradient_boost = getattr(
+            training_args,
+            "structure_gradient_boost",
+            self.structure_gradient_boost,
+        )
+        self.structure_gradient_exponent = max(
+            0.5,
+            getattr(
+                training_args,
+                "structure_gradient_exponent",
+                self.structure_gradient_exponent,
+            ),
+        )
+        self.structure_gradient_threshold = max(
+            0.0,
+            getattr(
+                training_args,
+                "structure_gradient_threshold",
+                self.structure_gradient_threshold,
+            ),
         )
         self._max_memory_bytes = getattr(
             training_args, "densify_memory_budget_bytes", self._max_memory_bytes
@@ -822,18 +876,13 @@ class GaussianModel:
                 }
             )
 
-        # Add position, opacity, scaling and rotation parameters
+        # Add position, scaling and rotation parameters
         param_groups.extend(
             [
                 {
                     "params": [self._xyz],
                     "lr": training_args.position_lr_init * self.spatial_lr_scale,
                     "name": "xyz",
-                },
-                {
-                    "params": [self._opacity],
-                    "lr": training_args.opacity_lr,
-                    "name": "opacity",
                 },
                 {
                     "params": [self._scaling],
@@ -847,6 +896,15 @@ class GaussianModel:
                 },
             ]
         )
+
+        if not self._mask_opacity_active() and self._opacity.numel() > 0:
+            param_groups.append(
+                {
+                    "params": [self._opacity],
+                    "lr": training_args.opacity_lr,
+                    "name": "opacity",
+                }
+            )
 
         return param_groups
 
@@ -1628,7 +1686,10 @@ class GaussianModel:
             f_rest = np.zeros((num_points, 0))
 
         # Handle other attributes
-        opacities = self._opacity.detach().cpu().numpy()
+        opacity_tensor = self.get_opacity
+        if opacity_tensor.numel() == 0:
+            opacity_tensor = torch.ones((num_points, 1), device=self._xyz.device)
+        opacities = opacity_tensor.detach().cpu().numpy()
         if opacities.shape[0] != num_points:
             # Ensure opacity has shape [N, 1]
             opacities = np.ones((num_points, 1))
@@ -1714,11 +1775,27 @@ class GaussianModel:
 
     def reset_opacity(self):
         """Reset all opacity values to a small initial value."""
+        if self._mask_opacity_active():
+            if self.opacities.numel() > 0:
+                self.opacities.zero_()
+            return
+
+        if self._opacity.numel() == 0:
+            return
+
         opacities_new = self.inverse_opacity_activation(
             torch.ones_like(self._opacity) * 0.01
         )
-        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
-        self._opacity = optimizable_tensors["opacity"]
+
+        if self._optimizer_has_group("opacity"):
+            optimizable_tensors = self.replace_tensor_to_optimizer(
+                opacities_new, "opacity"
+            )
+            self._opacity = optimizable_tensors["opacity"]
+        else:
+            self._opacity = nn.Parameter(
+                opacities_new.detach().clone().requires_grad_(True)
+            )
 
     def replace_tensor_to_optimizer(
         self, tensor: torch.Tensor, name: str
@@ -1825,7 +1902,15 @@ class GaussianModel:
         self._xyz = optimizable_tensors["xyz"]
         self._features_dc = optimizable_tensors.get("f_dc", self._features_dc)
         self._features_rest = optimizable_tensors.get("f_rest", self._features_rest)
-        self._opacity = optimizable_tensors["opacity"]
+        if "opacity" in optimizable_tensors:
+            self._opacity = optimizable_tensors["opacity"]
+        else:
+            pruned_opacity = self._opacity[valid_points_mask]
+            self._opacity = nn.Parameter(
+                pruned_opacity.detach()
+                .clone()
+                .requires_grad_(not self._mask_opacity_active())
+            )
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -1977,7 +2062,15 @@ class GaussianModel:
         # Only retrieve features if they were added
         self._features_dc = optimizable_tensors.get("f_dc", self._features_dc)
         self._features_rest = optimizable_tensors.get("f_rest", self._features_rest)
-        self._opacity = optimizable_tensors["opacity"]
+        if "opacity" in optimizable_tensors:
+            self._opacity = optimizable_tensors["opacity"]
+        else:
+            concatenated = torch.cat((self._opacity, new_opacities), dim=0)
+            self._opacity = nn.Parameter(
+                concatenated.detach()
+                .clone()
+                .requires_grad_(not self._mask_opacity_active())
+            )
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -2154,6 +2247,66 @@ class GaussianModel:
         quats = torch.nn.functional.normalize(quats, dim=1)
         return quats, fallback_mask
 
+    def _structure_strength_from_field(
+        self, xyz: torch.Tensor
+    ) -> Optional[torch.Tensor]:
+        """Sample normalized gradient magnitudes for given xyz positions."""
+        field = getattr(self, "orientation_field", None)
+        if not isinstance(field, dict):
+            return None
+        mag_field = field.get("magnitude")
+        origin = field.get("origin")
+        voxel = field.get("voxel_size")
+        if mag_field is None or origin is None or voxel is None:
+            return None
+
+        coords = xyz
+        if coords.dim() == 2 and coords.shape[0] == 3:
+            coords = coords.transpose(0, 1).contiguous()
+        elif coords.dim() != 2 or coords.shape[1] != 3:
+            coords = coords.view(-1, 3)
+
+        if coords.numel() == 0:
+            return None
+
+        device = mag_field.device
+        grid = world_to_grid(
+            coords.to(device=device),
+            origin.to(device=device),
+            voxel.to(device=device),
+            mag_field.shape,
+        )
+        grid = grid.view(1, -1, 1, 1, 3)
+        mag_tensor = mag_field.unsqueeze(0).unsqueeze(0)
+        sampled = F.grid_sample(
+            mag_tensor,
+            grid,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=True,
+        ).view(-1)
+        strength = torch.nan_to_num(sampled, nan=0.0, posinf=0.0, neginf=0.0)
+        if strength.numel() == 0:
+            return None
+        max_val = strength.max().clamp_min(1e-6)
+        strength = (strength / max_val).clamp(0.0, 1.0)
+        target_device = xyz.device if xyz.numel() > 0 else device
+        return strength.to(device=target_device)
+
+    def _structure_boost_factors(
+        self, strength: Optional[torch.Tensor]
+    ) -> Optional[torch.Tensor]:
+        """Return per-point LR/gradient boost factors derived from structure strength."""
+        if strength is None or self.structure_gradient_boost <= 0.0:
+            return None
+        boost = 1.0 + strength * self.structure_gradient_boost
+        if self.structure_gradient_threshold > 0.0:
+            weak_mask = strength < self.structure_gradient_threshold
+            if weak_mask.any():
+                damped = 1.0 + strength * (self.structure_gradient_boost * 0.25)
+                boost = torch.where(weak_mask, damped, boost)
+        return boost
+
     @torch.no_grad()
     def densify_and_split(
         self,
@@ -2161,6 +2314,7 @@ class GaussianModel:
         grad_threshold: float,
         scene_extent: float,
         N: int = 2,
+        structure_strength: Optional[torch.Tensor] = None,
     ):
         """
         Split large Gaussians that have high gradients.
@@ -2178,11 +2332,14 @@ class GaussianModel:
             return
 
         # Extract points that satisfy the gradient condition
-        padded_grad = torch.zeros(
+        grad_metric = torch.zeros(
             (n_init_points), device=grads.device, dtype=grads.dtype
         )
-        padded_grad[:grads.shape[0]] = grads.squeeze()
-        selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
+        grad_metric[: grads.shape[0]] = grads.squeeze()
+        boost = self._structure_boost_factors(structure_strength)
+        if boost is not None and boost.numel() == grad_metric.numel():
+            grad_metric = grad_metric * boost.to(device=grad_metric.device)
+        selected_pts_mask = torch.where(grad_metric >= grad_threshold, True, False)
 
         # Filter by scale criteria
         scales = self.get_scaling
@@ -2310,7 +2467,11 @@ class GaussianModel:
 
     @torch.no_grad()
     def densify_and_clone(
-        self, grads: torch.Tensor, grad_threshold: float, scene_extent: float
+        self,
+        grads: torch.Tensor,
+        grad_threshold: float,
+        scene_extent: float,
+        structure_strength: Optional[torch.Tensor] = None,
     ):
         """
         Clone small Gaussians that have high gradients.
@@ -2321,9 +2482,11 @@ class GaussianModel:
             scene_extent: Scene size for scaling reference
         """
         # Extract points that satisfy the gradient condition
-        selected_pts_mask = torch.where(
-            torch.norm(grads, dim=-1) >= grad_threshold, True, False
-        )
+        grad_metric = torch.norm(grads, dim=-1)
+        boost = self._structure_boost_factors(structure_strength)
+        if boost is not None and boost.numel() == grad_metric.numel():
+            grad_metric = grad_metric * boost.to(device=grad_metric.device)
+        selected_pts_mask = torch.where(grad_metric >= grad_threshold, True, False)
 
         # Filter by scale criteria
         scales = self.get_scaling
@@ -2456,6 +2619,18 @@ class GaussianModel:
         # Reset last densify counts for this iteration snapshot
         self.last_densify_counts = {"split": 0, "clone": 0, "hole_fill": 0}
 
+        xyz = self.get_xyz
+        structure_strength = None
+        if self.structure_gradient_boost > 0.0:
+            structure_strength = self._structure_strength_from_field(xyz)
+            if (
+                structure_strength is not None
+                and self.structure_gradient_exponent != 1.0
+            ):
+                structure_strength = structure_strength.pow(
+                    self.structure_gradient_exponent
+                )
+
         # Calculate normalized gradients
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
@@ -2474,8 +2649,14 @@ class GaussianModel:
         density_info = self._maybe_update_density_cache(None)
 
         # Perform densification
-        self.densify_and_clone(grads, grad_threshold, extent)
-        self.densify_and_split(grads, grad_threshold, extent)
+        self.densify_and_clone(grads, grad_threshold, extent, structure_strength)
+        self.densify_and_split(
+            grads,
+            grad_threshold,
+            extent,
+            N=2,
+            structure_strength=structure_strength,
+        )
 
         # Perform targeted hole filling when coverage is poor
         hole_added = 0
@@ -2533,22 +2714,50 @@ class GaussianModel:
         if volume is None:
             return
 
-        # Store reference volume for future updates
         self.reference_volume = volume
-
         from gaussian_splatting.utils.intensity_sampler import update_intensities
 
-        # Update intensities based on current positions and scales
-        with torch.no_grad():  # No gradients needed for this operation
-            print(
-                f"DEBUG GaussianModel: Before update_intensities, xyz.shape={self.get_xyz.shape}"
+        normalize_samples = getattr(self, "intensity_mode", "learned") in {
+            "sampled",
+            "sampled_mean_covered",
+        }
+        global_min = float(volume.min().item()) if normalize_samples else None
+        global_max = float(volume.max().item()) if normalize_samples else None
+        scales = self.get_scaling if self._scaling.numel() > 0 else None
+
+        with torch.no_grad():
+            intensities, vol_min, vol_max = update_intensities(
+                self.get_xyz,
+                volume,
+                scales,
+                normalize=normalize_samples,
+                min_val=global_min,
+                max_val=global_max,
             )
-            self.intensities, _, _ = update_intensities(
-                self.get_xyz, volume, self.get_scaling
+
+        self.intensities = intensities.detach()
+        self.intensities.requires_grad = False
+        self.volume_min = vol_min
+        self.volume_max = vol_max
+
+        if (
+            self._features_dc is not None
+            and self._features_dc.numel() > 0
+            and self.intensities.numel() > 0
+        ):
+            sh_vals = (
+                self._map_intensities_to_sh_coefficients(
+                    self.intensities, self.volume_min, self.volume_max
+                )
+                .expand(-1, 3)
+                .unsqueeze(1)
             )
-            print(
-                f"DEBUG GaussianModel: After update_intensities, intensities.shape={self.intensities.shape}"
-            )
+            if sh_vals.shape == self._features_dc.shape:
+                self._features_dc.data.copy_(sh_vals)
+            else:
+                self._features_dc = torch.nn.Parameter(
+                    sh_vals.detach().clone(), requires_grad=True
+                )
 
         print(
             f"Updated intensities: range [{self.intensities.min().item():.4f}, {self.intensities.max().item():.4f}]"
@@ -2568,75 +2777,70 @@ class GaussianModel:
         if volume is None:
             return
 
-        # Store reference volume for future updates
         self.reference_volume = volume
+        if mask is not None:
+            self.reference_mask = mask
 
         from gaussian_splatting.utils.intensity_sampler import (
-            update_intensities_and_opacities,
+            update_intensities_and_opacities as sample_intensity_and_opacity,
         )
 
-        # Update both intensities and opacities based on current positions and scales
-        with torch.no_grad():  # No gradients needed for this operation
-            print(
-                f"DEBUG GaussianModel: Before update_intensities_and_opacities, xyz.shape={self.get_xyz.shape}"
-            )
-            normalize_samples = getattr(self, "intensity_mode", "learned") in {
-                "sampled",
-                "sampled_mean_covered",
-            }
-            global_min = float(volume.min().item()) if normalize_samples else None
-            global_max = float(volume.max().item()) if normalize_samples else None
+        normalize_samples = getattr(self, "intensity_mode", "learned") in {
+            "sampled",
+            "sampled_mean_covered",
+        }
+        global_min = float(volume.min().item()) if normalize_samples else None
+        global_max = float(volume.max().item()) if normalize_samples else None
+        scales = self.get_scaling if self._scaling.numel() > 0 else None
+
+        with torch.no_grad():
             intensities, opacities, volume_min, volume_max = (
-                update_intensities_and_opacities(
+                sample_intensity_and_opacity(
                     self.get_xyz,
                     volume,
-                    mask,
-                    self.get_scaling,
+                    mask=mask,
+                    scale=scales,
                     normalize=normalize_samples,
                     min_val=global_min,
                     max_val=global_max,
                 )
             )
-            print(
-                f"DEBUG GaussianModel: After update_intensities_and_opacities, intensities.shape={intensities.shape}"
-            )
 
-            self.intensities = intensities
-            print(
-                f"DEBUG GaussianModel: After assignment, self.intensities.shape={self.intensities.shape}"
-            )
+        self.intensities = intensities.detach()
+        self.intensities.requires_grad = False
+        self.volume_min = volume_min
+        self.volume_max = volume_max
 
-            # Store global min/max values for consistent normalization
-            self.volume_min = volume_min
-            self.volume_max = volume_max
-            print(f"Volume global range: [{volume_min:.4f}, {volume_max:.4f}]")
+        if opacities is not None:
+            self.opacities = opacities.detach()
+            self.opacities.requires_grad = False
 
-            if opacities is not None:
-                self.opacities = opacities
-                print(
-                    f"Updated opacities: range [{self.opacities.min().item():.4f}, {self.opacities.max().item():.4f}]"
+        if (
+            self._features_dc is not None
+            and self._features_dc.numel() > 0
+            and self.intensities.numel() > 0
+        ):
+            sh_vals = (
+                self._map_intensities_to_sh_coefficients(
+                    self.intensities, volume_min, volume_max
                 )
-
-            # Update features_dc with intensities to ensure proper colors in PLY export
-            if self._features_dc is not None:
-                # Map intensities to SH coefficient range using our helper method
-                sh_intensities = self._map_intensities_to_sh_coefficients(
-                    intensities.clone(), volume_min, volume_max
-                )
-
-                # Expand to RGB channels and reshape
-                sh_intensities = sh_intensities.expand(-1, 3)  # shape [N, 3]
-                sh_intensities = sh_intensities.unsqueeze(1)  # shape [N, 1, 3]
-
-                # Replace the existing features_dc with the new intensity-based colors
-                self._features_dc.copy_(sh_intensities)
-                print(
-                    f"Updated features_dc with intensities: range [{sh_intensities.min().item():.4f}, {sh_intensities.max().item():.4f}]"
+                .expand(-1, 3)
+                .unsqueeze(1)
+            )
+            if sh_vals.shape == self._features_dc.shape:
+                self._features_dc.data.copy_(sh_vals)
+            else:
+                self._features_dc = torch.nn.Parameter(
+                    sh_vals.detach().clone(), requires_grad=True
                 )
 
         print(
             f"Updated intensities: range [{self.intensities.min().item():.4f}, {self.intensities.max().item():.4f}]"
         )
+        if opacities is not None:
+            print(
+                f"Updated opacities: range [{self.opacities.min().item():.4f}, {self.opacities.max().item():.4f}]"
+            )
 
 
 # === Gaussian utility helpers =================================================

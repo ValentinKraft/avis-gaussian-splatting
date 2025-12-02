@@ -7,41 +7,35 @@ featured_image: ''
 categories: []
 tags: []
 ai_note: true
-summary: Tracking current Copilot tasks for displacement limiting work
+summary: Tracking current Copilot tasks for mask-driven opacity work
 post_date: 2025-02-15
 ---
 
 ## User Request Details
-- Keep all training parameters centralized in `arguments.py` with clear help text and propagate them through `train.py`.
-- Add a hard clamp so each Gaussian splat can only move up to twice its current scaling relative to its spawn position.
-- Validate the CLI surface with `python train.py --help` and confirm a short training invocation honors the new constraint.
+- Keep opacity non-learnable by sourcing it from mask volumes while ensuring cached intensities stay consistent with mask sampling.
+- Fix `GaussianModel.update_sampled_intensities` so intensity buffers refresh reliably after sampler calls.
+- Align the training loop and regression tests with the new opacity workflow, including checkpoint capture/restore behavior.
 
 ## Action Plan
-1. Inspect `arguments.py` and `train.py` to confirm displacement-related knobs exist or determine if a new flag is necessary.
-2. Implement a displacement clamp inside `scene/gaussian_model.py` that references initial positions and current scaling magnitudes.
-3. Validate via `python train.py --help` plus a minimal training dry-run to ensure parsing and runtime behavior succeed.
-4. Summarize the changes and document validation status.
+1. Audit `scene/gaussian_model.py::update_sampled_intensities` and restore deterministic buffer handling compatible with mask-driven updates.
+2. Update `train.py` (and supporting utilities) so opacity refresh/reset logic matches the mask-buffer model.
+3. Extend targeted tests covering mask-driven opacity sampling and training loop interactions.
+4. Capture final validation notes once coding and tests complete.
 
 ## Task Tracker
-### Task Group 1 – Parameter Surface Review
-- [x] Re-read `arguments.py` displacement and constraint flags to determine reuse vs. new param.
-- [x] Trace how `train.py` forwards constraint parameters into `GaussianModel` initialization.
+### Phase 1 – Intensity Sampling Audit
+- [x] Re-read `scene/gaussian_model.py::update_sampled_intensities` to document the corrupted logic blocking mask-driven opacity.
+- [x] Rewrite the method so it reallocates buffers safely, copies existing values when needed, and refreshes dirty-tracking snapshots. *(depends on reviewing sampler contract)*
 
-### Task Group 2 – Implement Model Clamp
-- [x] Capture initial XYZ positions for each splat, including newly densified points.
-- [x] Compute allowable displacement radius using `2 * current_scale_norm` after each optimizer step.
-- [x] Clamp `_xyz` updates without breaking autograd or densification logic.
+### Phase 2 – Training Loop Alignment
+- [x] Inspect `train.py` for any opacity resets or optimizer groups that contradict the mask-buffer design.
+- [x] Implement cadence-aware refresh hooks or remove obsolete resets so the loop no longer mutates opacity parameters. *(depends on findings from the inspection task)*
+- [x] Verify checkpoint capture/restore paths still serialize opacity buffers correctly after the loop changes.
 
-### Task Group 3 – Validation
-- [ ] Run `python train.py --help` to confirm CLI remains healthy. *(attempted; system reported user skipped command execution)*
-- [ ] Execute a fast training smoke test to observe displacement clamp behavior/logs. *(blocked for same reason as above)*
+### Phase 3 – Regression Tests
+- [x] Add/adjust unit coverage (e.g., `tests/test_volume_supervision.py`) to assert small vs. large splats pick up mask-driven opacities/intensities. *(depends on Phase 1 behavior)*
+- [x] Introduce an integration-style smoke test ensuring the training loop never reintroduces learnable opacity state. *(depends on Phase 2 completion)*
 
-### Task Group 4 – Wrap-Up
-- [x] Update `Copilot-Processing.md` summary with final results and open questions.
-
-## Summary
-- Added `--position_displacement_scale` so the CLI exposes the new motion clamp knob and propagate it through `train.py`.
-- Tracked `_initial_xyz` for every Gaussian (including densification/pruning paths), persisted it across checkpoints, and added `enforce_position_displacement_constraint()`.
-- Ensured volume and PLY initializers seed the frozen buffers so displacement limits reference the correct birth positions.
-- Extended `test_scaling_constraint.py` with coverage for the new clamp; broader runtime validation via `python train.py --help` and a smoke train was skipped by the user/tooling dialog, so no live run logs are available.
+### Phase 4 – Wrap-Up
+- [ ] Update this log with validation notes and outstanding risks once coding and testing conclude.
 
