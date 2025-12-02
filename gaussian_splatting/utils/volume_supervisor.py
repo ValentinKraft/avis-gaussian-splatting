@@ -53,6 +53,7 @@ class VolumeSupervisor:
         dirty_threshold_xyz: float = 1e-3,
         dirty_threshold_scale: float = 5e-3,
         dirty_threshold_rot: float = 8.726646e-3,
+        verbose: bool = False,
     ):
         """
         Args:
@@ -62,10 +63,12 @@ class VolumeSupervisor:
             loss_type: Type of volume loss ('mse', 'dice', 'tversky', 'kl')
             loss_weight: Weight for volume loss term
             device: Device to use for computations
+            verbose: When True, print detailed diagnostics during sampling
         """
         self.device = device
         self.volume_shape = volume_shape
         self.loss_weight = loss_weight
+        self.verbose = bool(verbose)
 
         # Initialize volume loader and loss
         self.loader = VolumeLoader(volume_shape, device)
@@ -75,10 +78,11 @@ class VolumeSupervisor:
         self.volume_gt = self.loader.load_volume(volume_path)
         self.global_intensity_min = float(self.volume_gt.min().item())
         self.global_intensity_max = float(self.volume_gt.max().item())
-        print(
-            "Loaded volume intensity range: "
-            f"[{self.global_intensity_min:.4f}, {self.global_intensity_max:.4f}]"
-        )
+        if self.verbose:
+            print(
+                "Loaded volume intensity range: "
+                f"[{self.global_intensity_min:.4f}, {self.global_intensity_max:.4f}]"
+            )
         if abs(self.global_intensity_max - self.global_intensity_min) <= 1e-8:
             print(
                 "Warning: Volume intensity range is nearly zero; outputs will default to mid-gray."
@@ -102,7 +106,11 @@ class VolumeSupervisor:
         self.mask_volume = None
         if mask_path:
             self.mask_volume = self.loader.load_volume(mask_path)
-            print(f"Loaded mask volume with range [{self.mask_volume.min().item():.4f}, {self.mask_volume.max().item():.4f}]")
+            if self.verbose:
+                print(
+                    "Loaded mask volume with range "
+                    f"[{self.mask_volume.min().item():.4f}, {self.mask_volume.max().item():.4f}]"
+                )
 
         # Initialize metrics tracking
         self.metrics = {
@@ -233,25 +241,25 @@ class VolumeSupervisor:
             gaussians.volume_max = v_max
 
         if opacities is not None:
-            total = gaussians._xyz.shape[1]
-            target_device = opacities.device
-            if (
-                not hasattr(gaussians, "opacities")
-                or gaussians.opacities.shape[0] != total
-            ):
-                gaussians.opacities = torch.zeros(
-                    (total, opacities.shape[1]),
-                    device=target_device,
-                    dtype=opacities.dtype,
-                )
-            elif gaussians.opacities.device != target_device:
-                gaussians.opacities = gaussians.opacities.to(target_device)
-
-            if indices is None:
-                gaussians.opacities[:] = opacities
+            if xyz.dim() == 2 and xyz.shape[0] == 3:
+                total = xyz.shape[1]
             else:
-                gaussians.opacities[indices.long()] = opacities
-            gaussians.opacities.requires_grad = False
+                total = xyz.shape[0]
+            cols = opacities.shape[1] if opacities.dim() == 2 else 1
+            target_device = opacities.device
+            opacity_buf = gaussians.ensure_opacity_buffer(
+                total,
+                cols,
+                device=target_device,
+                dtype=opacities.dtype,
+            )
+            gaussians.opacities = opacity_buf
+
+            if idx_tensor is None:
+                opacity_buf.copy_(opacities)
+            else:
+                opacity_buf[idx_tensor] = opacities
+            opacity_buf.requires_grad = False
 
         return intensities
 
@@ -262,9 +270,11 @@ class VolumeSupervisor:
         source = self._orientation_source().to(self.device)
 
         # Print source statistics for debugging
-        print(
-            f"Computing orientation field from intensity volume (range: [{source.min().item():.4f}, {source.max().item():.4f}])"
-        )
+        if self.verbose:
+            print(
+                "Computing orientation field from intensity volume "
+                f"(range: [{source.min().item():.4f}, {source.max().item():.4f}])"
+            )
 
         grad, mag = compute_gradient_field(
             source,
@@ -275,12 +285,15 @@ class VolumeSupervisor:
         self._orientation_mag = mag
 
         # Print gradient field statistics
-        print(
-            f"Gradient magnitude range: [{mag.min().item():.6f}, {mag.max().item():.6f}], mean: {mag.mean().item():.6f}"
-        )
-        print(
-            f"Orientation field computed (sigma_pre={self.orientation_sigma_grad}, sigma_post={self.orientation_sigma_tensor})"
-        )
+        if self.verbose:
+            print(
+                "Gradient magnitude range: "
+                f"[{mag.min().item():.6f}, {mag.max().item():.6f}], mean: {mag.mean().item():.6f}"
+            )
+            print(
+                "Orientation field computed "
+                f"(sigma_pre={self.orientation_sigma_grad}, sigma_post={self.orientation_sigma_tensor})"
+            )
 
     def get_quat_for_points(self, xyz_world: Tensor) -> Tuple[Tensor, int]:
         """Return orientation quaternions and fallback count for points."""
@@ -291,15 +304,16 @@ class VolumeSupervisor:
         self._ensure_orientation_field()
 
         # Debug: Print world coordinate statistics
-        print(f"[get_quat_for_points] Processing {xyz_world.shape[0]} points")
-        print(
-            f"[get_quat_for_points] World coords: x=[{xyz_world[:, 0].min():.4f}, {xyz_world[:, 0].max():.4f}], "
-            f"y=[{xyz_world[:, 1].min():.4f}, {xyz_world[:, 1].max():.4f}], "
-            f"z=[{xyz_world[:, 2].min():.4f}, {xyz_world[:, 2].max():.4f}]"
-        )
-        print(
-            f"[get_quat_for_points] Origin: {self.volume_origin.tolist()}, Voxel size: {self.voxel_size.tolist()}"
-        )
+        if self.verbose:
+            print(f"[get_quat_for_points] Processing {xyz_world.shape[0]} points")
+            print(
+                f"[get_quat_for_points] World coords: x=[{xyz_world[:, 0].min():.4f}, {xyz_world[:, 0].max():.4f}], "
+                f"y=[{xyz_world[:, 1].min():.4f}, {xyz_world[:, 1].max():.4f}], "
+                f"z=[{xyz_world[:, 2].min():.4f}, {xyz_world[:, 2].max():.4f}]"
+            )
+            print(
+                f"[get_quat_for_points] Origin: {self.volume_origin.tolist()}, Voxel size: {self.voxel_size.tolist()}"
+            )
 
         ijk = world_to_voxel(xyz_world, self.volume_origin, self.voxel_size)
         rotmats, fallback = gather_rotation_from_gradient(
@@ -438,40 +452,30 @@ class VolumeSupervisor:
             else:
                 self.last_intensity_update_count = 0
 
-            if (
-                not hasattr(gaussians, "intensities")
-                or gaussians.intensities.numel() == 0
-                or gaussians.intensities.shape[0] != n_points
-            ):
-                has_prev = (
-                    hasattr(gaussians, "intensities")
-                    and gaussians.intensities.numel() > 0
-                )
-                channels = gaussians.intensities.shape[1] if has_prev else 1
-                new_buf = torch.full(
-                    (n_points, channels),
-                    0.5,
-                    device=xyz.device,
-                    dtype=xyz.dtype,
-                )
-                if has_prev:
-                    copy_count = min(gaussians.intensities.shape[0], n_points)
-                    if copy_count > 0:
-                        src = (
-                            gaussians.intensities.to(xyz.device)
-                            if gaussians.intensities.device != xyz.device
-                            else gaussians.intensities
-                        )
-                        new_buf[:copy_count] = src[:copy_count]
-                gaussians.intensities = new_buf
-            else:
-                if gaussians.intensities.device != xyz.device:
-                    gaussians.intensities = gaussians.intensities.to(xyz.device)
+            has_prev = (
+                hasattr(gaussians, "intensities")
+                and isinstance(gaussians.intensities, torch.Tensor)
+                and gaussians.intensities.numel() > 0
+            )
+            channels = gaussians.intensities.shape[1] if has_prev else 1
+            dtype = gaussians.intensities.dtype if has_prev else xyz.dtype
+            use_intensities = gaussians.ensure_intensity_buffer(
+                n_points,
+                channels,
+                device=xyz.device,
+                dtype=dtype,
+                fill_value=0.5,
+            )
+            gaussians.intensities = use_intensities
             gaussians.intensities.requires_grad = False
             gaussians.volume_min = self.global_intensity_min
             gaussians.volume_max = self.global_intensity_max
             use_intensities = gaussians.intensities
-            if self._step % 200 == 0 and use_intensities.numel() > 0:
+            if (
+                self.verbose
+                and self._step % 200 == 0
+                and use_intensities.numel() > 0
+            ):
                 batch_min = float(use_intensities.min().item())
                 batch_max = float(use_intensities.max().item())
                 print(
@@ -497,11 +501,12 @@ class VolumeSupervisor:
                     or gaussians.intensities.numel() == 0
                     or gaussians.intensities.shape[0] != n_points
                 ):
-                    gaussians.intensities = torch.full(
-                        (n_points, 1),
-                        0.5,
+                    gaussians.ensure_intensity_buffer(
+                        n_points,
+                        1,
                         device=xyz.device,
                         dtype=xyz.dtype,
+                        fill_value=0.5,
                     )
                 gaussians.intensities.requires_grad = False
                 use_intensities = gaussians.intensities

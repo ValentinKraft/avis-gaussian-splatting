@@ -158,6 +158,26 @@ class GaussianModel:
         # Set up activation functions
         self._setup_activation_functions()
 
+    def _tensor_device(self) -> torch.device:
+        if (
+            self._xyz is not None
+            and isinstance(self._xyz, torch.Tensor)
+            and self._xyz.numel() > 0
+        ):
+            return self._xyz.device
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        return torch.device("cpu")
+
+    def _tensor_dtype(self) -> torch.dtype:
+        if (
+            self._xyz is not None
+            and isinstance(self._xyz, torch.Tensor)
+            and self._xyz.numel() > 0
+        ):
+            return self._xyz.dtype
+        return torch.float32
+
     def _setup_activation_functions(self):
         """Set up activation functions for model parameters."""
 
@@ -175,6 +195,111 @@ class GaussianModel:
         self.opacity_activation = torch.sigmoid
         self.inverse_opacity_activation = inverse_sigmoid
         self.rotation_activation = torch.nn.functional.normalize
+
+    def _allocate_or_resize_tensor(
+        self,
+        attr: str,
+        shape: Tuple[int, ...],
+        device: torch.device,
+        dtype: torch.dtype,
+        fill_value: Optional[float] = None,
+        zero_existing: bool = False,
+    ) -> torch.Tensor:
+        """Resize or create a tensor attribute, preserving existing values when possible."""
+        buf = getattr(self, attr, None)
+        reuse = (
+            isinstance(buf, torch.Tensor)
+            and buf.shape == shape
+            and buf.device == device
+            and buf.dtype == dtype
+        )
+        if reuse:
+            if zero_existing:
+                buf.zero_()
+            return buf
+
+        if fill_value is None:
+            new_buf = torch.empty(shape, device=device, dtype=dtype)
+        elif fill_value == 0.0:
+            new_buf = torch.zeros(shape, device=device, dtype=dtype)
+        else:
+            new_buf = torch.full(shape, fill_value, device=device, dtype=dtype)
+
+        if isinstance(buf, torch.Tensor) and buf.numel() > 0:
+            copy_dims = [min(o, n) for o, n in zip(buf.shape, shape)]
+            if all(dim > 0 for dim in copy_dims):
+                copy_slice = tuple(slice(0, dim) for dim in copy_dims)
+                new_buf[copy_slice] = buf[copy_slice]
+
+        if zero_existing:
+            new_buf.zero_()
+
+        setattr(self, attr, new_buf)
+        return new_buf
+
+    def ensure_intensity_buffer(
+        self,
+        rows: int,
+        cols: int,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+        fill_value: float = 0.5,
+    ) -> torch.Tensor:
+        device = device or self._tensor_device()
+        dtype = dtype or self._tensor_dtype()
+        return self._allocate_or_resize_tensor(
+            "intensities",
+            (rows, cols),
+            device,
+            dtype,
+            fill_value=fill_value,
+        )
+
+    def ensure_opacity_buffer(
+        self,
+        rows: int,
+        cols: int,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+    ) -> torch.Tensor:
+        device = device or self._tensor_device()
+        dtype = dtype or self._tensor_dtype()
+        return self._allocate_or_resize_tensor(
+            "opacities",
+            (rows, cols),
+            device,
+            dtype,
+            fill_value=0.0,
+        )
+
+    def _reset_auxiliary_buffers(self) -> None:
+        device = self._tensor_device()
+        dtype = self._tensor_dtype()
+        count = self.get_xyz.shape[1] if self._xyz.numel() > 0 else 0
+        self._allocate_or_resize_tensor(
+            "xyz_gradient_accum",
+            (count, 1),
+            device,
+            dtype,
+            fill_value=0.0,
+            zero_existing=True,
+        )
+        self._allocate_or_resize_tensor(
+            "denom",
+            (count, 1),
+            device,
+            dtype,
+            fill_value=0.0,
+            zero_existing=True,
+        )
+        self._allocate_or_resize_tensor(
+            "max_radii2D",
+            (count,),
+            device,
+            dtype,
+            fill_value=0.0,
+            zero_existing=True,
+        )
 
     def _verify_gradient_requirements(self):
         """
@@ -430,25 +555,18 @@ class GaussianModel:
             or self.intensities.numel() == 0
             or self.intensities.shape[0] != total_points
             or self.intensities.shape[1] != channels
+            or self.intensities.device != device
+            or self.intensities.dtype != sampled.dtype
         )
 
         if needs_realloc:
-            new_buf = torch.zeros(
-                (total_points, channels),
+            self.ensure_intensity_buffer(
+                total_points,
+                channels,
                 device=device,
                 dtype=sampled.dtype,
+                fill_value=0.0,
             )
-            if (
-                hasattr(self, "intensities")
-                and self.intensities is not None
-                and self.intensities.numel() > 0
-            ):
-                copy_rows = min(self.intensities.shape[0], total_points)
-                copy_cols = min(self.intensities.shape[1], channels)
-                new_buf[:copy_rows, :copy_cols] = self.intensities[
-                    :copy_rows, :copy_cols
-                ]
-            self.intensities = new_buf
 
         self.intensities[idx] = sampled
         self.snapshot_params_for_dirty_check(idx)
@@ -809,9 +927,7 @@ class GaussianModel:
         self._density_cache = None
         self._coverage_state = None
         self._last_density_iteration = -1
-        # _xyz has shape [3, N], so use shape[1] to get number of points
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[1], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[1], 1), device="cuda")
+        self._reset_auxiliary_buffers()
         self._reset_prev_buffers()
 
         # Initialize empty optimizer parameters list
@@ -2075,10 +2191,7 @@ class GaussianModel:
         self._rotation = optimizable_tensors["rotation"]
 
         # Reset auxiliary tensors (_xyz has shape [3, N], use shape[1])
-        device = self._xyz.device if self._xyz.numel() > 0 else torch.device("cpu")
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[1], 1), device=device)
-        self.denom = torch.zeros((self.get_xyz.shape[1], 1), device=device)
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[1]), device=device)
+        self._reset_auxiliary_buffers()
 
         # Update volume-specific attributes
         if hasattr(self, "intensities") and self.intensities is not None:
@@ -2680,11 +2793,7 @@ class GaussianModel:
 
         # Prune points and reset tracking tensors
         self.prune_points(prune_mask)
-        # _xyz has shape [3, N], so use shape[1] to get number of points
-        device = self._xyz.device if self._xyz.numel() > 0 else grads.device
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[1], 1), device=device)
-        self.denom = torch.zeros((self.get_xyz.shape[1], 1), device=device)
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[1]), device=device)
+        self._reset_auxiliary_buffers()
 
     def add_densification_stats(
         self, viewspace_point_tensor: torch.Tensor, update_filter: torch.Tensor

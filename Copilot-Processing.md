@@ -37,5 +37,29 @@ post_date: 2025-02-15
 - [x] Introduce an integration-style smoke test ensuring the training loop never reintroduces learnable opacity state. *(depends on Phase 2 completion)*
 
 ### Phase 4 – Wrap-Up
-- [ ] Update this log with validation notes and outstanding risks once coding and testing conclude.
+- [x] Update this log with validation notes and outstanding risks once coding and testing conclude.
+- Summary: VolumeSupervisor now reuses GaussianModel helper buffers for both sampled intensities and mask-derived opacities, and the new verbose flag suppresses expensive logs by default.
+- Outstanding Risks: Subset refresh logic still needs runtime validation (no automated tests executed yet); plan to exercise the training script before merging.
+
+## User Request Details – Performance Optimizations
+- Reduce redundant tensor allocations during Gaussian intensity/opacity refreshes by reusing the new helper buffers.
+- Limit intensity sampling passes to the indices that actually changed to avoid full-volume recomputation.
+- Gate noisy orientation/intensity logging unless verbose tracing is explicitly requested.
+
+## Action Plan – Performance Optimizations
+1. Refine `VolumeSupervisor._volume_sampler` to operate strictly on provided subsets while reusing GaussianModel opacity buffers.
+2. Ensure `VolumeSupervisor.compute_loss` relies on `GaussianModel.ensure_intensity_buffer` so reallocations and device transfers disappear when point counts change.
+3. Thread a `verbose` flag through the supervisor to silence expensive logging by default and capture the outcomes in this processing log once validated.
+
+## Task Tracker – Performance Optimizations
+### Phase 1 – Subset Sampling & Buffer Reuse
+- [x] Update `_volume_sampler` to write into `ensure_opacity_buffer` outputs and avoid full recomputation when indices are provided.
+- [x] Keep sampled intensity refreshes limited to dirty/active subsets by passing indices through `GaussianModel.update_sampled_intensities`.
+
+### Phase 2 – Logging Controls
+- [x] Add a `verbose` toggle to `VolumeSupervisor` and guard existing intensity/orientation prints behind it to reduce default console noise.
+- [x] Document the new flag in the initializer docstring for clarity.
+
+### Phase 3 – Validation & Notes
+- [ ] Re-run targeted training or unit checks (if time permits) and summarize the observed impact plus any remaining risks.
 
