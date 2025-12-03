@@ -120,6 +120,14 @@ class ModelParams(ParamGroup):
         )
         self._register("position_noise")
 
+        core.add_argument(
+            "--init_mask_threshold",
+            type=float,
+            default=0.01,
+            help="Minimum mask intensity (0-1) required for a voxel to spawn an initial Gaussian.",
+        )
+        self._register("init_mask_threshold")
+
         legacy = parser.add_argument_group("Legacy RGB Inputs (kept for compatibility)")
 
         # COLMAP/SfM dataset directory.

@@ -296,6 +296,7 @@ def training(
             else opt.position_noise
         ),
         orientation_helper=volume_supervisor,
+        mask_threshold=getattr(args, "init_mask_threshold", 0.01),
     )
 
     # Set spatial_lr_scale after volume initialization

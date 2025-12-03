@@ -12,7 +12,7 @@ Initialize Gaussian points from volume data for 3D Gaussian Splatting.
 import math
 import heapq
 from pathlib import Path
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import List, Optional, Tuple, TYPE_CHECKING, Dict
 
 import numpy as np
 import torch
@@ -92,15 +92,100 @@ def _hash_indices(coords: Tensor, grid_size: Tuple[int, int, int]) -> Tensor:
     return coords[:, 2] * stride_z + coords[:, 1] * stride_y + coords[:, 0]
 
 
+def _enforce_cell_quota(
+    coords: Tensor,
+    grid_shape: Tuple[int, int, int],
+    cell_size: int,
+    max_per_cell: int,
+    cell_counts: Dict[int, int],
+) -> Tensor:
+    """Return boolean mask keeping at most `max_per_cell` samples per coarse cell."""
+    if coords.numel() == 0:
+        return torch.zeros(coords.shape[0], dtype=torch.bool, device=coords.device)
+
+    cell_coords = torch.div(coords, cell_size, rounding_mode="floor").long()
+    cell_coords[:, 0].clamp_(0, grid_shape[2] - 1)
+    cell_coords[:, 1].clamp_(0, grid_shape[1] - 1)
+    cell_coords[:, 2].clamp_(0, grid_shape[0] - 1)
+
+    cell_keys = _hash_indices(cell_coords, grid_shape)
+    keep = torch.zeros(cell_keys.shape[0], dtype=torch.bool)
+    for idx, key in enumerate(cell_keys.detach().cpu().tolist()):
+        count = cell_counts.get(key, 0)
+        if count < max_per_cell:
+            keep[idx] = True
+            cell_counts[key] = count + 1
+    return keep.to(coords.device)
+
+
+def _sample_uniform_voxels(
+    coords: Tensor,
+    values: Tensor,
+    distances: Tensor,
+    n_points: int,
+    grid_shape: Tuple[int, int, int],
+    *,
+    cell_size: int,
+    max_per_cell: int,
+    oversample_factor: float,
+    max_attempts: int,
+) -> Tuple[Tensor, Tensor, Tensor]:
+    """Sample voxels uniformly with a mild per-cell quota to limit duplicates."""
+    if coords.shape[0] == 0:
+        raise ValueError("No candidate voxels available for initialization.")
+
+    device = coords.device
+    selected_indices: List[Tensor] = []
+    cell_counts: Dict[int, int] = {}
+    total_kept = 0
+    attempts = 0
+
+    while total_kept < n_points and attempts < max_attempts:
+        need = n_points - total_kept
+        draw = max(int(math.ceil(need * oversample_factor)), need)
+        draw = min(draw, coords.shape[0])
+        rand_idx = torch.randint(0, coords.shape[0], (draw,), device=device)
+        batch_coords = coords[rand_idx]
+        keep_mask = _enforce_cell_quota(
+            batch_coords, grid_shape, cell_size, max_per_cell, cell_counts
+        )
+        if keep_mask.any():
+            kept_idx = rand_idx[keep_mask]
+            selected_indices.append(kept_idx)
+            total_kept += kept_idx.shape[0]
+        attempts += 1
+
+    if total_kept == 0:
+        raise RuntimeError(
+            "Failed to sample any voxels with the current mask threshold and dedup quota."
+        )
+
+    sampled_idx = torch.cat(selected_indices, dim=0)
+
+    if sampled_idx.shape[0] < n_points:
+        shortfall = n_points - sampled_idx.shape[0]
+        extra_idx = torch.randint(0, coords.shape[0], (shortfall,), device=device)
+        sampled_idx = torch.cat([sampled_idx, extra_idx], dim=0)
+
+    if sampled_idx.shape[0] > n_points:
+        shuffle = torch.randperm(sampled_idx.shape[0], device=device)[:n_points]
+        sampled_idx = sampled_idx[shuffle]
+
+    return coords[sampled_idx], values[sampled_idx], distances[sampled_idx]
+
+
 def initialize_from_volume(
     mask_path: str,
     n_points: int = 5000,
     noise_std: float = 0.01,
     device: torch.device = torch.device("cuda"),
+    mask_threshold: float = 0.01,
+    dedup_cell_size: int = 2,
+    dedup_max_per_cell: int = 4,
+    oversample_factor: float = 2.5,
+    max_sampling_attempts: int = 6,
 ) -> Tuple[Tensor, Tensor, Tensor]:
-    """Sample Gaussian seeds with distance-weighted importance and spacing control."""
-
-    from gaussian_splatting.data.volume_loader import VolumeLoader
+    """Sample Gaussian seeds uniformly from mask voxels above a threshold."""
 
     loader = VolumeLoader(device=device)
     sampling_volume = loader.load_volume(mask_path)
@@ -117,51 +202,51 @@ def initialize_from_volume(
     coords_flat = coords.reshape(-1, 3)
     volume_flat = sampling_volume.reshape(-1)
 
-    positive_vals = volume_flat[volume_flat > 0]
-    if positive_vals.numel() == 0:
+    if volume_flat.max() <= 0:
         raise ValueError("Sampling volume contains no positive entries.")
 
-    threshold = float(positive_vals.mean().item() * 0.3)
-    distance_field = _compute_distance_field(sampling_volume, threshold=threshold)
+    distance_field = _compute_distance_field(
+        sampling_volume, threshold=max(mask_threshold, 1e-4)
+    )
     distance_flat = distance_field.reshape(-1)
 
-    weights = (volume_flat.clamp_min(0.0) + 1e-6) * (distance_flat + 1e-4)
-    weights_sum = weights.sum()
-    if weights_sum <= 0.0:
-        weights = torch.full_like(weights, 1.0 / weights.numel())
+    foreground_mask = volume_flat >= mask_threshold
+    if not foreground_mask.any():
+        foreground_mask = volume_flat > 0
+    if not foreground_mask.any():
+        fallback_k = min(volume_flat.numel(), max(n_points * 4, 2048))
+        top_vals, top_idx = torch.topk(volume_flat, k=fallback_k)
+        candidate_coords = coords_flat[top_idx]
+        candidate_vals = top_vals
+        candidate_dist = distance_flat[top_idx]
     else:
-        weights = weights / weights_sum
+        candidate_coords = coords_flat[foreground_mask]
+        candidate_vals = volume_flat[foreground_mask]
+        candidate_dist = distance_flat[foreground_mask]
 
-    oversample = max(n_points * 4, n_points + 32)
-    sampled_idx = torch.multinomial(weights, oversample, replacement=True)
-    sampled_coords = coords_flat[sampled_idx]
-    sampled_dist = distance_flat[sampled_idx]
-    sampled_vals = volume_flat[sampled_idx]
+    grid_shape = (
+        max(1, math.ceil(D / dedup_cell_size)),
+        max(1, math.ceil(H / dedup_cell_size)),
+        max(1, math.ceil(W / dedup_cell_size)),
+    )
 
-    min_spacing_vox = 1.0
-    cell_coords = torch.floor(sampled_coords / min_spacing_vox).long()
-    cell_keys = _hash_indices(cell_coords, (D, H, W))
-    unique_idx_np = np.unique(cell_keys.cpu().numpy(), return_index=True)[1]
-    unique_idx = torch.from_numpy(unique_idx_np).to(device=device, dtype=torch.long)
-    unique_idx, _ = torch.sort(unique_idx)
+    sampled_coords, sampled_vals, sampled_dist = _sample_uniform_voxels(
+        candidate_coords,
+        candidate_vals,
+        candidate_dist,
+        n_points,
+        grid_shape,
+        cell_size=max(1, dedup_cell_size),
+        max_per_cell=max(1, dedup_max_per_cell),
+        oversample_factor=max(1.0, oversample_factor),
+        max_attempts=max(1, max_sampling_attempts),
+    )
 
-    sampled_coords = sampled_coords[unique_idx]
-    sampled_dist = sampled_dist[unique_idx]
-    sampled_vals = sampled_vals[unique_idx]
-
-    extra_idx = None
-    if sampled_coords.shape[0] < n_points:
-        deficit = n_points - sampled_coords.shape[0]
-        extra_idx = torch.multinomial(weights, deficit, replacement=True)
-        sampled_coords = torch.cat([sampled_coords, coords_flat[extra_idx]], dim=0)
-        sampled_dist = torch.cat([sampled_dist, distance_flat[extra_idx]], dim=0)
-        sampled_vals = torch.cat([sampled_vals, volume_flat[extra_idx]], dim=0)
-
-    sampled_coords = sampled_coords[:n_points]
-    sampled_dist = sampled_dist[:n_points]
-    sampled_vals = sampled_vals[:n_points]
-
-    jitter = ((torch.rand_like(sampled_coords) - 0.5) * 0.5)
+    jitter_scale = max(noise_std, 0.0)
+    if jitter_scale > 0:
+        jitter = (torch.rand_like(sampled_coords) - 0.5) * (jitter_scale * 2.0)
+    else:
+        jitter = torch.zeros_like(sampled_coords)
     jittered = sampled_coords + jitter
     jittered[:, 0].clamp_(0, W - 1)
     jittered[:, 1].clamp_(0, H - 1)
@@ -172,13 +257,14 @@ def initialize_from_volume(
 
     _, voxel_size = default_origin_and_spacing((D, H, W), device)
     voxel_sizes_xyz = voxel_size
-    dist_norm = sampled_dist / sampled_dist.max().clamp_min(1e-3)
+    max_dist = sampled_dist.max().clamp_min(1e-3)
+    dist_norm = sampled_dist / max_dist
     scale_min = voxel_sizes_xyz * 0.5
     scale_max = voxel_sizes_xyz * 2.5
     scales = scale_min + dist_norm.unsqueeze(1) * (scale_max - scale_min)
 
-    val_min = float(positive_vals.min().item())
-    val_max = float(positive_vals.max().item())
+    val_min = float(candidate_vals.min().item())
+    val_max = float(candidate_vals.max().item())
     if val_max > val_min:
         norm_vals = (sampled_vals - val_min) / (val_max - val_min)
     else:

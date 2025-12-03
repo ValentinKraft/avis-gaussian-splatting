@@ -63,3 +63,31 @@ post_date: 2025-02-15
 ### Phase 3 – Validation & Notes
 - [ ] Re-run targeted training or unit checks (if time permits) and summarize the observed impact plus any remaining risks.
 
+## User Request Details – Mask Initialization Update
+- Remove the spacing/min-distance heuristic during volume-based initialization so thin vessels keep their samples.
+- Sample initial Gaussians uniformly from voxels whose mask intensity exceeds a configurable threshold (default 1%).
+- Preserve a mild grid-based de-duplication step to cap redundant splats per cell while keeping clusters inside vessels.
+
+## Action Plan – Mask Initialization Update
+1. Introduce a CLI/config argument (e.g., `init_mask_threshold`) and plumb it through training arguments into the volume initializer.
+2. Rewrite the initializer’s voxel sampling to draw uniformly from mask voxels above the threshold, adding per-voxel jitter but skipping the spacing heuristic.
+3. Keep a lightweight grid-based deduplication pass that caps samples per coarse cell without removing clustered vessels, then finalize topology/metadata updates.
+
+## Task Tracker – Mask Initialization Update
+### Phase 1 – Config & Arguments
+- [x] Add the `init_mask_threshold` flag (with sane default) to the argument parser and thread it through relevant configs.
+- [x] Ensure training/initialization code receives the new threshold parameter.
+
+### Phase 2 – Uniform Mask Sampling
+- [x] Implement the uniform in-mask voxel sampler with jitter, replacing the spacing heuristic.
+- [x] Handle fallback behavior when no voxels exceed the threshold.
+
+### Phase 3 – Mild Dedup & Finalization
+- [x] Add a coarse grid deduplication step to cap redundant samples per cell while maintaining vessel coverage.
+- [x] Verify auxiliary buffers (orientations, opacities, stats) stay consistent after the new initialization flow.
+
+### Summary – Mask Initialization Update
+- Added `--init_mask_threshold` so users can control which mask voxels emit seeds; the value propagates through `train.py` into the initializer.
+- Replaced the distance-weighted multinomial sampler with a uniform in-mask strategy plus jitter and robust fallbacks when thresholds remove everything.
+- Introduced a gentle grid-based deduplication quota (2³ voxel bins, 4 samples per cell) that preserves dense vessel coverage without exploding duplicates.
+
