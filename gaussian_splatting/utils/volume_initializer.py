@@ -28,8 +28,11 @@ from gaussian_splatting.utils.intensity_sampler import (
     update_intensities,
 )
 from gaussian_splatting.utils.orientation_field import (
+    build_structure_field,
     default_origin_and_spacing,
     random_quat_perturb,
+    sample_structure_field,
+    world_to_voxel,
 )
 
 if TYPE_CHECKING:
@@ -278,6 +281,36 @@ def initialize_from_volume(
     opacities = torch.ones(len(points), 1, device=device)
 
     return points, scales, opacities
+
+
+def _sample_structure_from_mask(
+    points_normalized: Tensor,
+    mask_volume: Tensor,
+    mask_threshold: float,
+    sigma_pre: float,
+) -> Tuple[Tensor, Tensor]:
+    """Sample Hessian-based quaternions/vesselness directly from a mask volume."""
+    if mask_volume is None or mask_volume.numel() == 0:
+        empty = torch.zeros(
+            points_normalized.shape[0], 1, device=points_normalized.device
+        )
+        identity = torch.zeros(
+            points_normalized.shape[0], 4, device=points_normalized.device
+        )
+        identity[:, 0] = 1.0
+        return identity, empty
+
+    quat_field, vessel_field = build_structure_field(
+        mask_volume,
+        mask_threshold=mask_threshold,
+        sigma_pre=sigma_pre,
+    )
+    origin, spacing = default_origin_and_spacing(
+        mask_volume.shape, points_normalized.device
+    )
+    ijk = world_to_voxel(points_normalized, origin, spacing)
+    return sample_structure_field(quat_field, vessel_field, ijk)
+
 
 def transform_points_to_world(
     points: Tensor,
@@ -560,11 +593,17 @@ def initialize_gaussians(
         mask_path: Optional path to mask file
         **kwargs: Additional args for initialize_from_volume
     """
+    structure_mask_threshold = kwargs.pop("structure_mask_threshold", 0.1)
+    structure_sigma = kwargs.pop("structure_sigma", 1.0)
+    structure_min_vesselness = kwargs.pop("structure_min_vesselness", 0.2)
+    anisotropy_strength = kwargs.pop("anisotropy_strength", 1.5)
+
     # Get points in volume space
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     points, scales, opacities = initialize_from_volume(
         mask_path if mask_path else volume_path, n_points, device=device, **kwargs
     )
+    volume_points = points.clone()
 
     # Sample intensity values from the volume if available
     intensities = None
@@ -647,6 +686,8 @@ def initialize_gaussians(
     initial_rotations = None
     orientation_field = None
     fallback_count = 0
+    structure_quats: Optional[Tensor] = None
+    structure_vesselness: Optional[Tensor] = None
     if orientation_helper is not None:
         quats, fallback_count = orientation_helper.get_quat_for_points(points)
         initial_rotations = quats.detach()
@@ -655,12 +696,37 @@ def initialize_gaussians(
             f"Orientation initialized for {quats.shape[0]} points "
             f"(fallback {fallback_count})."
         )
+        structure_quats, structure_vesselness = (
+            orientation_helper.get_structure_for_points(points)
+        )
     else:
         identity = torch.zeros(points.shape[0], 4, device=points.device)
         identity[:, 0] = 1.0
         initial_rotations = random_quat_perturb(identity, deg=2.0)
         fallback_count = points.shape[0]
         print(f"Orientation initialized without field (fallback {fallback_count}).")
+        if mask_volume is not None:
+            structure_quats, structure_vesselness = _sample_structure_from_mask(
+                volume_points, mask_volume, structure_mask_threshold, structure_sigma
+            )
+
+    if structure_quats is not None and structure_vesselness is not None:
+        vessel_vals = structure_vesselness.squeeze(1)
+        active = vessel_vals >= structure_min_vesselness
+        if active.any():
+            vessel_strength = vessel_vals[active].clamp(0.0, 1.0).sqrt()
+            stretch = 1.0 + anisotropy_strength * vessel_strength
+            shrink = torch.clamp(1.0 / stretch, min=0.15)
+            scales_active = scales[active]
+            scales_active[:, 2] = scales_active[:, 2] * stretch
+            scales_active[:, 0] = scales_active[:, 0] * shrink
+            scales_active[:, 1] = scales_active[:, 1] * shrink
+            scales[active] = scales_active
+            initial_rotations[active] = structure_quats[active]
+            print(
+                f"Applied Hessian anisotropy to {active.sum().item()} seeds "
+                f"(threshold={structure_min_vesselness:.2f})."
+            )
 
     # Set up model parameters and feature tensors
     _setup_model_parameters(

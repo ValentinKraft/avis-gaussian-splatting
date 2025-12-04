@@ -20,7 +20,13 @@ import uuid
 from tqdm import tqdm
 from argparse import ArgumentParser, Namespace
 from typing import Optional
-from arguments import ModelParams, PipelineParams, OptimizationParams
+from arguments import (
+    ExportParams,
+    ModelParams,
+    OptimizationParams,
+    PipelineParams,
+    TrainingScriptParams,
+)
 from gaussian_splatting.utils.parameter_monitor import (
     ParameterMonitor,
     add_parameter_regularization_loss,
@@ -264,6 +270,12 @@ def training(
         loss_weight=loss_weight,
         intensity_update_interval=getattr(opt, "intensity_update_interval", 10),
     )
+    if hasattr(args, "structure_sigma"):
+        volume_supervisor.structure_sigma = float(args.structure_sigma)
+    if hasattr(args, "structure_mask_threshold"):
+        volume_supervisor.structure_mask_threshold = float(
+            args.structure_mask_threshold
+        )
 
     from gaussian_splatting.utils.volume_initializer import initialize_gaussians
 
@@ -297,6 +309,10 @@ def training(
         ),
         orientation_helper=volume_supervisor,
         mask_threshold=getattr(args, "init_mask_threshold", 0.01),
+        structure_mask_threshold=getattr(args, "structure_mask_threshold", 0.1),
+        structure_sigma=getattr(args, "structure_sigma", 1.0),
+        structure_min_vesselness=getattr(args, "structure_min_vesselness", 0.1),
+        anisotropy_strength=getattr(args, "anisotropy_strength", 2.25),
     )
 
     # Set spatial_lr_scale after volume initialization
@@ -823,35 +839,8 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-
-    # PLY saving options
-    ply_group = parser.add_argument_group("PLY Export Options")
-    ply_group.add_argument(
-        "--save_ply_every",
-        type=int,
-        default=1,
-        help="Save PLY file every N iterations (default: 1 = every iteration)",
-    )
-    ply_group.add_argument(
-        "--ply_output_prefix",
-        type=str,
-        default="gaussians",
-        help="Prefix for PLY filenames",
-    )
-
-    # Other arguments
-    parser.add_argument('--debug_from', type=int, default=-1)
-    parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--start_checkpoint", type=str, default=None)
-    parser.add_argument(
-        "--disable_mixed_precision",
-        action="store_true",
-        help="Disable mixed precision training",
-    )
+    xp = ExportParams(parser)
+    tsp = TrainingScriptParams(parser)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 

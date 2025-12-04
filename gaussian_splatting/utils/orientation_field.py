@@ -19,6 +19,39 @@ _DEBUG_ORIENTATION = os.environ.get("GS_ORIENTATION_DEBUG", "0") == "1"
 _ORIENTATION_DEBUG_STATE = {"points": 0, "fallbacks": 0, "calls": 0, "reported": False}
 
 
+def _axis_derivative_3d(
+    data_5d: Tensor,
+    axis: str,
+    order: int = 1,
+) -> Tensor:
+    """Apply centered finite differences along a chosen axis on a [1,1,D,H,W] tensor."""
+    if axis not in {"x", "y", "z"}:
+        raise ValueError("axis must be one of {'x','y','z'}")
+    if order not in {1, 2}:
+        raise ValueError("Only first or second derivatives are supported.")
+
+    if order == 1:
+        kernel_vals = torch.tensor(
+            [-0.5, 0.0, 0.5], device=data_5d.device, dtype=data_5d.dtype
+        )
+    else:
+        kernel_vals = torch.tensor(
+            [1.0, -2.0, 1.0], device=data_5d.device, dtype=data_5d.dtype
+        )
+
+    if axis == "x":
+        kernel = kernel_vals.view(1, 1, 1, 1, -1)
+        padding = (0, 0, kernel_vals.shape[0] // 2)
+    elif axis == "y":
+        kernel = kernel_vals.view(1, 1, 1, -1, 1)
+        padding = (0, kernel_vals.shape[0] // 2, 0)
+    else:  # z
+        kernel = kernel_vals.view(1, 1, -1, 1, 1)
+        padding = (kernel_vals.shape[0] // 2, 0, 0)
+
+    return F.conv3d(data_5d, kernel, padding=padding)
+
+
 def _normalize_index(idx: Tensor, size: int) -> Tensor:
     """Normalize voxel indices to [-1, 1] for grid_sample with align_corners=True."""
     if size <= 1:
@@ -68,6 +101,39 @@ def _separable_gaussian_blur3d(volume: Tensor, sigma: float) -> Tensor:
     return volume
 
 
+def _frames_from_directions(direction: Tensor, fallback: Tensor) -> Tensor:
+    """Build orthonormal frames whose third axis follows the supplied directions."""
+    if direction.numel() == 0:
+        return torch.empty(0, 3, 3, device=direction.device, dtype=direction.dtype)
+
+    ref_axis = torch.zeros_like(direction)
+    ref_axis[:, 2] = 1.0
+    close_to_z = direction[:, 2].abs() > 0.9
+    if close_to_z.any():
+        ref_axis[close_to_z] = torch.tensor(
+            [0.0, 1.0, 0.0], device=direction.device, dtype=direction.dtype
+        )
+
+    tangent = torch.cross(ref_axis, direction, dim=1)
+    tangent_norm = tangent.norm(dim=1, keepdim=True).clamp_min(_GRAD_EPS)
+    tangent = tangent / tangent_norm
+    bitangent = torch.cross(direction, tangent, dim=1)
+
+    rot = torch.stack([tangent, bitangent, direction], dim=2)
+    rot = torch.nan_to_num(rot, nan=0.0, posinf=0.0, neginf=0.0)
+
+    q, _ = torch.linalg.qr(rot)
+    det = torch.det(q)
+    neg = det < 0
+    if neg.any():
+        q[neg, :, 0] = -q[neg, :, 0]
+
+    if fallback.any():
+        q[fallback] = torch.eye(3, device=direction.device, dtype=direction.dtype)
+
+    return q
+
+
 def compute_gradient_field(
     volume: Tensor,
     sigma_pre: float = 1.5,
@@ -110,6 +176,154 @@ def compute_gradient_field(
     grad = torch.stack([gx, gy, gz], dim=-1)
     magnitude = torch.linalg.norm(grad, dim=-1)
     return grad.contiguous(), magnitude.contiguous()
+
+
+def compute_hessian_field(
+    volume: Tensor,
+    sigma_pre: float = 1.0,
+    sigma_post: float = 0.0,
+) -> Tensor:
+    """Return the Hessian matrix H(x) for every voxel in a scalar field."""
+    if volume.dim() != 3:
+        raise ValueError("Volume tensor must have shape [D, H, W].")
+
+    with torch.no_grad():
+        data = volume.unsqueeze(0).unsqueeze(0)
+        data = _separable_gaussian_blur3d(data, sigma_pre)
+
+        h_xx = _axis_derivative_3d(data, "x", order=2)
+        h_yy = _axis_derivative_3d(data, "y", order=2)
+        h_zz = _axis_derivative_3d(data, "z", order=2)
+        h_xy = _axis_derivative_3d(_axis_derivative_3d(data, "y"), "x")
+        h_xz = _axis_derivative_3d(_axis_derivative_3d(data, "z"), "x")
+        h_yz = _axis_derivative_3d(_axis_derivative_3d(data, "z"), "y")
+
+    if sigma_post > _DEFAULT_SIGMA_EPS:
+
+        def _smooth(comp: Tensor) -> Tensor:
+            return _separable_gaussian_blur3d(comp, sigma_post)
+
+        h_xx, h_yy, h_zz = _smooth(h_xx), _smooth(h_yy), _smooth(h_zz)
+        h_xy, h_xz, h_yz = _smooth(h_xy), _smooth(h_xz), _smooth(h_yz)
+
+    h_xx = h_xx.squeeze(0).squeeze(0)
+    h_yy = h_yy.squeeze(0).squeeze(0)
+    h_zz = h_zz.squeeze(0).squeeze(0)
+    h_xy = h_xy.squeeze(0).squeeze(0)
+    h_xz = h_xz.squeeze(0).squeeze(0)
+    h_yz = h_yz.squeeze(0).squeeze(0)
+
+    hessian = torch.stack(
+        [
+            torch.stack([h_xx, h_xy, h_xz], dim=-1),
+            torch.stack([h_xy, h_yy, h_yz], dim=-1),
+            torch.stack([h_xz, h_yz, h_zz], dim=-1),
+        ],
+        dim=-2,
+    )
+    return hessian.contiguous()
+
+
+def build_structure_field(
+    mask_volume: Tensor,
+    mask_threshold: float = 0.1,
+    sigma_pre: float = 1.0,
+    sigma_post: float = 0.0,
+    vesselness_eps: float = 1e-4,
+) -> Tuple[Tensor, Tensor]:
+    """Compute quaternion and vesselness fields from a mask using Hessian eigendecomposition."""
+    if mask_volume.dim() != 3:
+        raise ValueError("mask_volume must be [D, H, W].")
+
+    hessian = compute_hessian_field(
+        mask_volume, sigma_pre=sigma_pre, sigma_post=sigma_post
+    )
+    D, H, W = mask_volume.shape
+    hessian_flat = hessian.view(-1, 3, 3)
+
+    evals, evecs = torch.linalg.eigh(hessian_flat)
+    abs_vals = evals.abs()
+    order = torch.argsort(abs_vals, dim=-1)
+    order_expand = order.unsqueeze(1).expand(-1, 3, -1)
+    sorted_evals = torch.gather(evals, 1, order)
+    sorted_evecs = torch.gather(evecs, 2, order_expand)
+
+    direction = sorted_evecs[:, :, 0]
+    direction = torch.nan_to_num(direction, nan=0.0, posinf=0.0, neginf=0.0)
+    direction_norm = direction.norm(dim=1, keepdim=True).clamp_min(_GRAD_EPS)
+    direction = direction / direction_norm
+
+    lambda1 = sorted_evals[:, 0]
+    lambda2 = sorted_evals[:, 1]
+    lambda3 = sorted_evals[:, 2]
+    denom = lambda2.abs() + lambda3.abs() + 1e-6
+    vesselness = 1.0 - (lambda1.abs() / denom)
+    vesselness = vesselness.clamp(0.0, 1.0)
+
+    mask_flat = (mask_volume.reshape(-1) >= mask_threshold).float()
+    vesselness = vesselness * mask_flat
+    fallback = (vesselness < vesselness_eps) | (mask_flat <= 0.0)
+    direction[fallback] = torch.tensor(
+        [0.0, 0.0, 1.0], device=direction.device, dtype=direction.dtype
+    )
+
+    rot = _frames_from_directions(direction, fallback)
+    quats = rotmat_to_quat(rot).view(D, H, W, 4)
+    vessel_field = vesselness.view(D, H, W)
+    return quats.contiguous(), vessel_field.contiguous()
+
+
+def sample_structure_field(
+    quat_field: Tensor,
+    vesselness_field: Tensor,
+    ijk: Tensor,
+) -> Tuple[Tensor, Tensor]:
+    """Sample quaternion/vesselness fields at fractional voxel indices."""
+    if ijk.numel() == 0:
+        empty = torch.empty(0, 1, device=quat_field.device)
+        return torch.empty(0, 4, device=quat_field.device), empty
+
+    if quat_field.shape[:3] != vesselness_field.shape:
+        raise ValueError("Quaternion and vesselness grids must share spatial dims.")
+
+    D, H, W = quat_field.shape[:3]
+    grid = torch.stack(
+        [
+            _normalize_index(ijk[:, 0], D),
+            _normalize_index(ijk[:, 1], H),
+            _normalize_index(ijk[:, 2], W),
+        ],
+        dim=-1,
+    ).to(device=quat_field.device, dtype=quat_field.dtype)
+    grid = grid.view(1, -1, 1, 1, 3)
+
+    quat_field_5d = quat_field.permute(3, 0, 1, 2).unsqueeze(0)
+    vessel_field_5d = vesselness_field.unsqueeze(0).unsqueeze(0)
+
+    sampled_quat = (
+        F.grid_sample(
+            quat_field_5d,
+            grid,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=True,
+        )
+        .view(4, -1)
+        .t()
+    )
+    sampled_quat = sampled_quat / (
+        sampled_quat.norm(dim=1, keepdim=True).clamp_min(1e-8)
+    )
+
+    sampled_vessel = F.grid_sample(
+        vessel_field_5d,
+        grid,
+        mode="bilinear",
+        padding_mode="border",
+        align_corners=True,
+    ).view(-1, 1)
+
+    return sampled_quat.contiguous(), sampled_vessel.contiguous()
 
 
 def world_to_voxel(
@@ -251,39 +465,8 @@ def gather_rotation_from_gradient(
     safe_mag = mag.clamp_min(_GRAD_EPS)
     direction = grad / safe_mag.unsqueeze(1)
 
-    # Build orthonormal frame with gradient as primary axis
-    # Choose reference axis perpendicular to gradient
-    ref_axis = torch.zeros_like(direction)
-    ref_axis[:, 2] = 1.0  # Default: Z-axis
-
-    # Switch to Y-axis when gradient is nearly parallel to Z
-    close_to_z = direction[:, 2].abs() > 0.9
-    if close_to_z.any():
-        ref_axis[close_to_z] = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=dtype)
-
-    # Construct orthonormal basis via cross products
-    tangent = torch.cross(ref_axis, direction, dim=1)
-    tangent_norm = tangent.norm(dim=1, keepdim=True).clamp_min(_GRAD_EPS)
-    tangent = tangent / tangent_norm
-
-    bitangent = torch.cross(direction, tangent, dim=1)
-
-    # Stack into rotation matrix: columns are [tangent, bitangent, direction]
-    rot = torch.stack([tangent, bitangent, direction], dim=2)
-    rot = torch.nan_to_num(rot, nan=0.0, posinf=0.0, neginf=0.0)
-
-    # Ensure proper rotation matrix via QR decomposition
-    q, _ = torch.linalg.qr(rot)
-
-    # Fix reflections (ensure determinant = +1)
-    det = torch.det(q)
-    neg = det < 0
-    if neg.any():
-        q[neg, :, 0] = -q[neg, :, 0]
-
-    # Apply identity rotation for low-magnitude fallbacks
-    if fallback.any():
-        q[fallback] = torch.eye(3, device=device, dtype=dtype)
+    # Build orthonormal frames from gradient direction
+    q = _frames_from_directions(direction, fallback)
 
     # Debug logging - show actual magnitude statistics
     fallback_count = fallback.sum().item()

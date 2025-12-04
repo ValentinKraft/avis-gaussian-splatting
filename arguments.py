@@ -13,18 +13,73 @@ class GroupParams(SimpleNamespace):
 
 
 class ParamGroup:
-    """Tracks which flags belong to a parameter block so `.extract` can copy them."""
+    """Base helper that wires attributes into an ``ArgumentParser`` group.
 
-    def __init__(self) -> None:
+    This mirrors the behavior of the original ``arguments/__init__.py`` so older
+    code that expects shorthand flags (e.g. ``-m`` for ``--model_path``) keeps
+    working, while newer callsites can opt into the explicit registration-based
+    API via ``_register``.
+    """
+
+    def __init__(self, parser: ArgumentParser | None = None, name: str | None = None, fill_none: bool = False) -> None:  # type: ignore[override]
         self._fields: list[str] = []
 
+        if parser is not None and name is not None:
+            group = parser.add_argument_group(name)
+            for key, value in vars(self).items():
+                shorthand = False
+                if key.startswith("_"):
+                    shorthand = True
+                    key = key[1:]
+                arg_type = type(value)
+                default_val = value if not fill_none else None
+                if shorthand:
+                    if arg_type is bool:
+                        group.add_argument(
+                            "--" + key,
+                            "-" + key[0:1],
+                            default=default_val,
+                            action="store_true",
+                        )
+                    else:
+                        group.add_argument(
+                            "--" + key,
+                            "-" + key[0:1],
+                            default=default_val,
+                            type=arg_type,
+                        )
+                else:
+                    if arg_type is bool:
+                        group.add_argument(
+                            "--" + key, default=default_val, action="store_true"
+                        )
+                    else:
+                        group.add_argument(
+                            "--" + key, default=default_val, type=arg_type
+                        )
+
     def _register(self, name: str) -> None:
-        self._fields.append(name)
+        """Track a field for the newer explicit registration-style API."""
+        if name not in self._fields:
+            self._fields.append(name)
 
     def extract(self, args: Namespace) -> GroupParams:
+        """Populate a ``GroupParams`` view from an ``argparse.Namespace``."""
         params = GroupParams()
+
+        # Legacy behavior: copy anything that matches our attributes (with or
+        # without a leading underscore) so older training/render scripts that
+        # rely on ``arguments.GroupParams`` keep working.
+        for key, value in vars(args).items():
+            if key in vars(self) or ("_" + key) in vars(self):
+                setattr(params, key, value)
+
+        # New behavior: also ensure any explicitly registered fields are copied
+        # even if they do not correspond to pre-populated attributes.
         for field in self._fields:
-            setattr(params, field, getattr(args, field))
+            if hasattr(args, field):
+                setattr(params, field, getattr(args, field))
+
         return params
 
 
@@ -128,6 +183,38 @@ class ModelParams(ParamGroup):
         )
         self._register("init_mask_threshold")
 
+        core.add_argument(
+            "--structure_mask_threshold",
+            type=float,
+            default=0.1,
+            help="Mask cutoff applied when building the Hessian field used for vessel alignment.",
+        )
+        self._register("structure_mask_threshold")
+
+        core.add_argument(
+            "--structure_sigma",
+            type=float,
+            default=1.0,
+            help="Gaussian blur (voxels) applied before computing Hessians for vessel cues.",
+        )
+        self._register("structure_sigma")
+
+        core.add_argument(
+            "--structure_min_vesselness",
+            type=float,
+            default=0.1,
+            help="Minimum vesselness required before anisotropic stretching is applied.",
+        )
+        self._register("structure_min_vesselness")
+
+        core.add_argument(
+            "--anisotropy_strength",
+            type=float,
+            default=2.25,
+            help="Amount of stretch applied along vessel axes when Hessian cues are reliable.",
+        )
+        self._register("anisotropy_strength")
+
         legacy = parser.add_argument_group("Legacy RGB Inputs (kept for compatibility)")
 
         # COLMAP/SfM dataset directory.
@@ -212,6 +299,101 @@ class ModelParams(ParamGroup):
         params = super().extract(args)
         params.source_path = os.path.abspath(params.source_path)
         return params
+
+
+class ExportParams(ParamGroup):
+    """Controls related to periodic PLY exports during training."""
+
+    def __init__(self, parser: ArgumentParser) -> None:
+        super().__init__()
+        group = parser.add_argument_group("PLY Export Options")
+        group.add_argument(
+            "--save_ply_every",
+            type=int,
+            default=1,
+            help="Save a PLY snapshot every N iterations (1 = every iteration).",
+        )
+        self._register("save_ply_every")
+
+        group.add_argument(
+            "--ply_output_prefix",
+            type=str,
+            default="gaussians",
+            help="Filename prefix used for exported PLY files.",
+        )
+        self._register("ply_output_prefix")
+
+
+class TrainingScriptParams(ParamGroup):
+    """General-purpose knobs for debug/IO behavior of train.py."""
+
+    def __init__(self, parser: ArgumentParser) -> None:
+        super().__init__()
+        group = parser.add_argument_group("Training Script Controls")
+
+        group.add_argument(
+            "--debug_from",
+            type=int,
+            default=-1,
+            help="Iteration at which to enable verbose debugging output.",
+        )
+        self._register("debug_from")
+
+        group.add_argument(
+            "--detect_anomaly",
+            action="store_true",
+            help="Enable torch.autograd anomaly detection for debugging.",
+        )
+        self._register("detect_anomaly")
+
+        group.add_argument(
+            "--test_iterations",
+            nargs="+",
+            type=int,
+            default=[7_000, 30_000],
+            help="Iteration indices used for intermediate test renders.",
+        )
+        self._register("test_iterations")
+
+        group.add_argument(
+            "--save_iterations",
+            nargs="+",
+            type=int,
+            default=[7_000, 30_000],
+            help="Iteration indices at which checkpoints/PLYs are saved.",
+        )
+        self._register("save_iterations")
+
+        group.add_argument(
+            "--quiet",
+            action="store_true",
+            help="Silence non-critical logging (except progress bars).",
+        )
+        self._register("quiet")
+
+        group.add_argument(
+            "--checkpoint_iterations",
+            nargs="+",
+            type=int,
+            default=[],
+            help="Extra iteration ids where checkpoints are forced.",
+        )
+        self._register("checkpoint_iterations")
+
+        group.add_argument(
+            "--start_checkpoint",
+            type=str,
+            default=None,
+            help="Path to an existing checkpoint to warm-start training.",
+        )
+        self._register("start_checkpoint")
+
+        group.add_argument(
+            "--disable_mixed_precision",
+            action="store_true",
+            help="Run training entirely in FP32 instead of mixed precision.",
+        )
+        self._register("disable_mixed_precision")
 
 
 class OptimizationParams(ParamGroup):

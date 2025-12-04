@@ -91,3 +91,28 @@ post_date: 2025-02-15
 - Replaced the distance-weighted multinomial sampler with a uniform in-mask strategy plus jitter and robust fallbacks when thresholds remove everything.
 - Introduced a gentle grid-based deduplication quota (2³ voxel bins, 4 samples per cell) that preserves dense vessel coverage without exploding duplicates.
 
+## User Request Details – Hessian-Guided Initialization
+- Precompute Hessians for mask voxels (>= 0.1) to obtain vessel-aligned directions and anisotropy strengths.
+- Stretch initial Gaussians along the smallest-curvature eigenvector, shrinking the remaining axes in vessel-like regions.
+- Keep isotropic scales (unit fallback) where Hessians are missing or eigenvalues show no clear direction.
+
+## Action Plan – Hessian-Guided Initialization
+1. Build a compact `(quat, vesselness)` field by computing Hessians/eigenvectors for eligible voxels and binning eigenvalue ratios into anisotropy tiers.
+2. Store the field alongside existing orientation data so initialization can sample it per splat without extra per-point eigen math.
+3. Update the volume initializer to fetch `(quat, vesselness)` for each seed, combine with the existing distance-based base scale, and emit anisotropic scales/rotations when vesselness is high.
+4. Add CLI/config toggles (thresholds, anisotropy strengths) plus sanity logging/tests to ensure graceful fallback when data is missing.
+
+## Task Tracker – Hessian-Guided Initialization
+### Phase 1 – Structure Field Construction
+- [x] Implement Hessian computation & eigen-analysis on the mask volume, producing `(quat, vesselness)` tensors for voxels meeting the mask threshold. *(`orientation_field.build_structure_field` now emits quaternion/vesselness grids.)*
+- [x] Compress/store the field (possibly downsampled) and register it with the existing orientation helper for reuse during initialization. *(`VolumeSupervisor` caches the grids and exposes `get_structure_for_points` / `export_orientation_field`.)*
+
+### Phase 2 – Initializer Integration
+- [x] Extend `initialize_from_volume` / `initialize_gaussians` to sample the structure field per seed, fall back cleanly when data is absent, and combine it with the distance-derived base scale. *(`initialize_gaussians` now pops Hessian knobs, samples helper data, and stretches splats where vesselness is confident.)*
+- [x] Define anisotropy templates mapped from vesselness tiers; ensure rotations/scales obey existing constraints and defaults remain isotropic when the feature is disabled. *(Major axes stretch up to `1 + anisotropy_strength * vesselness` while orthogonal axes shrink with a 0.25 clamp, defaulting to isotropic when vesselness is low.)*
+
+### Phase 3 – Config & Validation
+- [x] Add user-facing knobs (threshold, anisotropy strength) and document defaults; thread them through CLI args to the initializer/orientation builder. *(`arguments.py` now exposes Hessian controls, `train.py` propagates them into `VolumeSupervisor` and the initializer, unlocking config coverage.)*
+- [x] Bump the default Hessian parameters (vesselness floor 0.1, anisotropy 2.25×) and remap the stretch to use `sqrt(vesselness)` so axial elongation is more perceptible out of the box.
+- [ ] Run a short training/initialization smoke test to verify vascular masks get elongated splats while organ masks stay round, then log observations here.
+

@@ -25,11 +25,13 @@ from gaussian_splatting.utils.intensity_sampler import (
     update_opacities,
 )
 from gaussian_splatting.utils.orientation_field import (
+    build_structure_field,
     compute_gradient_field,
     default_origin_and_spacing,
     gather_rotation_from_gradient,
     random_quat_perturb,
     rotmat_to_quat,
+    sample_structure_field,
     world_to_voxel,
 )
 
@@ -94,6 +96,10 @@ class VolumeSupervisor:
         self.orientation_perturb_deg = 2.0
         self._orientation_grad: Optional[Tensor] = None
         self._orientation_mag: Optional[Tensor] = None
+        self.structure_sigma = 1.0
+        self.structure_mask_threshold = 0.1
+        self._structure_quat: Optional[Tensor] = None
+        self._structure_vesselness: Optional[Tensor] = None
 
         # Coordinate mapping assumes volume space normalised to [0, 1]
         origin, spacing = default_origin_and_spacing(
@@ -295,6 +301,19 @@ class VolumeSupervisor:
                 f"(sigma_pre={self.orientation_sigma_grad}, sigma_post={self.orientation_sigma_tensor})"
             )
 
+    def _ensure_structure_field(self) -> None:
+        """Compute quaternion/vesselness fields when a mask is available."""
+        if self._structure_quat is not None or self.mask_volume is None:
+            return
+
+        quat_field, vessel_field = build_structure_field(
+            self.mask_volume,
+            mask_threshold=self.structure_mask_threshold,
+            sigma_pre=self.structure_sigma,
+        )
+        self._structure_quat = quat_field
+        self._structure_vesselness = vessel_field
+
     def get_quat_for_points(self, xyz_world: Tensor) -> Tuple[Tensor, int]:
         """Return orientation quaternions and fallback count for points."""
         if xyz_world.numel() == 0:
@@ -326,7 +345,8 @@ class VolumeSupervisor:
     def export_orientation_field(self) -> Dict[str, Tensor]:
         """Expose cached orientation data for reuse by the Gaussian model."""
         self._ensure_orientation_field()
-        return {
+        self._ensure_structure_field()
+        payload = {
             "gradient": self._orientation_grad,
             "magnitude": self._orientation_mag,
             "origin": self.volume_origin,
@@ -335,6 +355,29 @@ class VolumeSupervisor:
                 self.orientation_perturb_deg, device=self.device
             ),
         }
+
+        if self._structure_quat is not None and self._structure_vesselness is not None:
+            payload["structure_quat"] = self._structure_quat
+            payload["structure_vesselness"] = self._structure_vesselness
+        return payload
+
+    def get_structure_for_points(self, xyz_world: Tensor) -> Tuple[Tensor, Tensor]:
+        """Sample Hessian-based orientation quaternions and vesselness values at points."""
+        if xyz_world.numel() == 0:
+            empty = torch.empty(0, 1, device=self.device)
+            return torch.empty(0, 4, device=self.device), empty
+
+        self._ensure_structure_field()
+        if self._structure_quat is None or self._structure_vesselness is None:
+            empty = torch.zeros(xyz_world.shape[0], 1, device=self.device)
+            identity = torch.zeros(xyz_world.shape[0], 4, device=self.device)
+            identity[:, 0] = 1.0
+            return identity, empty
+
+        ijk = world_to_voxel(xyz_world, self.volume_origin, self.voxel_size)
+        return sample_structure_field(
+            self._structure_quat, self._structure_vesselness, ijk
+        )
 
     def compute_loss(
         self,

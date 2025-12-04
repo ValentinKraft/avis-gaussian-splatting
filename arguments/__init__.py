@@ -1,4 +1,3 @@
-#
 # Copyright (C) 2023, Inria
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
@@ -7,141 +6,59 @@
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
-#
 
-from argparse import ArgumentParser, Namespace
+"""Compatibility shim that forwards legacy imports to ``arguments.py``."""
+
+from __future__ import annotations
+
+from importlib import util
+from pathlib import Path
+from types import ModuleType
 import sys
-import os
 
-class GroupParams:
-    pass
+_UNIFIED_MODULE_NAME = "_arguments_unified_impl"
+_UNIFIED_SOURCE = Path(__file__).resolve().parent.parent / "arguments.py"
 
-class ParamGroup:
-    def __init__(self, parser: ArgumentParser, name : str, fill_none = False):
-        group = parser.add_argument_group(name)
-        for key, value in vars(self).items():
-            shorthand = False
-            if key.startswith("_"):
-                shorthand = True
-                key = key[1:]
-            t = type(value)
-            value = value if not fill_none else None 
-            if shorthand:
-                if t == bool:
-                    group.add_argument("--" + key, ("-" + key[0:1]), default=value, action="store_true")
-                else:
-                    group.add_argument("--" + key, ("-" + key[0:1]), default=value, type=t)
-            else:
-                if t == bool:
-                    group.add_argument("--" + key, default=value, action="store_true")
-                else:
-                    group.add_argument("--" + key, default=value, type=t)
 
-    def extract(self, args):
-        group = GroupParams()
-        for arg in vars(args).items():
-            if arg[0] in vars(self) or ("_" + arg[0]) in vars(self):
-                setattr(group, arg[0], arg[1])
-        return group
+def _load_unified_module() -> ModuleType:
+    """Load the root ``arguments.py`` once and cache it in ``sys.modules``."""
 
-class ModelParams(ParamGroup): 
-    def __init__(self, parser, sentinel=False):
-        self.sh_degree = 3
-        self._source_path = ""
-        self._model_path = ""
-        self._images = "images"
-        self._depths = ""
-        self._resolution = -1
-        self._white_background = False
-        self.train_test_exp = False
-        self.data_device = "cuda"
-        self.eval = False
-        super().__init__(parser, "Loading Parameters", sentinel)
+    if _UNIFIED_MODULE_NAME in sys.modules:
+        return sys.modules[_UNIFIED_MODULE_NAME]
 
-    def extract(self, args):
-        g = super().extract(args)
-        g.source_path = os.path.abspath(g.source_path)
-        return g
+    if not _UNIFIED_SOURCE.exists():
+        raise ImportError(f"Unified arguments module missing at {_UNIFIED_SOURCE}")
 
-class PipelineParams(ParamGroup):
-    def __init__(self, parser):
-        self.convert_SHs_python = False
-        self.compute_cov3D_python = False
-        self.debug = False
-        self.antialiasing = False
-        super().__init__(parser, "Pipeline Parameters")
+    spec = util.spec_from_file_location(_UNIFIED_MODULE_NAME, _UNIFIED_SOURCE)
+    if spec is None or spec.loader is None:
+        raise ImportError("Failed to create a module spec for unified arguments")
 
-class OptimizationParams(ParamGroup):
-    def __init__(self, parser):
-        self.iterations = 30_000
-        self.position_lr_init = 0.00016
-        self.position_lr_final = 0.0000016
-        self.position_lr_delay_mult = 0.01
-        self.position_lr_max_steps = 30_000
-        self.feature_lr = 0.0025
-        self.opacity_lr = 0.025
-        self.scaling_lr = 0.005
-        self.rotation_lr = 0.001
-        self.exposure_lr_init = 0.01
-        self.exposure_lr_final = 0.001
-        self.exposure_lr_delay_steps = 0
-        self.exposure_lr_delay_mult = 0.0
-        self.percent_dense = 0.01
-        self.lambda_dssim = 0.2
-        self.densification_interval = 100
-        self.opacity_reset_interval = 3000
-        self.densify_from_iter = 500
-        self.densify_until_iter = 15_000
-        self.densify_grad_threshold = 0.0002
-        self.depth_l1_weight_init = 1.0
-        self.depth_l1_weight_final = 0.01
-        self.random_background = False
-        self.optimizer_type = "default"
-        self.intensity_mode = "sampled"
-        self.intensity_update_interval = 10
-        self.intensity_color_divisor = 1.0
-        self.intensity_large_splat_threshold = 0.03
-        self.intensity_mean_cover_radius = 2.5
-        self.intensity_mean_cover_interval = 20
+    module = util.module_from_spec(spec)
+    loader = spec.loader
+    assert loader is not None
+    loader.exec_module(module)  # type: ignore[assignment]
+    sys.modules[_UNIFIED_MODULE_NAME] = module
+    return module
 
-        # Volume supervision parameters (volume-only training)
-        # Path to ground truth volume (CT, MRI, etc.)
-        self.volume_path = ""
-        # Loss settings for comparing rendered splats to the target volume
-        self.volume_loss_type = "dice"
-        self.volume_loss_weight = 1.0
-        # Target voxel grid shape (D, H, W) used for supervision
-        self.volume_shape = [64, 64, 64]
-        # Optional 4x4 world transform for the volume
-        self.volume_transform = ""
 
-        # Initialization from segmentation mask
-        # Path to segmentation/probability mask used to sample initial Gaussians
-        self.mask_path = ""
-        # Number of Gaussians sampled from the mask at initialization
-        self.init_n_points = 5000
-        # Standard deviation of positional noise applied to initial samples
-        self.position_noise = 0.01
-        super().__init__(parser, "Optimization Parameters")
+_unified = _load_unified_module()
 
-def get_combined_args(parser : ArgumentParser):
-    cmdlne_string = sys.argv[1:]
-    cfgfile_string = "Namespace()"
-    args_cmdline = parser.parse_args(cmdlne_string)
+GroupParams = _unified.GroupParams
+ParamGroup = _unified.ParamGroup
+ModelParams = _unified.ModelParams
+PipelineParams = _unified.PipelineParams
+OptimizationParams = _unified.OptimizationParams
+ExportParams = _unified.ExportParams
+TrainingScriptParams = _unified.TrainingScriptParams
+get_combined_args = _unified.get_combined_args
 
-    try:
-        cfgfilepath = os.path.join(args_cmdline.model_path, "cfg_args")
-        print("Looking for config file in", cfgfilepath)
-        with open(cfgfilepath) as cfg_file:
-            print("Config file found: {}".format(cfgfilepath))
-            cfgfile_string = cfg_file.read()
-    except TypeError:
-        print("Config file not found at")
-        pass
-    args_cfgfile = eval(cfgfile_string)
-
-    merged_dict = vars(args_cfgfile).copy()
-    for k,v in vars(args_cmdline).items():
-        if v != None:
-            merged_dict[k] = v
-    return Namespace(**merged_dict)
+__all__ = [
+    "GroupParams",
+    "ParamGroup",
+    "ModelParams",
+    "PipelineParams",
+    "OptimizationParams",
+    "ExportParams",
+    "TrainingScriptParams",
+    "get_combined_args",
+]
