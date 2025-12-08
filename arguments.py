@@ -775,15 +775,6 @@ class OptimizationParams(ParamGroup):
         )
         self._register("diversity_rotation_weight")
 
-        # Variance component weight for scale diversity.
-        diversity.add_argument(
-            "--diversity_scale_variance_weight",
-            type=float,
-            default=0.2,
-            help="Weight on the per-axis variance component of the scale loss.",
-        )
-        self._register("diversity_scale_variance_weight")
-
         # Range penalty weight for scale diversity.
         diversity.add_argument(
             "--diversity_scale_range_weight",

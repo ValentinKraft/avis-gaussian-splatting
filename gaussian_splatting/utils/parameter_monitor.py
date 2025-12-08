@@ -362,7 +362,6 @@ def add_parameter_regularization_loss(
     loss: torch.Tensor,
     scale_diversity_weight: float = 0.01,
     rotation_diversity_weight: float = 0.01,
-    scale_variance_weight: float = 0.005,
     scale_range_weight: float = 0.002,
     rotation_entropy_weight: float = 0.005,
     volume_gt: Optional[torch.Tensor] = None,
@@ -380,7 +379,6 @@ def add_parameter_regularization_loss(
         loss: Current loss value
         scale_diversity_weight: Weight for scale diversity across dimensions (orthogonality)
         rotation_diversity_weight: Weight for rotation deviation from identity (quaternion dispersion)
-        scale_variance_weight: Weight for encouraging scale variance across points
         scale_range_weight: Weight for pushing scales toward target range
         rotation_entropy_weight: Weight for encouraging diverse rotation distribution
         volume_gt: Optional ground truth volume for gradient-based alignment
@@ -409,16 +407,7 @@ def add_parameter_regularization_loss(
             modified_loss = modified_loss + orthogonality_loss
             loss_metrics["scale_orthogonality_loss"] = orthogonality_loss.item()
 
-            # 2. Variance Loss: Encourage variation between points' scales
-            # This creates diversity in the point cloud
-            scale_per_axis_var = torch.var(
-                scaling, dim=0
-            ).sum()  # Variance across points for each axis
-            variance_loss = -scale_per_axis_var * scale_variance_weight
-            modified_loss = modified_loss + variance_loss
-            loss_metrics["scale_variance_loss"] = variance_loss.item()
-
-            # 3. Target Scale Range Loss: Keep scales in reasonable range
+            # 2. Target Scale Range Loss: Keep scales in reasonable range
             # Prefer scales in range [0.01, 0.2] - values outside get penalized
             min_scale = 0.01
             max_scale = 0.2
@@ -428,7 +417,7 @@ def add_parameter_regularization_loss(
             modified_loss = modified_loss + range_loss
             loss_metrics["scale_range_loss"] = range_loss.item()
 
-            scale_total_contrib = orthogonality_loss + variance_loss + range_loss
+            scale_total_contrib = orthogonality_loss + range_loss
 
         loss_metrics["scale_total"] = scale_total_contrib.item()
 

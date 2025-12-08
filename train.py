@@ -356,9 +356,6 @@ def training(
     diversity_log_interval = max(1, getattr(opt, "diversity_log_interval", 25))
     diversity_scale_weight = getattr(opt, "diversity_scale_weight", 0.0)
     diversity_rotation_weight = getattr(opt, "diversity_rotation_weight", 0.0)
-    diversity_scale_variance_weight = getattr(
-        opt, "diversity_scale_variance_weight", 0.2
-    )
     diversity_scale_range_weight = getattr(
         opt, "diversity_scale_range_weight", 0.2
     )
@@ -473,7 +470,6 @@ def training(
                 loss=loss,
                 scale_diversity_weight=diversity_scale_weight,
                 rotation_diversity_weight=diversity_rotation_weight,
-                scale_variance_weight=diversity_scale_variance_weight,
                 scale_range_weight=diversity_scale_range_weight,
                 rotation_entropy_weight=diversity_rotation_entropy_weight,
                 target_range_weight=diversity_target_range_weight,

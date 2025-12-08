@@ -10,31 +10,28 @@ from typing import Optional, Dict, Tuple, Union, List
 
 class ScaleDiversityLoss(nn.Module):
     """
-    Loss to encourage diversity in scale parameters of 3D Gaussians.
-    Combines variance, orthogonality, and target range losses.
-    
+    Loss to encourage anisotropy and reasonable magnitudes for scales.
+
     Args:
-        variance_weight: Weight for variance loss term
         orthogonality_weight: Weight for orthogonality loss term
         target_range_weight: Weight for target range loss term
         target_min_scale: Minimum target scale value
         target_max_scale: Maximum target scale value
     """
+
     def __init__(
         self,
-        variance_weight: float = 0.01,
         orthogonality_weight: float = 0.01,
         target_range_weight: float = 0.005,
         target_min_scale: float = 0.001,
-        target_max_scale: float = 0.1
+        target_max_scale: float = 0.1,
     ):
         super().__init__()
-        self.variance_weight = variance_weight
         self.orthogonality_weight = orthogonality_weight
         self.target_range_weight = target_range_weight
         self.target_min_scale = target_min_scale
         self.target_max_scale = target_max_scale
-        
+
     def forward(self, scale_params: Tensor) -> Dict[str, Tensor]:
         """
         Compute scale diversity loss components.
@@ -46,11 +43,11 @@ class ScaleDiversityLoss(nn.Module):
             Dictionary of named loss components and values
         """
         losses = {}
-        
+
         # Ensure the scale_params are properly shaped
         if len(scale_params.shape) == 1:
             scale_params = scale_params.unsqueeze(-1)
-            
+
         if scale_params.shape[1] != 3:
             if len(scale_params.shape) == 1:
                 # Handle scalar scale parameters
@@ -59,35 +56,28 @@ class ScaleDiversityLoss(nn.Module):
             elif scale_params.shape[1] == 1:
                 # Handle (N, 1) format
                 scale_params = scale_params.repeat(1, 3)
-        
-        # 1. Variance Loss: Encourage variation across the three scale dimensions
-        # For each point, compute variance across its 3 scaling values
-        # We want to maximize variance, so we minimize negative variance
-        scale_var_per_point = torch.var(scale_params, dim=1)
-        variance_loss = -torch.mean(scale_var_per_point)
-        losses["variance"] = variance_loss * self.variance_weight
-        
-        # 2. Orthogonality Loss: Penalize if all three dimensions are similar
+
+        # 1. Orthogonality Loss: Penalize if all three dimensions are similar
         # Compute similarity between dimensions
         dim_sim_01 = torch.abs(scale_params[:, 0] - scale_params[:, 1])
         dim_sim_12 = torch.abs(scale_params[:, 1] - scale_params[:, 2])
         dim_sim_02 = torch.abs(scale_params[:, 0] - scale_params[:, 2])
-        
+
         # We want at least one dimension to be significantly different
         min_diff = torch.minimum(dim_sim_01, torch.minimum(dim_sim_12, dim_sim_02))
         orthogonality_loss = -torch.mean(min_diff)
         losses["orthogonality"] = orthogonality_loss * self.orthogonality_weight
-        
-        # 3. Target Range Loss: Push scales toward a desired range
+
+        # 2. Target Range Loss: Push scales toward a desired range
         # Compute distance from target range for each value
         below_min = torch.relu(self.target_min_scale - scale_params)
         above_max = torch.relu(scale_params - self.target_max_scale)
         range_loss = torch.mean(below_min + above_max)
         losses["target_range"] = range_loss * self.target_range_weight
-        
-        # 4. Total loss
-        losses["total"] = losses["variance"] + losses["orthogonality"] + losses["target_range"]
-        
+
+        # Total loss
+        losses["total"] = losses["orthogonality"] + losses["target_range"]
+
         return losses
 
 class RotationDiversityLoss(nn.Module):
@@ -188,29 +178,28 @@ class RotationDiversityLoss(nn.Module):
         
         return losses
 
+
 def compute_parameter_diversity_losses(
     model,
     volume_gradients: Optional[Tensor] = None,
     scale_diversity_weight: float = 0.01,
     rotation_diversity_weight: float = 0.01,
-    scale_variance_weight: float = 0.005,
     target_range_weight: float = 0.005,
     dispersion_weight: float = 0.01,
-    alignment_weight: float = 0.01
+    alignment_weight: float = 0.01,
 ) -> Dict[str, Tensor]:
     """
     Compute parameter diversity losses for a Gaussian model.
-    
+
     Args:
         model: GaussianModel instance
         volume_gradients: Optional volume gradients for rotation alignment
         scale_diversity_weight: Overall weight for scale diversity loss
         rotation_diversity_weight: Overall weight for rotation diversity loss
-        scale_variance_weight: Weight for encouraging variance in scale
         target_range_weight: Weight for target scale range
         dispersion_weight: Weight for quaternion dispersion
         alignment_weight: Weight for volume gradient alignment
-        
+
     Returns:
         Dictionary of loss components and values
     """
@@ -226,7 +215,6 @@ def compute_parameter_diversity_losses(
             losses["scale_total"] = torch.tensor(0.0, device=model.get_xyz.device)
         else:
             scale_loss = ScaleDiversityLoss(
-                variance_weight=scale_variance_weight,
                 orthogonality_weight=scale_diversity_weight / 2,
                 target_range_weight=target_range_weight,
             )(scaling)

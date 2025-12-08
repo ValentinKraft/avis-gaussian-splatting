@@ -159,7 +159,6 @@ def add_parameter_regularization_loss(
     loss: torch.Tensor = None,
     scale_diversity_weight: float = 0.01,
     rotation_diversity_weight: float = 0.01,
-    scale_variance_weight: float = 0.005,
     target_range_weight: float = 0.005,
     dispersion_weight: float = 0.01,
     alignment_weight: float = 0.01,
@@ -173,7 +172,6 @@ def add_parameter_regularization_loss(
         loss: Current loss value (if None, returns only regularization loss)
         scale_diversity_weight: Weight for scale diversity term
         rotation_diversity_weight: Weight for rotation diversity term
-        scale_variance_weight: Weight for encouraging variance in scale
         target_range_weight: Weight for target scale range
         dispersion_weight: Weight for quaternion dispersion
         alignment_weight: Weight for volume gradient alignment
@@ -199,10 +197,9 @@ def add_parameter_regularization_loss(
         volume_gradients=volume_gradients,
         scale_diversity_weight=scale_diversity_weight,
         rotation_diversity_weight=rotation_diversity_weight,
-        scale_variance_weight=scale_variance_weight,
         target_range_weight=target_range_weight,
         dispersion_weight=dispersion_weight,
-        alignment_weight=alignment_weight
+        alignment_weight=alignment_weight,
     )
 
     # Add to total loss
