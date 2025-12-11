@@ -761,8 +761,8 @@ class OptimizationParams(ParamGroup):
         diversity.add_argument(
             "--diversity_scale_weight",
             type=float,
-            default=0.03,
-            help="Overall strength of the scale diversity loss (slightly reduced).",
+            default=0.02,
+            help="Overall strength of the scale diversity loss (kept low to avoid overpowering the data term).",
         )
         self._register("diversity_scale_weight")
 
@@ -770,8 +770,8 @@ class OptimizationParams(ParamGroup):
         diversity.add_argument(
             "--diversity_rotation_weight",
             type=float,
-            default=0.03,
-            help="Overall strength of the rotation diversity loss (slightly reduced).",
+            default=0.02,
+            help="Overall strength of the rotation diversity loss (kept low for stability).",
         )
         self._register("diversity_rotation_weight")
 
@@ -779,8 +779,8 @@ class OptimizationParams(ParamGroup):
         diversity.add_argument(
             "--diversity_scale_range_weight",
             type=float,
-            default=0.2,
-            help="Penalty pushing scales toward a desired range.",
+            default=0.05,
+            help="Penalty pushing scales toward a desired range without dominating the loss.",
         )
         self._register("diversity_scale_range_weight")
 
@@ -788,8 +788,8 @@ class OptimizationParams(ParamGroup):
         diversity.add_argument(
             "--diversity_target_range_weight",
             type=float,
-            default=0.2,
-            help="Clamp weight reinforcing the preferred scale interval.",
+            default=0.05,
+            help="Clamp weight reinforcing the preferred scale interval with softer influence.",
         )
         self._register("diversity_target_range_weight")
 
@@ -797,8 +797,8 @@ class OptimizationParams(ParamGroup):
         diversity.add_argument(
             "--diversity_rotation_entropy_weight",
             type=float,
-            default=0.2,
-            help="Encourages diverse quaternion orientations.",
+            default=0.1,
+            help="Encourages diverse quaternion orientations without overwhelming gradients.",
         )
         self._register("diversity_rotation_entropy_weight")
 
@@ -806,8 +806,8 @@ class OptimizationParams(ParamGroup):
         diversity.add_argument(
             "--diversity_dispersion_weight",
             type=float,
-            default=0.2,
-            help="Penalizes quaternions collapsing toward identity.",
+            default=0.1,
+            help="Penalizes quaternions collapsing toward identity while staying gentle.",
         )
         self._register("diversity_dispersion_weight")
 

@@ -408,12 +408,13 @@ def add_parameter_regularization_loss(
             loss_metrics["scale_orthogonality_loss"] = orthogonality_loss.item()
 
             # 2. Target Scale Range Loss: Keep scales in reasonable range
-            # Prefer scales in range [0.01, 0.2] - values outside get penalized
+            # Prefer scales in range [0.01, 0.2] - values outside get penalized.
+            # Use mean penalties so the magnitude is independent of point count.
             min_scale = 0.01
             max_scale = 0.2
-            too_small = torch.relu(min_scale - scaling).sum()
-            too_large = torch.relu(scaling - max_scale).sum()
-            range_loss = (too_small + too_large) * scale_range_weight
+            too_small = torch.relu(min_scale - scaling)
+            too_large = torch.relu(scaling - max_scale)
+            range_loss = (too_small.mean() + too_large.mean()) * scale_range_weight
             modified_loss = modified_loss + range_loss
             loss_metrics["scale_range_loss"] = range_loss.item()
 
