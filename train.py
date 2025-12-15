@@ -13,6 +13,7 @@ import os
 import torch
 import sys
 import numpy as np
+from dataclasses import dataclass
 from scene.gaussian_model import GaussianModel
 from scene.volume_scene import VolumeScene
 from utils.general_utils import safe_state, get_expon_lr_func
@@ -36,6 +37,79 @@ from torch.cuda.amp import autocast, GradScaler
 
 
 MAX_POINTS_PER_ITER = 20000  # Upper bound of splats per forward pass to limit memory
+
+
+@dataclass
+class MedicalPresetState:
+    """Container describing how medical presets modify the training loop."""
+
+    mode: str
+    active: bool
+    diversity_enabled: bool
+    diagnostics_enabled: bool
+    densification_enabled: bool
+    scale_constraints_enabled: bool
+    init_points: int
+
+
+def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
+    """Apply organ/vessel presets and return the resulting state."""
+
+    mode = getattr(args, "medical_mode", "organ")
+    active = mode in ("organ", "vessel")
+    diversity_enabled = bool(getattr(args, "enable_diversity", False))
+    diagnostics_enabled = bool(getattr(args, "enable_diagnostics", False))
+    init_points = getattr(args, "init_n_points", 0)
+
+    state = MedicalPresetState(
+        mode=mode,
+        active=active,
+        diversity_enabled=diversity_enabled,
+        diagnostics_enabled=diagnostics_enabled,
+        densification_enabled=True,
+        scale_constraints_enabled=True,
+        init_points=init_points,
+    )
+
+    if not active:
+        return state
+
+    target_points = 8000 if mode == "organ" else 6000
+    if hasattr(args, "init_n_points") and args.init_n_points < target_points:
+        args.init_n_points = target_points
+    state.init_points = getattr(args, "init_n_points", target_points)
+
+    if not diversity_enabled:
+        opt.diversity_warmup_iterations = 0
+        opt.diversity_scale_weight = 0.0
+        opt.diversity_rotation_weight = 0.0
+        opt.diversity_scale_range_weight = 0.0
+        opt.diversity_target_range_weight = 0.0
+        opt.diversity_rotation_entropy_weight = 0.0
+        opt.diversity_dispersion_weight = 0.0
+        opt.diversity_alignment_weight = 0.0
+        state.scale_constraints_enabled = False
+        if hasattr(args, "scale_l2_weight"):
+            args.scale_l2_weight = 0.0
+        if hasattr(opt, "scale_l2_weight"):
+            opt.scale_l2_weight = 0.0
+    else:
+        state.scale_constraints_enabled = True
+
+    if mode == "organ":
+        state.densification_enabled = False
+        opt.densify_from_iter = max(opt.iterations + 1, opt.densify_from_iter)
+        opt.densify_until_iter = opt.iterations
+    else:
+        state.densification_enabled = True
+        opt.densification_interval = max(opt.densification_interval, 200)
+        opt.densify_grad_threshold = max(opt.densify_grad_threshold, 5e-4)
+        opt.densify_from_iter = max(opt.densify_from_iter, 400)
+        opt.densify_until_iter = min(
+            opt.densify_until_iter, opt.iterations, opt.densify_from_iter + 2000
+        )
+
+    return state
 
 def _select_active_indices(xyz: torch.Tensor) -> tuple[Optional[torch.Tensor], int]:
     """Return a random subset of point indices capped at MAX_POINTS_PER_ITER."""
@@ -236,15 +310,23 @@ def training(
         gaussians.max_position_displacement_scale,
     )
 
+    preset_state = _configure_medical_presets(args, opt)
+    diagnostics_enabled = preset_state.diagnostics_enabled
+    scale_constraints_enabled = (
+        preset_state.scale_constraints_enabled or not preset_state.active
+    )
+
     # Initialize parameter monitoring with increased log interval for better performance
-    parameter_monitor = ParameterMonitor(
-        args.model_path, log_interval=50
-    )  # Changed from default 10 to 50
+    parameter_monitor = (
+        ParameterMonitor(args.model_path, log_interval=50)
+        if diagnostics_enabled
+        else None
+    )
 
     # Initialize parameter update tracker
     from utils.parameter_update_tracking import ParameterUpdateTracker
 
-    update_tracker = ParameterUpdateTracker()
+    update_tracker = ParameterUpdateTracker() if diagnostics_enabled else None
 
     # Create scene for volume-based training
     scene = VolumeScene(args, gaussians)
@@ -368,7 +450,8 @@ def training(
     diversity_dispersion_weight = getattr(opt, "diversity_dispersion_weight", 0.2)
     diversity_alignment_weight = getattr(opt, "diversity_alignment_weight", 0.1)
     diversity_enabled = (
-        diversity_warmup_iters > 0
+        preset_state.diversity_enabled
+        and diversity_warmup_iters > 0
         and (diversity_scale_weight > 0 or diversity_rotation_weight > 0)
     )
 
@@ -448,11 +531,12 @@ def training(
             loss = vol_loss
 
             # Optional global scale L2 regularization to discourage oversized splats
-            if getattr(args, "scale_l2_weight", 0.0) > 0.0:
+            scale_l2_weight = getattr(args, "scale_l2_weight", 0.0)
+            if scale_constraints_enabled and scale_l2_weight > 0.0:
                 scales = gaussians.get_scaling
                 if scales.numel() > 0:
                     scale_norm = scales.norm(dim=1)
-                    scale_reg = scale_norm.mean() * float(args.scale_l2_weight)
+                    scale_reg = scale_norm.mean() * float(scale_l2_weight)
                     loss = loss + scale_reg
                     vol_metrics["scale_l2_reg"] = float(scale_reg.detach().item())
 
@@ -465,16 +549,23 @@ def training(
         # Apply diversity warmup regularization when requested
         if warmup_active:
             base_loss = loss
+            reg_scale_weight = diversity_scale_weight * 0.5
+            reg_rotation_weight = diversity_rotation_weight * 0.5
+            reg_scale_range_weight = diversity_scale_range_weight * 0.25
+            reg_target_range_weight = diversity_target_range_weight * 0.25
+            reg_entropy_weight = diversity_rotation_entropy_weight * 0.25
+            reg_dispersion_weight = diversity_dispersion_weight * 0.25
+            reg_alignment_weight = diversity_alignment_weight * 0.5
             loss, reg_metrics = add_parameter_regularization_loss(
                 model=gaussians,
                 loss=loss,
-                scale_diversity_weight=diversity_scale_weight,
-                rotation_diversity_weight=diversity_rotation_weight,
-                scale_range_weight=diversity_scale_range_weight,
-                rotation_entropy_weight=diversity_rotation_entropy_weight,
-                target_range_weight=diversity_target_range_weight,
-                dispersion_weight=diversity_dispersion_weight,
-                alignment_weight=diversity_alignment_weight,
+                scale_diversity_weight=reg_scale_weight,
+                rotation_diversity_weight=reg_rotation_weight,
+                scale_range_weight=reg_scale_range_weight,
+                rotation_entropy_weight=reg_entropy_weight,
+                target_range_weight=reg_target_range_weight,
+                dispersion_weight=reg_dispersion_weight,
+                alignment_weight=reg_alignment_weight,
                 volume_gradients=vol_gradients,
             )
             reg_loss_value = reg_metrics.get("total") if reg_metrics else None
@@ -498,37 +589,41 @@ def training(
                 )
 
         # Track parameter statistics for monitoring (only on every 50th iteration)
-        if iteration % 50 == 0:
-            new_stats = parameter_monitor.update(
-                iteration,
-                gaussians._xyz,
-                gaussians.get_scaling,
-                gaussians.get_rotation,
-                loss=loss.item(),
-                volume_loss=vol_loss.item() if vol_loss is not None else None,
-                reg_loss=reg_loss_value,
-            )
-            if new_stats:
-                param_stats.update(new_stats)
+        if diagnostics_enabled and parameter_monitor is not None:
+            if iteration % 50 == 0:
+                new_stats = parameter_monitor.update(
+                    iteration,
+                    gaussians._xyz,
+                    gaussians.get_scaling,
+                    gaussians.get_rotation,
+                    loss=loss.item(),
+                    volume_loss=vol_loss.item() if vol_loss is not None else None,
+                    reg_loss=reg_loss_value,
+                )
+                if new_stats:
+                    param_stats.update(new_stats)
 
         # Log volume metrics
         if tb_writer and iteration % 10 == 0:
             for name, value in vol_metrics.items():
                 tb_writer.add_scalar(f"volume/{name}", value, iteration)
 
-            tb_writer.add_scalar(
-                "diversity/scale_weight", diversity_scale_weight, iteration
-            )
-            tb_writer.add_scalar(
-                "diversity/rotation_weight", diversity_rotation_weight, iteration
-            )
-            if reg_loss_value is not None:
-                tb_writer.add_scalar("loss/regularization", reg_loss_value, iteration)
-                if reg_metrics:
-                    for metric_name, metric_value in reg_metrics.items():
-                        tb_writer.add_scalar(
-                            f"diversity/{metric_name}", metric_value, iteration
-                        )
+            if diagnostics_enabled:
+                tb_writer.add_scalar(
+                    "diversity/scale_weight", diversity_scale_weight, iteration
+                )
+                tb_writer.add_scalar(
+                    "diversity/rotation_weight", diversity_rotation_weight, iteration
+                )
+                if reg_loss_value is not None:
+                    tb_writer.add_scalar(
+                        "loss/regularization", reg_loss_value, iteration
+                    )
+                    if reg_metrics:
+                        for metric_name, metric_value in reg_metrics.items():
+                            tb_writer.add_scalar(
+                                f"diversity/{metric_name}", metric_value, iteration
+                            )
 
         # Make sure the loss requires gradients before calling backward
         if loss.requires_grad:
@@ -556,7 +651,8 @@ def training(
                 pre_xyz_mean = gaussians._xyz.mean().item()
                 pre_scaling_mean = gaussians._scaling.mean().item()
 
-            _log_gradient_snapshot(gaussians, iteration, interval=50)
+            if diagnostics_enabled:
+                _log_gradient_snapshot(gaussians, iteration, interval=50)
 
             # Clip gradients to prevent numerical instability
             if iteration > 1:
@@ -573,7 +669,7 @@ def training(
                 _log_gpu_memory("after_step", iteration, total_points, active_points)
 
             # Debug: Check if scaler skipped the step (happens when gradients are inf/nan)
-            if iteration <= 10 or iteration % 500 == 0:
+            if diagnostics_enabled and (iteration <= 10 or iteration % 500 == 0):
                 if use_amp:
                     scale = scaler.get_scale()
                     print(
@@ -603,14 +699,16 @@ def training(
             _log_learning_rates(gaussians, iteration)
 
             # Enforce maximum scaling constraint (2x initial size)
-            gaussians.enforce_scaling_constraint()
+            if scale_constraints_enabled:
+                gaussians.enforce_scaling_constraint()
             gaussians.enforce_position_displacement_constraint()
 
             # Adaptive density control for volume-based training
             with torch.no_grad():
                 # For volume-based training, use position gradients instead of viewspace gradients
                 if (
-                    iteration >= opt.densify_from_iter
+                    preset_state.densification_enabled
+                    and iteration >= opt.densify_from_iter
                     and iteration <= opt.densify_until_iter
                 ):
                     # Accumulate gradients for densification (every iteration during densification period)
@@ -650,7 +748,8 @@ def training(
                                 f"\n[ITER {iteration}] Densification: {gaussians._xyz.shape[1]} points"
                             )
 
-            _log_gradient_snapshot(gaussians, iteration, interval=50)
+            if diagnostics_enabled:
+                _log_gradient_snapshot(gaussians, iteration, interval=50)
 
             gaussians.optimizer.zero_grad(set_to_none=True)
 
@@ -708,35 +807,44 @@ def training(
                 )
                 tb_writer.add_scalar("model/points", gaussians._xyz.shape[1], iteration)
 
-                # Log parameter statistics
-                tb_writer.add_scalar("parameters/scaling_mean", scaling_mean, iteration)
-                tb_writer.add_scalar("parameters/scaling_std", scaling_std, iteration) 
-                tb_writer.add_scalar("parameters/rotation_magnitude", rotation_magnitude, iteration)
-
-                if xyz_grad_norm is not None:
-                    tb_writer.add_scalar("grads/xyz_norm", xyz_grad_norm, iteration)
-                if scaling_grad_norm is not None:
-                    tb_writer.add_scalar("grads/scaling_norm", scaling_grad_norm, iteration)
-                if rotation_grad_norm is not None:
+                if diagnostics_enabled:
                     tb_writer.add_scalar(
-                        "grads/rotation_norm", rotation_grad_norm, iteration
+                        "parameters/scaling_mean", scaling_mean, iteration
                     )
-                if scaling_lr is not None:
-                    tb_writer.add_scalar("lr/scaling", scaling_lr, iteration)
-
-                # Track parameter updates to verify optimization is working
-                update_metrics = update_tracker.update(gaussians)
-                for name, value in update_metrics.items():
-                    tb_writer.add_scalar(f"updates/{name}", value, iteration)
-
-                # Log parameter update metrics to the console periodically
-                if iteration % 100 == 0:
-                    xyz_delta = update_metrics.get("xyz_delta_avg", 0)
-                    scale_delta = update_metrics.get("scaling_delta_avg", 0)
-                    rot_delta = update_metrics.get("rotation_delta_avg", 0)
-                    print(
-                        f"\n[ITER {iteration}] Parameter updates - XYZ: {xyz_delta:.5f}, Scale: {scale_delta:.5f}, Rot: {rot_delta:.5f}"
+                    tb_writer.add_scalar(
+                        "parameters/scaling_std", scaling_std, iteration
                     )
+                    tb_writer.add_scalar(
+                        "parameters/rotation_magnitude", rotation_magnitude, iteration
+                    )
+
+                    if xyz_grad_norm is not None:
+                        tb_writer.add_scalar("grads/xyz_norm", xyz_grad_norm, iteration)
+                    if scaling_grad_norm is not None:
+                        tb_writer.add_scalar(
+                            "grads/scaling_norm", scaling_grad_norm, iteration
+                        )
+                    if rotation_grad_norm is not None:
+                        tb_writer.add_scalar(
+                            "grads/rotation_norm", rotation_grad_norm, iteration
+                        )
+                    if scaling_lr is not None:
+                        tb_writer.add_scalar("lr/scaling", scaling_lr, iteration)
+
+                    if update_tracker is not None:
+                        update_metrics = update_tracker.update(gaussians)
+                        for name, value in update_metrics.items():
+                            tb_writer.add_scalar(
+                                f"updates/{name}", value, iteration
+                            )
+
+                        if iteration % 100 == 0:
+                            xyz_delta = update_metrics.get("xyz_delta_avg", 0)
+                            scale_delta = update_metrics.get("scaling_delta_avg", 0)
+                            rot_delta = update_metrics.get("rotation_delta_avg", 0)
+                            print(
+                                f"\n[ITER {iteration}] Parameter updates - XYZ: {xyz_delta:.5f}, Scale: {scale_delta:.5f}, Rot: {rot_delta:.5f}"
+                            )
 
             # Save PLY file at specified iterations
             save_ply_every = (
@@ -778,17 +886,20 @@ def training(
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
             # Generate parameter report on last iteration
-            if iteration == opt.iterations:
-                # Force a final parameter update for the report
-                final_stats = parameter_monitor.update(
+            if (
+                diagnostics_enabled
+                and parameter_monitor is not None
+                and iteration == opt.iterations
+            ):
+                parameter_monitor.update(
                     iteration,
                     gaussians._xyz,
                     gaussians.get_scaling,
                     gaussians.get_rotation,
-                    force=True,  # Force update regardless of log interval
+                    force=True,
                     loss=loss.item(),
                     volume_loss=vol_loss.item() if vol_loss is not None else None,
-                    reg_loss=None  # No regularization loss yet
+                    reg_loss=None,
                 )
                 parameter_monitor.final_report()
                 print(

@@ -38,29 +38,32 @@ python train.py \
 - `--save_ply_every`: Save PLY file every N iterations (default: 1)
 - `--ply_output_prefix`: Prefix for PLY filenames (default: "gaussians")
 
+#### Medical Presets
+- `--medical_mode {organ,vessel}`: Applies a simplified preset for smooth medical volumes. `organ` (default) boosts initial point counts and disables densification, while `vessel` keeps a gentle densification window tailored to thin structures.
+- `--enable_diversity`: Re-enables the diversity warmup, scale constraints, and related regularizers when you need advanced control beyond the preset.
+- `--enable_diagnostics`: Restores verbose monitoring (parameter plots, gradient norms, TensorBoard scalars) for deep debugging runs.
+
 ## Examples
 
-### Training with 10,000 points from a CT scan
+### Organ preset (default)
 ```bash
 python train.py \
   --model_path output/ct-scan \
   --mask_path data/vessel-mask.nii.gz \
   --volume_path data/ct-volume.nii.gz \
-  --init_n_points 10000 \
-  --save_ply_every 10 \
-  --iterations 5000
+  --medical_mode organ \
+  --iterations 4000
 ```
 
-### Using MSE loss with 2000 points
+### Vessel preset with diagnostics enabled
 ```bash
 python train.py \
   --model_path output/mri-scan \
   --mask_path data/brain-mask.nii.gz \
   --volume_path data/mri-volume.nii.gz \
-  --volume_loss_type mse \
-  --init_n_points 2000 \
-  --save_ply_every 100 \
-  --iterations 10000
+  --medical_mode vessel \
+  --enable_diagnostics \
+  --iterations 6000
 ```
 
 ## Visualization

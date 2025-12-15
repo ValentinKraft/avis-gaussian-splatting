@@ -194,7 +194,7 @@ class ModelParams(ParamGroup):
         core.add_argument(
             "--structure_sigma",
             type=float,
-            default=1.0,
+            default=1.5,
             help="Gaussian blur (voxels) applied before computing Hessians for vessel cues.",
         )
         self._register("structure_sigma")
@@ -202,7 +202,7 @@ class ModelParams(ParamGroup):
         core.add_argument(
             "--structure_min_vesselness",
             type=float,
-            default=0.1,
+            default=0.35,
             help="Minimum vesselness required before anisotropic stretching is applied.",
         )
         self._register("structure_min_vesselness")
@@ -210,7 +210,7 @@ class ModelParams(ParamGroup):
         core.add_argument(
             "--anisotropy_strength",
             type=float,
-            default=2.25,
+            default=4.0,
             help="Amount of stretch applied along vessel axes when Hessian cues are reliable.",
         )
         self._register("anisotropy_strength")
@@ -394,6 +394,29 @@ class TrainingScriptParams(ParamGroup):
             help="Run training entirely in FP32 instead of mixed precision.",
         )
         self._register("disable_mixed_precision")
+
+        group.add_argument(
+            "--medical_mode",
+            type=str,
+            choices=["organ", "vessel"],
+            default="organ",
+            help="Applies a simplified preset for medical volumes: organ (default) or vessel.",
+        )
+        self._register("medical_mode")
+
+        group.add_argument(
+            "--enable_diversity",
+            action="store_true",
+            help="Opt back into diversity regularizers and scale constraints when using medical presets.",
+        )
+        self._register("enable_diversity")
+
+        group.add_argument(
+            "--enable_diagnostics",
+            action="store_true",
+            help="Enable verbose monitoring (parameter stats, gradient norms, detailed TensorBoard logs).",
+        )
+        self._register("enable_diagnostics")
 
 
 class OptimizationParams(ParamGroup):
@@ -687,7 +710,7 @@ class OptimizationParams(ParamGroup):
         constraint.add_argument(
             "--scale_l2_weight",
             type=float,
-            default=0.005,
+            default=0.03,
             help="Weight for the L2 penalty applied to physical Gaussian scales.",
         )
         self._register("scale_l2_weight")
@@ -696,7 +719,7 @@ class OptimizationParams(ParamGroup):
         constraint.add_argument(
             "--max_scale_factor",
             type=float,
-            default=2.5,
+            default=1.5,
             help="Cap on how much a Gaussian scale may grow vs. initialization (slightly tighter to avoid oversized splats).",
         )
         self._register("max_scale_factor")
@@ -723,7 +746,7 @@ class OptimizationParams(ParamGroup):
         constraint.add_argument(
             "--position_displacement_scale",
             type=float,
-            default=1.8,
+            default=1.1,
             help="Multiplier on the max-axis scale limiting splat displacement from its spawn point (slightly tighter to reduce long tails).",
         )
         self._register("position_displacement_scale")
@@ -743,7 +766,7 @@ class OptimizationParams(ParamGroup):
         diversity.add_argument(
             "--diversity_warmup_iterations",
             type=int,
-            default=1000,
+            default=1500,
             help="Iterations to keep diversity losses enabled (shorter warmup for smoother shapes).",
         )
         self._register("diversity_warmup_iterations")

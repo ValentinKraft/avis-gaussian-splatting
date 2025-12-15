@@ -21,10 +21,10 @@ class ScaleDiversityLoss(nn.Module):
 
     def __init__(
         self,
-        orthogonality_weight: float = 0.01,
-        target_range_weight: float = 0.005,
-        target_min_scale: float = 0.001,
-        target_max_scale: float = 0.1,
+        orthogonality_weight: float = 0.002,
+        target_range_weight: float = 0.001,
+        target_min_scale: float = 0.0025,
+        target_max_scale: float = 0.06,
     ):
         super().__init__()
         self.orthogonality_weight = orthogonality_weight
@@ -92,9 +92,9 @@ class RotationDiversityLoss(nn.Module):
     """
     def __init__(
         self,
-        dispersion_weight: float = 0.01,
-        entropy_weight: float = 0.005,
-        alignment_weight: float = 0.01
+        dispersion_weight: float = 0.002,
+        entropy_weight: float = 0.0015,
+        alignment_weight: float = 0.005
     ):
         super().__init__()
         self.dispersion_weight = dispersion_weight

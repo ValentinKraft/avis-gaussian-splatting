@@ -2,11 +2,14 @@
 Test script to verify densification and parameter updates work correctly.
 """
 
+import argparse
+
+import pytest
 import torch
 import torch.nn as nn
-from scene.gaussian_model import GaussianModel
+
 from arguments import OptimizationParams
-import argparse
+from scene.gaussian_model import GaussianModel
 
 
 def test_densification_and_updates():
@@ -18,7 +21,9 @@ def test_densification_and_updates():
     
     # Create model and opt params
     parser = argparse.ArgumentParser()
-    opt = OptimizationParams(parser)
+    opt_group = OptimizationParams(parser)
+    parsed_args = parser.parse_args([])
+    opt = opt_group.extract(parsed_args)
     
     print(f"\n✓ Optimization Parameters:")
     print(f"  Position LR init:         {opt.position_lr_init}")
@@ -53,6 +58,8 @@ def test_densification_and_updates():
     # Initialize features (simple grayscale)
     model._features_dc = nn.Parameter(torch.zeros(n_points, 1, 3, device=device))
     model._features_rest = nn.Parameter(torch.zeros(n_points, 0, 3, device=device))
+    model.intensities = torch.zeros(n_points, 1, device=device)
+    model.opacities = torch.zeros(n_points, 1, device=device)
     
     # Set spatial_lr_scale
     model.spatial_lr_scale = 1.0
@@ -111,8 +118,7 @@ def test_densification_and_updates():
     if xyz_delta > 1e-10 and scaling_delta > 1e-10 and rotation_delta > 1e-10:
         print(f"\n✅ SUCCESS: All parameters updated!")
     else:
-        print(f"\n❌ WARNING: Some parameters did not update significantly!")
-        return False
+        pytest.fail("Optimizer step did not update all parameter groups")
     
     # Test densification
     print(f"\n✓ Testing densification...")
@@ -160,8 +166,7 @@ def test_densification_and_updates():
     if max_violations == 0:
         print(f"  ✅ Scaling constraint enforced correctly (max {model.max_scale_factor}x initial)")
     else:
-        print(f"  ❌ Scaling constraint violated for {max_violations} points!")
-        return False
+        pytest.fail(f"Scaling constraint violated for {max_violations} points")
     
     print("\n" + "=" * 70)
     print("All tests passed! ✅")
@@ -173,9 +178,8 @@ def test_densification_and_updates():
     print("  • Scaling constraint (2x max) is enforced")
     print("\n✅ Implementation is ready for training!")
     
-    return True
+    return None
 
 
 if __name__ == "__main__":
-    success = test_densification_and_updates()
-    exit(0 if success else 1)
+    test_densification_and_updates()

@@ -86,6 +86,43 @@ class TestParameterDiversityLoss(unittest.TestCase):
         # Check that alignment loss is non-zero
         self.assertGreater(abs(losses["alignment"].item()), 0)
 
+    def test_diversity_losses_are_finite_with_active_weights(self):
+        """Diversity helper returns finite totals when weights are enabled."""
+
+        class DummyModel:
+            """Minimal stand-in exposing the tensors accessed by the helper."""
+
+            def __init__(self) -> None:
+                self._scaling = torch.nn.Parameter(torch.full((10, 3), 0.005))
+                rotations = torch.randn(10, 4)
+                rotations = torch.nn.functional.normalize(rotations, dim=1)
+                self._rotation = torch.nn.Parameter(rotations)
+                self._xyz = torch.zeros(3, 10)
+
+            @property
+            def get_scaling(self) -> torch.Tensor:
+                return self._scaling
+
+            @property
+            def get_rotation(self) -> torch.Tensor:
+                return self._rotation
+
+            @property
+            def get_xyz(self) -> torch.Tensor:
+                return self._xyz
+
+        model = DummyModel()
+        gradients = torch.randn(10, 3)
+
+        losses = compute_parameter_diversity_losses(
+            model=model,
+            volume_gradients=gradients,
+            scale_diversity_weight=0.01,
+            rotation_diversity_weight=0.01,
+        )
+
+        self.assertTrue(torch.isfinite(losses["total"]))
+
 
 if __name__ == "__main__":
     unittest.main()
