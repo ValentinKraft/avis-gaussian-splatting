@@ -72,9 +72,21 @@ class VolumeSupervisor:
         self.loss_weight = loss_weight
         self.verbose = bool(verbose)
 
+        # Training is defined to be mask-driven; without a mask the objective is
+        # ill-posed for the intended medical workflows.
+        if not mask_path:
+            raise ValueError(
+                "mask_path is required for volume supervision (training without a mask is not supported)."
+            )
+
+        # Loss masking: only voxels above a small fraction of the mask max
+        # contribute to the supervision objective.
+        self.mask_loss_threshold_rel = 0.01
+
         # Initialize volume loader and loss
         self.loader = VolumeLoader(volume_shape, device)
-        self.criterion = VolumeLoss(loss_type, loss_weight)
+        # Apply loss_weight once in compute_loss for clarity.
+        self.criterion = VolumeLoss(loss_type, 1.0)
 
         # Load ground truth volume
         self.volume_gt = self.loader.load_volume(volume_path)
@@ -108,15 +120,13 @@ class VolumeSupervisor:
         self.volume_origin = origin
         self.voxel_size = spacing
 
-        # Load mask volume if provided
-        self.mask_volume = None
-        if mask_path:
-            self.mask_volume = self.loader.load_volume(mask_path)
-            if self.verbose:
-                print(
-                    "Loaded mask volume with range "
-                    f"[{self.mask_volume.min().item():.4f}, {self.mask_volume.max().item():.4f}]"
-                )
+        # Load mask volume (required)
+        self.mask_volume = self.loader.load_volume(mask_path)
+        if self.verbose:
+            print(
+                "Loaded mask volume with range "
+                f"[{self.mask_volume.min().item():.4f}, {self.mask_volume.max().item():.4f}]"
+            )
 
         # Initialize metrics tracking
         self.metrics = {
@@ -650,9 +660,30 @@ class VolumeSupervisor:
         # Store predicted volume for visualization (use clone to avoid breaking gradient chain)
         self.volume_pred = volume_pred.detach().clone()
 
-        # Compute loss - make sure both tensors are on the same device
+        # Compute loss only inside the mask.
         self.volume_gt = self.volume_gt.to(volume_pred.device)
-        loss = self.criterion(volume_pred, self.volume_gt)
+        mask = self.mask_volume.to(volume_pred.device)
+        with torch.no_grad():
+            mask_max = float(mask.max().item())
+            thr = float(self.mask_loss_threshold_rel) * mask_max
+        mask_bool = mask > thr
+        if not mask_bool.any():
+            raise RuntimeError(
+                "Mask thresholding produced an empty region. "
+                f"mask_max={mask_max:.6f}, rel_thr={self.mask_loss_threshold_rel:.6f}"
+            )
+
+        if self.criterion.loss_type == "mse":
+            pred_vals = volume_pred[mask_bool]
+            tgt_vals = self.volume_gt[mask_bool]
+            diff = pred_vals - tgt_vals
+            loss = (diff * diff).mean()
+        else:
+            # For non-MSE objectives, masking by zeroing outside-mask voxels
+            # restricts the loss support to the ROI.
+            masked_pred = volume_pred * mask_bool.to(dtype=volume_pred.dtype)
+            masked_tgt = self.volume_gt * mask_bool.to(dtype=self.volume_gt.dtype)
+            loss = self.criterion(masked_pred, masked_tgt)
 
         if (
             active_idx is not None
