@@ -685,14 +685,7 @@ class VolumeSupervisor:
             masked_tgt = self.volume_gt * mask_bool.to(dtype=self.volume_gt.dtype)
             loss = self.criterion(masked_pred, masked_tgt)
 
-        if (
-            active_idx is not None
-            and self.criterion.loss_type == "mse"
-            and total_points is not None
-            and active_idx.numel() > 0
-            and total_points > active_idx.numel()
-        ):
-            loss = loss * (total_points / active_idx.numel())
+        unweighted_loss = loss
 
         # Scale loss by weight
         if self.loss_weight != 1.0:
@@ -711,10 +704,11 @@ class VolumeSupervisor:
 
         # Update metrics
         with torch.no_grad():
-            self.metrics['volume_loss'] = loss.item()
+            self.metrics["volume_loss"] = float(loss.item())
+            self.metrics["volume_loss_unweighted"] = float(unweighted_loss.item())
             if self.criterion.loss_type == 'dice':
-                dice_score = 1 - loss.item()
-                self.metrics['dice_score'] = dice_score
+                dice_score = 1.0 - float(unweighted_loss.item())
+                self.metrics["dice_score"] = float(dice_score)
 
         # Return both loss and volume gradients for parameter diversity losses
         return loss, self.metrics.copy(), volume_grads

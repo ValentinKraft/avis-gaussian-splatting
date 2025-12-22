@@ -726,12 +726,9 @@ def training(
 
                     # Perform densification and pruning at intervals
                     if iteration % opt.densification_interval == 0:
-                        # Get scene extent (use a default if not available)
-                        extent = (
-                            dataset.cameras_extent
-                            if hasattr(dataset, "cameras_extent")
-                            else 1.0
-                        )
+                        # Volume-only training uses normalized [0,1]^3 coordinates.
+                        # Keep densification heuristics in the same normalized scale.
+                        extent = 1.0
 
                         # Perform densification and pruning
                         gaussians.densify_and_prune(

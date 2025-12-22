@@ -353,9 +353,9 @@ def splat_to_volume(
                 # More efficient batch processing for rotation
                 diff_local = torch.zeros_like(diff)
                 # Process larger batches (but not too large to avoid memory issues)
-                batch_size = min(20, Bcur)  # Process 20 points at a time max
-                for b_start in range(0, Bcur, batch_size):
-                    b_end = min(b_start + batch_size, Bcur)
+                rot_batch = min(20, Bcur)  # Process 20 points at a time max
+                for b_start in range(0, Bcur, rot_batch):
+                    b_end = min(b_start + rot_batch, Bcur)
 
                     # Get batch of differences and rotation matrices
                     batch_diff = diff[:, b_start:b_end, :]  # (Cg, batch_size, 3)
