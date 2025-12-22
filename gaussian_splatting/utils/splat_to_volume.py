@@ -9,7 +9,12 @@ from gaussian_splatting.utils.orientation_field import default_origin_and_spacin
 # NOTE: Refactored to (1) minimize Python loops, (2) actually use rotation by
 # constructing covariances, and (3) avoid reallocation / unnecessary empty_cache calls.
 
-def create_grid_points(volume_shape: Tuple[int, int, int], device: torch.device) -> Tensor:
+
+def create_grid_points(
+    volume_shape: Tuple[int, int, int],
+    device: torch.device,
+    grid_bounds: Optional[Tuple[Tensor, Tensor]] = None,
+) -> Tensor:
     """
     Create a grid of 3D points for volume rendering.
     
@@ -21,17 +26,26 @@ def create_grid_points(volume_shape: Tuple[int, int, int], device: torch.device)
         Grid points tensor (D, H, W, 3)
     """
     D, H, W = volume_shape
-    
-    # Create normalized coordinate grid
-    z = torch.linspace(0, 1, D, device=device)
-    y = torch.linspace(0, 1, H, device=device)
-    x = torch.linspace(0, 1, W, device=device)
-    
+
+    if grid_bounds is None:
+        bounds_min = torch.tensor([0.0, 0.0, 0.0], device=device)
+        bounds_max = torch.tensor([1.0, 1.0, 1.0], device=device)
+    else:
+        bounds_min, bounds_max = grid_bounds
+        bounds_min = bounds_min.to(device=device, dtype=torch.float32)
+        bounds_max = bounds_max.to(device=device, dtype=torch.float32)
+
+    # Create normalized coordinate grid for the requested bounds.
+    z = torch.linspace(float(bounds_min[2]), float(bounds_max[2]), D, device=device)
+    y = torch.linspace(float(bounds_min[1]), float(bounds_max[1]), H, device=device)
+    x = torch.linspace(float(bounds_min[0]), float(bounds_max[0]), W, device=device)
+
     # Create meshgrid
     grid_z, grid_y, grid_x = torch.meshgrid(z, y, x, indexing='ij')
-    
+
     # Stack coordinates
     return torch.stack([grid_x, grid_y, grid_z], dim=-1)
+
 
 def gaussian_kernel_3d(
     points: Tensor,
@@ -119,6 +133,7 @@ def splat_to_volume(
     batch_size: int = 50,  # Process points in batches to save memory
     device: Optional[torch.device] = None,
     active_idx: Optional[Tensor] = None,
+    grid_bounds: Optional[Tuple[Tensor, Tensor]] = None,
 ) -> Tensor:
     """
     Convert 3D Gaussian splats to a volumetric representation.
@@ -194,7 +209,9 @@ def splat_to_volume(
     # Avoid verbose printing here for performance
 
     # Create volume grid - these don't need gradients
-    grid_points = create_grid_points(volume_shape, device).to(accum_dtype)
+    grid_points = create_grid_points(volume_shape, device, grid_bounds=grid_bounds).to(
+        accum_dtype
+    )
 
     # Allocate final volume (grad will flow through ops populating it)
     volume = torch.zeros(volume_shape, device=device, dtype=accum_dtype)
@@ -208,7 +225,9 @@ def splat_to_volume(
         # Create a smaller working grid for initial calculations
         small_shape = tuple(max(16, d // 2) for d in volume_shape)
         # Only create the grid once and reuse it
-        small_grid_points = create_grid_points(small_shape, device).to(accum_dtype)
+        small_grid_points = create_grid_points(
+            small_shape, device, grid_bounds=grid_bounds
+        ).to(accum_dtype)
         # We'll upsample back to full resolution at the end
     else:
         small_shape = volume_shape
@@ -218,7 +237,24 @@ def splat_to_volume(
     small_volume = torch.zeros(small_shape, device=device, dtype=accum_dtype)
     weight_volume = torch.zeros_like(small_volume)
 
-    voxel_spacing = default_origin_and_spacing(volume_shape, device)[1].to(accum_dtype)
+    # Compute the effective voxel spacing in normalized coordinates.
+    # When rendering a cropped ROI (grid_bounds not None), spacing is based on the
+    # ROI extent, not the full [0,1] cube.
+    if grid_bounds is None:
+        voxel_spacing = default_origin_and_spacing(volume_shape, device)[1].to(
+            accum_dtype
+        )
+    else:
+        bounds_min, bounds_max = grid_bounds
+        bounds_min = bounds_min.to(device=device, dtype=accum_dtype)
+        bounds_max = bounds_max.to(device=device, dtype=accum_dtype)
+        dims_xyz = torch.tensor(
+            [small_shape[2], small_shape[1], small_shape[0]],
+            device=device,
+            dtype=accum_dtype,
+        ).clamp_min(1)
+        denom = (dims_xyz - 1.0).clamp_min(1.0)
+        voxel_spacing = (bounds_max - bounds_min) / denom
     if small_shape == volume_shape:
         scale_ratio = torch.ones(3, device=device, dtype=points_n3.dtype)
     else:

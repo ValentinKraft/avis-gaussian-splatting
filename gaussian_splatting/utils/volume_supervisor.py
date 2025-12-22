@@ -630,39 +630,9 @@ class VolumeSupervisor:
 
         # Debug tensor shapes is no longer needed
 
-        # Convert gaussians to volume (directly uses parameter tensors for gradient flow)
-        def _render(points, scales, rotations, opacities, intensities):
-            return splat_to_volume(
-                points=points,
-                point_scales=scales,
-                point_rotations=rotations,
-                point_opacities=opacities,
-                point_intensities=intensities,
-                volume_shape=self.volume_shape,
-                device=xyz.device,
-                active_idx=active_idx,
-            )
-
-        render_inputs = (xyz, scaling, rotation, use_opacity, use_intensities)
-        if any(t.requires_grad for t in render_inputs):
-            volume_pred = checkpoint(_render, *render_inputs, use_reentrant=False)
-        else:
-            volume_pred = _render(*render_inputs)
-
-        # Optionally retain grad for debugging
-        if getattr(self, "debug", False):
-            xyz.retain_grad()
-
-        # Debug if needed
-        if hasattr(self, "verbose") and self.verbose:
-            print(f"volume_pred requires_grad: {volume_pred.requires_grad}")
-
-        # Store predicted volume for visualization (use clone to avoid breaking gradient chain)
-        self.volume_pred = volume_pred.detach().clone()
-
-        # Compute loss only inside the mask.
-        self.volume_gt = self.volume_gt.to(volume_pred.device)
-        mask = self.mask_volume.to(volume_pred.device)
+        # Compute loss only inside the mask. Also compute the tight ROI bounding
+        # box of the mask and render only that subvolume for speed.
+        mask = self.mask_volume.to(xyz.device)
         with torch.no_grad():
             mask_max = float(mask.max().item())
             thr = float(self.mask_loss_threshold_rel) * mask_max
@@ -673,16 +643,71 @@ class VolumeSupervisor:
                 f"mask_max={mask_max:.6f}, rel_thr={self.mask_loss_threshold_rel:.6f}"
             )
 
+        with torch.no_grad():
+            nz = torch.nonzero(mask_bool, as_tuple=False)
+            z0 = int(nz[:, 0].min().item())
+            z1 = int(nz[:, 0].max().item())
+            y0 = int(nz[:, 1].min().item())
+            y1 = int(nz[:, 1].max().item())
+            x0 = int(nz[:, 2].min().item())
+            x1 = int(nz[:, 2].max().item())
+
+        D, H, W = self.volume_shape
+        roi_shape = (z1 - z0 + 1, y1 - y0 + 1, x1 - x0 + 1)
+
+        denom = torch.tensor([max(W - 1, 1), max(H - 1, 1), max(D - 1, 1)], device=xyz.device, dtype=torch.float32)
+        bounds_min = torch.tensor([x0, y0, z0], device=xyz.device, dtype=torch.float32) / denom
+        bounds_max = torch.tensor([x1, y1, z1], device=xyz.device, dtype=torch.float32) / denom
+
+        # Convert gaussians to volume ROI (directly uses parameter tensors for gradient flow)
+        def _render(points, scales, rotations, opacities, intensities):
+            return splat_to_volume(
+                points=points,
+                point_scales=scales,
+                point_rotations=rotations,
+                point_opacities=opacities,
+                point_intensities=intensities,
+                volume_shape=roi_shape,
+                device=xyz.device,
+                active_idx=active_idx,
+                grid_bounds=(bounds_min, bounds_max),
+            )
+
+        render_inputs = (xyz, scaling, rotation, use_opacity, use_intensities)
+        if any(t.requires_grad for t in render_inputs):
+            volume_pred_roi = checkpoint(_render, *render_inputs, use_reentrant=False)
+        else:
+            volume_pred_roi = _render(*render_inputs)
+
+        # Optionally retain grad for debugging
+        if getattr(self, "debug", False):
+            xyz.retain_grad()
+
+        # Debug if needed
+        if hasattr(self, "verbose") and self.verbose:
+            print(f"volume_pred requires_grad: {volume_pred_roi.requires_grad}")
+
+        # Store predicted volume for visualization as a full-size volume.
+        # (Loss is still computed on the cropped ROI for speed.)
+        full_pred = torch.zeros(self.volume_shape, device=volume_pred_roi.device, dtype=volume_pred_roi.dtype)
+        full_pred[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1] = volume_pred_roi
+        self.volume_pred = full_pred.detach().clone()
+
+        # Slice targets/mask to ROI for loss.
+        self.volume_gt = self.volume_gt.to(volume_pred_roi.device)
+        target_roi = self.volume_gt[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1]
+        mask_roi = mask_bool[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1]
+
         if self.criterion.loss_type == "mse":
-            pred_vals = volume_pred[mask_bool]
-            tgt_vals = self.volume_gt[mask_bool]
+            pred_vals = volume_pred_roi[mask_roi]
+            tgt_vals = target_roi[mask_roi]
             diff = pred_vals - tgt_vals
             loss = (diff * diff).mean()
         else:
             # For non-MSE objectives, masking by zeroing outside-mask voxels
             # restricts the loss support to the ROI.
-            masked_pred = volume_pred * mask_bool.to(dtype=volume_pred.dtype)
-            masked_tgt = self.volume_gt * mask_bool.to(dtype=self.volume_gt.dtype)
+            masked_pred = volume_pred_roi * mask_roi.to(dtype=volume_pred_roi.dtype)
+            masked_tgt = target_roi * mask_roi.to(dtype=target_roi.dtype)
             loss = self.criterion(masked_pred, masked_tgt)
 
         unweighted_loss = loss
