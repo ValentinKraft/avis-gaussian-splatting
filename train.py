@@ -364,17 +364,19 @@ def training(
     # Load volume transform if provided
     volume_transform = None
     if args.volume_transform:
-        volume_transform = (
-            torch.from_numpy(np.load(args.volume_transform)).float().cuda()
+        # Volume supervision (splat_to_volume) operates in normalized [0,1]^3.
+        # Applying an arbitrary transform here can move points out of that domain.
+        # If you need a transform, the supervision mapping must be updated consistently.
+        print(
+            "WARNING: --volume_transform provided, but normalized volume-space training "
+            "keeps Gaussians in [0,1]^3 and will ignore volume_transform."
         )
+        volume_transform = None
 
     # Get scene bounds for scaling
+    # Volume supervision assumes normalized volume coordinates; do not remap
+    # points into camera/world bounds.
     scene_bounds = None
-    if dataset.cameras_extent is not None:
-        scene_bounds = (
-            torch.tensor([-dataset.cameras_extent], device="cuda"),
-            torch.tensor([dataset.cameras_extent], device="cuda"),
-        )
 
     # Initialize gaussians by sampling from mask/volume inputs
     initialize_gaussians(
@@ -398,10 +400,8 @@ def training(
     )
 
     # Set spatial_lr_scale after volume initialization
-    if hasattr(dataset, "cameras_extent") and dataset.cameras_extent is not None:
-        gaussians.spatial_lr_scale = dataset.cameras_extent
-    else:
-        gaussians.spatial_lr_scale = 1.0
+    # For normalized [0,1]^3 coordinates, the natural spatial scale is 1.0.
+    gaussians.spatial_lr_scale = 1.0
 
     print(
         f"Initialized {gaussians._xyz.shape[1]} Gaussians; spatial_lr_scale={gaussians.spatial_lr_scale:.3f}"
