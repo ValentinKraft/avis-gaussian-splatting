@@ -350,24 +350,9 @@ def splat_to_volume(
             grid_chunk_pts = work_grid[g0:g1]  # (Cg,3)
             diff = grid_chunk_pts.unsqueeze(1) - bp.unsqueeze(0)  # (Cg,B,3)
             if rb is not None:
-                # More efficient batch processing for rotation
-                diff_local = torch.zeros_like(diff)
-                # Process larger batches (but not too large to avoid memory issues)
-                rot_batch = min(20, Bcur)  # Process 20 points at a time max
-                for b_start in range(0, Bcur, rot_batch):
-                    b_end = min(b_start + rot_batch, Bcur)
-
-                    # Get batch of differences and rotation matrices
-                    batch_diff = diff[:, b_start:b_end, :]  # (Cg, batch_size, 3)
-                    batch_rb = rb[b_start:b_end]  # (batch_size, 3, 3)
-
-                    # Apply rotation: batch_diff @ batch_rb.T
-                    # Use more memory-efficient approach
-                    for i in range(b_end - b_start):
-                        b_idx_global = b_start + i
-                        diff_local[:, b_idx_global, :] = torch.matmul(
-                            batch_diff[:, i, :], batch_rb[i].T
-                        )
+                # Vectorized rotation: for each b, apply diff[:, b, :] @ rb[b].T.
+                # einsum uses rb indices (b, j, i) to represent transpose.
+                diff_local = torch.einsum("gbi,bji->gbj", diff, rb)
             else:
                 diff_local = diff
             diff_scaled = diff_local * inv_scales.unsqueeze(0)  # (Cg,B,3)
@@ -404,10 +389,8 @@ def splat_to_volume(
     else:
         volume = small_volume
 
-    # Free memory
+    # Free memory (do not call torch.cuda.empty_cache() here; it typically hurts performance).
     del small_volume
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
 
     # Optional debug prints removed for performance; caller can inspect externally.
 
