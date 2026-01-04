@@ -193,24 +193,28 @@ def splat_to_volume(
         points_n3 = points
 
     accum_dtype = torch.float32
-    points_n3 = points_n3.to(accum_dtype)
+    compute_dtype = accum_dtype
+    if device.type == "cuda" and torch.is_autocast_enabled():
+        compute_dtype = torch.get_autocast_gpu_dtype()
+
+    points_n3 = points_n3.to(compute_dtype)
     if point_scales is not None:
-        point_scales = point_scales.to(accum_dtype)
+        point_scales = point_scales.to(compute_dtype)
     if point_opacities is not None:
-        point_opacities = point_opacities.to(accum_dtype)
+        point_opacities = point_opacities.to(compute_dtype)
     if point_intensities is not None:
-        point_intensities = point_intensities.to(accum_dtype)
+        point_intensities = point_intensities.to(compute_dtype)
     if point_rotations is not None:
-        point_rotations = point_rotations.to(accum_dtype)
+        point_rotations = point_rotations.to(compute_dtype)
     if covariances is not None:
-        covariances = covariances.to(accum_dtype)
+        covariances = covariances.to(compute_dtype)
 
     total_points = points_n3.shape[0]
     # Avoid verbose printing here for performance
 
     # Create volume grid - these don't need gradients
     grid_points = create_grid_points(volume_shape, device, grid_bounds=grid_bounds).to(
-        accum_dtype
+        compute_dtype
     )
 
     # Allocate final volume (grad will flow through ops populating it)
@@ -227,7 +231,7 @@ def splat_to_volume(
         # Only create the grid once and reuse it
         small_grid_points = create_grid_points(
             small_shape, device, grid_bounds=grid_bounds
-        ).to(accum_dtype)
+        ).to(compute_dtype)
         # We'll upsample back to full resolution at the end
     else:
         small_shape = volume_shape
@@ -330,7 +334,8 @@ def splat_to_volume(
     # Flatten grid and chunk to limit memory.
     work_grid = small_grid_points.view(-1, 3)
     G = work_grid.shape[0]
-    grid_chunk = 32768  # tune if still OOM
+    # Lower chunk size to reduce peak memory (important under checkpoint recompute).
+    grid_chunk = 8192
 
     for i in range(num_batches):
         s = i * batch_size
@@ -398,8 +403,8 @@ def splat_to_volume(
             kern = torch.exp(-0.5 * sq)
             value_contrib = kern * (alpha * value_scale).unsqueeze(0)
             weight_contrib = kern * alpha.unsqueeze(0)
-            contrib_flat[g0:g1] += value_contrib.sum(dim=1)
-            weight_flat[g0:g1] += weight_contrib.sum(dim=1)
+            contrib_flat[g0:g1] += value_contrib.to(accum_dtype).sum(dim=1)
+            weight_flat[g0:g1] += weight_contrib.to(accum_dtype).sum(dim=1)
             del diff, diff_local, diff_scaled, sq, kern, value_contrib, weight_contrib
 
         small_volume = small_volume + contrib_flat.view(small_shape)

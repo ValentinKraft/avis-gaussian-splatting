@@ -24,16 +24,23 @@ class VolumeLoader:
     Handles loading, optional resampling, and coordinate system alignment.
     """
 
-    def __init__(self, 
+    def __init__(
+                 self,
                  target_shape: Optional[Tuple[int, int, int]] = None,
-                 device: torch.device = torch.device('cuda')):
+                 device: torch.device = torch.device('cuda'),
+                 downscale_factor: Optional[int] = None):
         """
         Args:
             target_shape: Optional target shape for resampling. If None, keeps original dimensions
             device: Device to load tensors to
+            downscale_factor: Optional integer downscale factor applied to the input volume shape.
+                When provided and > 1, volumes are resampled to (D//factor, H//factor, W//factor).
+                When provided and <= 1, resampling is disabled (native resolution), unless the
+                automatic overflow guard triggers.
         """
         self.target_shape = target_shape
         self.device = device
+        self.downscale_factor = downscale_factor
 
     def load_nifti(self, path: Union[str, Path]) -> Tensor:
         """Load a NIfTI volume file."""
@@ -86,8 +93,21 @@ class VolumeLoader:
         # Normalize
         volume = (volume - volume.min()) / (volume.max() - volume.min() + 1e-8)
 
+        effective_target_shape = self.target_shape
+
+        # Optional downscale relative to the input volume shape.
+        if effective_target_shape is None and self.downscale_factor is not None:
+            factor = int(self.downscale_factor)
+            if factor > 1:
+                D, H, W = volume.shape
+                effective_target_shape = (
+                    max(1, D // factor),
+                    max(1, H // factor),
+                    max(1, W // factor),
+                )
+
         # Automatically determine target shape to prevent multinomial overflow
-        if self.target_shape is None:
+        if effective_target_shape is None:
             # Keep aspect ratio while ensuring total voxels < 2^24
             max_voxels = 2**24 - 1  # Maximum safe number for multinomial
             current_voxels = volume.numel()
@@ -96,24 +116,24 @@ class VolumeLoader:
                 # Calculate scale factor to reduce voxels below threshold
                 scale = (max_voxels / current_voxels) ** (1 / 3)
                 D, H, W = volume.shape
-                self.target_shape = (
+                effective_target_shape = (
                     max(32, int(D * scale)),
                     max(32, int(H * scale)),
                     max(32, int(W * scale)),
                 )
                 print(
-                    f"Auto-resizing volume from {(D,H,W)} to {self.target_shape} to prevent overflow"
+                    f"Auto-resizing volume from {(D,H,W)} to {effective_target_shape} to prevent overflow"
                 )
 
-        # Resample if target shape is specified
-        if self.target_shape is not None:
+        # Resample if a target shape is specified
+        if effective_target_shape is not None:
             # Add batch and channel dimensions for resampling
             volume = volume.unsqueeze(0).unsqueeze(0)
 
             # Resample to target shape
             volume = F.interpolate(
                 volume,
-                size=self.target_shape,
+                size=effective_target_shape,
                 mode='trilinear',
                 align_corners=True
             )

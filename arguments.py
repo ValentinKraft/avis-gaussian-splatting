@@ -129,6 +129,18 @@ class ModelParams(ParamGroup):
         )
         self._register("volume_shape")
 
+        core.add_argument(
+            "--volume_downscale_factor",
+            type=int,
+            default=1,
+            help=(
+                "Optional integer downscale factor applied when loading volume/mask. "
+                "Defaults to 1 (native resolution). Values <= 1 keep the native resolution; "
+                "values 2/4/... downsample each axis by that factor."
+            ),
+        )
+        self._register("volume_downscale_factor")
+
         # Optional 4x4 transform to align volume/mask with world coordinates.
         core.add_argument(
             "--volume_transform",

@@ -334,6 +334,7 @@ def training(
     volume_shape = tuple(
         args.volume_shape if hasattr(args, "volume_shape") else opt.volume_shape
     )
+    volume_downscale_factor = getattr(args, "volume_downscale_factor", None)
     loss_type = (
         args.volume_loss_type
         if hasattr(args, "volume_loss_type")
@@ -347,6 +348,7 @@ def training(
     volume_supervisor = VolumeSupervisor(
         volume_path=args.volume_path,
         volume_shape=volume_shape,
+        volume_downscale_factor=volume_downscale_factor,
         mask_path=args.mask_path if hasattr(args, "mask_path") else None,
         loss_type=loss_type,
         loss_weight=loss_weight,
@@ -386,6 +388,7 @@ def training(
         n_points=args.init_n_points,
         volume_transform=volume_transform,
         scene_bounds=scene_bounds,
+        volume_downscale_factor=volume_downscale_factor,
         noise_std=(
             args.position_noise
             if hasattr(args, "position_noise")

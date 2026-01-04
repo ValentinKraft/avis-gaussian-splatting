@@ -241,31 +241,62 @@ def build_structure_field(
     D, H, W = mask_volume.shape
     hessian_flat = hessian.view(-1, 3, 3)
 
-    evals, evecs = torch.linalg.eigh(hessian_flat)
-    abs_vals = evals.abs()
-    order = torch.argsort(abs_vals, dim=-1)
-    order_expand = order.unsqueeze(1).expand(-1, 3, -1)
-    sorted_evals = torch.gather(evals, 1, order)
-    sorted_evecs = torch.gather(evecs, 2, order_expand)
+    hessian_flat = torch.nan_to_num(hessian_flat, nan=0.0, posinf=0.0, neginf=0.0)
 
-    direction = sorted_evecs[:, :, 0]
-    direction = torch.nan_to_num(direction, nan=0.0, posinf=0.0, neginf=0.0)
-    direction_norm = direction.norm(dim=1, keepdim=True).clamp_min(_GRAD_EPS)
-    direction = direction / direction_norm
+    mask_bool = mask_volume.reshape(-1) >= mask_threshold
 
-    lambda1 = sorted_evals[:, 0]
-    lambda2 = sorted_evals[:, 1]
-    lambda3 = sorted_evals[:, 2]
-    denom = lambda2.abs() + lambda3.abs() + 1e-6
-    vesselness = 1.0 - (lambda1.abs() / denom)
-    vesselness = vesselness.clamp(0.0, 1.0)
+    # Defaults for voxels outside the mask (or below threshold).
+    direction = torch.zeros((hessian_flat.shape[0], 3), device=hessian_flat.device, dtype=hessian_flat.dtype)
+    direction[:, 2] = 1.0
+    vesselness = torch.zeros((hessian_flat.shape[0],), device=hessian_flat.device, dtype=hessian_flat.dtype)
+    fallback = ~mask_bool
 
-    mask_flat = (mask_volume.reshape(-1) >= mask_threshold).float()
-    vesselness = vesselness * mask_flat
-    fallback = (vesselness < vesselness_eps) | (mask_flat <= 0.0)
-    direction[fallback] = torch.tensor(
-        [0.0, 0.0, 1.0], device=direction.device, dtype=direction.dtype
-    )
+    if mask_bool.any():
+        masked_hessian = hessian_flat[mask_bool]
+        n = masked_hessian.shape[0]
+
+        # Chunked batched-eigh to avoid cuSOLVER limitations on very large batches.
+        chunk = 500_000
+        evals_chunks = []
+        evecs_chunks = []
+        for start in range(0, n, chunk):
+            end = min(start + chunk, n)
+            evals_c, evecs_c = torch.linalg.eigh(masked_hessian[start:end])
+            evals_chunks.append(evals_c)
+            evecs_chunks.append(evecs_c)
+
+        evals = torch.cat(evals_chunks, dim=0)
+        evecs = torch.cat(evecs_chunks, dim=0)
+
+        abs_vals = evals.abs()
+        order = torch.argsort(abs_vals, dim=-1)
+        order_expand = order.unsqueeze(1).expand(-1, 3, -1)
+        sorted_evals = torch.gather(evals, 1, order)
+        sorted_evecs = torch.gather(evecs, 2, order_expand)
+
+        direction_masked = sorted_evecs[:, :, 0]
+        direction_masked = torch.nan_to_num(
+            direction_masked, nan=0.0, posinf=0.0, neginf=0.0
+        )
+        direction_norm = direction_masked.norm(dim=1, keepdim=True).clamp_min(_GRAD_EPS)
+        direction_masked = direction_masked / direction_norm
+
+        lambda1 = sorted_evals[:, 0]
+        lambda2 = sorted_evals[:, 1]
+        lambda3 = sorted_evals[:, 2]
+        denom = lambda2.abs() + lambda3.abs() + 1e-6
+        vesselness_masked = (1.0 - (lambda1.abs() / denom)).clamp(0.0, 1.0)
+
+        masked_fallback = vesselness_masked < vesselness_eps
+        if masked_fallback.any():
+            direction_masked[masked_fallback] = torch.tensor(
+                [0.0, 0.0, 1.0], device=direction_masked.device, dtype=direction_masked.dtype
+            )
+
+        # Scatter results back into full fields.
+        direction[mask_bool] = direction_masked
+        vesselness[mask_bool] = vesselness_masked
+        fallback[mask_bool] = masked_fallback
 
     rot = _frames_from_directions(direction, fallback)
     quats = rotmat_to_quat(rot).view(D, H, W, 4)

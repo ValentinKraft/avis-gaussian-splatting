@@ -47,6 +47,7 @@ class VolumeSupervisor:
         self,
         volume_path: str,
         volume_shape: Tuple[int, int, int] = (64, 64, 64),
+        volume_downscale_factor: Optional[int] = None,
         mask_path: Optional[str] = None,
         loss_type: str = "mse",
         loss_weight: float = 1.0,
@@ -84,12 +85,24 @@ class VolumeSupervisor:
         self.mask_loss_threshold_rel = 0.01
 
         # Initialize volume loader and loss
-        self.loader = VolumeLoader(volume_shape, device)
+        # Default behavior (omitted flag) matches downscale_factor=1: keep native resolution.
+        downscale_factor = (
+            int(volume_downscale_factor)
+            if volume_downscale_factor is not None
+            else 1
+        )
+        self.loader = VolumeLoader(
+            target_shape=None,
+            device=device,
+            downscale_factor=downscale_factor,
+        )
         # Apply loss_weight once in compute_loss for clarity.
         self.criterion = VolumeLoss(loss_type, 1.0)
 
         # Load ground truth volume
         self.volume_gt = self.loader.load_volume(volume_path)
+        # Always trust the loaded tensor shape for supervision/rendering.
+        self.volume_shape = tuple(int(v) for v in self.volume_gt.shape)
         self.global_intensity_min = float(self.volume_gt.min().item())
         self.global_intensity_max = float(self.volume_gt.max().item())
         if self.verbose:
@@ -122,6 +135,11 @@ class VolumeSupervisor:
 
         # Load mask volume (required)
         self.mask_volume = self.loader.load_volume(mask_path)
+        if self.mask_volume.shape != self.volume_gt.shape:
+            raise ValueError(
+                "Mask and volume shapes must match after loading. "
+                f"volume_shape={tuple(self.volume_gt.shape)}, mask_shape={tuple(self.mask_volume.shape)}"
+            )
         if self.verbose:
             print(
                 "Loaded mask volume with range "

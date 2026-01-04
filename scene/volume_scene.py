@@ -36,8 +36,12 @@ class VolumeScene:
             volume_shape = tuple(
                 args.volume_shape if hasattr(args, "volume_shape") else [64, 64, 64]
             )
+            downscale_factor = getattr(args, "volume_downscale_factor", None)
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            loader = VolumeLoader(volume_shape, device)
+            if downscale_factor is None:
+                loader = VolumeLoader(volume_shape, device)
+            else:
+                loader = VolumeLoader(target_shape=None, device=device, downscale_factor=downscale_factor)
             self.reference_volume = loader.load_volume(args.volume_path)
 
             # Store in gaussians for intensity updates

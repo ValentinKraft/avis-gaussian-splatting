@@ -183,6 +183,7 @@ def initialize_from_volume(
     noise_std: float = 0.01,
     device: torch.device = torch.device("cuda"),
     mask_threshold: float = 0.01,
+    volume_downscale_factor: Optional[int] = None,
     dedup_cell_size: int = 2,
     dedup_max_per_cell: int = 4,
     oversample_factor: float = 2.5,
@@ -190,7 +191,8 @@ def initialize_from_volume(
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """Sample Gaussian seeds uniformly from mask voxels above a threshold."""
 
-    loader = VolumeLoader(device=device)
+    downscale = int(volume_downscale_factor) if volume_downscale_factor is not None else 1
+    loader = VolumeLoader(target_shape=None, device=device, downscale_factor=downscale)
     sampling_volume = loader.load_volume(mask_path)
     sampling_volume = sampling_volume.to(device=device, dtype=torch.float32)
 
@@ -597,11 +599,16 @@ def initialize_gaussians(
     structure_sigma = kwargs.pop("structure_sigma", 1.0)
     structure_min_vesselness = kwargs.pop("structure_min_vesselness", 0.2)
     anisotropy_strength = kwargs.pop("anisotropy_strength", 1.5)
+    volume_downscale_factor = kwargs.pop("volume_downscale_factor", None)
 
     # Get points in volume space
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     points, scales, opacities = initialize_from_volume(
-        mask_path if mask_path else volume_path, n_points, device=device, **kwargs
+        mask_path if mask_path else volume_path,
+        n_points,
+        device=device,
+        volume_downscale_factor=volume_downscale_factor,
+        **kwargs,
     )
     volume_points = points.clone()
 
@@ -610,7 +617,8 @@ def initialize_gaussians(
     mask_volume = None
     volume_min = 0.0
     volume_max = 1.0
-    loader = VolumeLoader(device=device)
+    downscale = int(volume_downscale_factor) if volume_downscale_factor is not None else 1
+    loader = VolumeLoader(target_shape=None, device=device, downscale_factor=downscale)
 
     # Load and sample intensities from volume if provided
     if volume_path:
