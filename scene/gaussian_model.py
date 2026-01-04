@@ -98,7 +98,8 @@ class GaussianModel:
         self.orientation_fallback_stats = {"clone": 0, "split": 0, "hole_fill": 0}
 
         # Intensity handling mode and cached parameter snapshots
-        self.intensity_mode = "learned"
+        # Default to volume-sampled intensities for volume-only training.
+        self.intensity_mode = "sampled"
         self._prev_xyz = None
         self._prev_scaling = None
         self._prev_rotation = None
