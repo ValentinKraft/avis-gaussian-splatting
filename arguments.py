@@ -154,7 +154,7 @@ class ModelParams(ParamGroup):
         core.add_argument(
             "--volume_loss_type",
             type=str,
-            default="dice",
+            default="mse",
             choices=["mse", "dice", "tversky", "kl"],
             help="Volume-domain loss to optimize (dice/mse/tversky/kl).",
         )
@@ -256,7 +256,7 @@ class ModelParams(ParamGroup):
         core.add_argument(
             "--anisotropy_strength",
             type=float,
-            default=4.0,
+            default=0.0,
             help="Amount of stretch applied along vessel axes when Hessian cues are reliable.",
         )
         self._register("anisotropy_strength")

@@ -264,7 +264,7 @@ def initialize_from_volume(
     voxel_sizes_xyz = voxel_size
     max_dist = sampled_dist.max().clamp_min(1e-3)
     dist_norm = sampled_dist / max_dist
-    scale_min = voxel_sizes_xyz * 0.5
+    scale_min = voxel_sizes_xyz * 1.0
     scale_max = voxel_sizes_xyz * 2.5
     scales = scale_min + dist_norm.unsqueeze(1) * (scale_max - scale_min)
 
@@ -598,7 +598,7 @@ def initialize_gaussians(
     structure_mask_threshold = kwargs.pop("structure_mask_threshold", 0.1)
     structure_sigma = kwargs.pop("structure_sigma", 1.0)
     structure_min_vesselness = kwargs.pop("structure_min_vesselness", 0.2)
-    anisotropy_strength = kwargs.pop("anisotropy_strength", 1.5)
+    anisotropy_strength = kwargs.pop("anisotropy_strength", 0.0)
     volume_downscale_factor = kwargs.pop("volume_downscale_factor", None)
     opacity_gamma = float(kwargs.pop("opacity_gamma", 1.0))
 

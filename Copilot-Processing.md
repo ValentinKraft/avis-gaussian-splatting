@@ -116,6 +116,7 @@ post_date: 2025-12-12
 ## Progress (2026-01-05)
 - Simplified volume renderer path for debugging: removed downsample/upsample shortcut and removed gradient checkpointing.
 - Added a hard anisotropy cap in the volume splatter to prevent needle-like spikes during rendering/supervision.
+- Changed default `--volume_loss_type` to `mse` to better match mask-probability supervision.
 
 ## Next Steps (Recommended)
 1. Re-run the synthetic training command and compare `current.png` before/after the renderer simplification.

@@ -403,7 +403,7 @@ def training(
         structure_mask_threshold=getattr(args, "structure_mask_threshold", 0.1),
         structure_sigma=getattr(args, "structure_sigma", 1.0),
         structure_min_vesselness=getattr(args, "structure_min_vesselness", 0.1),
-        anisotropy_strength=getattr(args, "anisotropy_strength", 2.25),
+        anisotropy_strength=getattr(args, "anisotropy_strength", 0.0),
     )
 
     # Set spatial_lr_scale after volume initialization
