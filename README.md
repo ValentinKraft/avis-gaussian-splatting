@@ -1,19 +1,17 @@
 # CHANGES
-...
-# HOW TO TRAIN
 
-Clinical test dataset:
+## HOW TO TRAIN
+
+*Clinical test dataset:*
 
 ```shell
-python train.py --model_path _output_/test --mask_path _input_/vesselmask-float.nii.gz --volume_path _input_/volume.nii.gz --iterations 500 --volume_loss_type dice --init_n_points 10000 --save_ply_every 100
-
-python train.py --model_path _output_/volume-float-test --mask_path _input_/vessel-mask-float.nii.gz --volume_path _input_/volume.nii.gz --iterations 2000 --init_n_points 8000 --save_ply_every 100 --enable_diagnostics --volume_loss_type mse --volume_downscale_factor 4
+python train.py --model_path _output_/ct-float-test --mask_path _input_/vessel-mask-float.nii.gz --volume_path _input_/volume.nii.gz --iterations 2000 --init_n_points 8000 --save_ply_every 100 --enable_diagnostics --volume_loss_type dice --volume_downscale_factor 4
 ```
 
-Synthetic test dataset:
+*Synthetic test dataset:*
 
 ```shell
-python train.py --model_path _output_/synthetic-data-test --mask_path _input_/synthetic-mask-float.nii.gz --volume_path _input_/synthetic-gradient.nii.gz --iterations 500 --volume_loss_type dice --init_n_points 10000 --save_ply_every 100
+python train.py --model_path _output_/synthetic-float-test --mask_path _input_/synthetic-mask-float.nii.gz --volume_path _input_/synthetic-gradient.nii.gz --iterations 500 --volume_loss_type mse --init_n_points 10000 --save_ply_every 100
 ```
 
 ### Intensity Sampling Modes

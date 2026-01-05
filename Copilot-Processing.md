@@ -88,6 +88,11 @@ post_date: 2025-12-12
 - Context: synthetic run completed (1000 iters) with `--supervision_target mask` and `--opacity_gamma 1.0`.
 - Goal: diagnose root cause (renderer vs optimization vs initialization) and fix to produce smooth, contiguous density throughout the structure.
 
+## Project Goal (Current)
+- Represent a 3D segmentation probability mask as a smooth volumetric rendering using 3D Gaussians.
+- Optimize in normalized volume coordinates ([0,1]^3), with supervision computed only inside the thresholded mask.
+- Make CT intensity optional for appearance; primary objective is mask-faithful opacity/density.
+
 ## Action Plan (2026-01-05)
 1. Reproduce and quantify the artifact with diagnostics (before/after snapshots and basic stats).
 2. Isolate whether the artifact comes from (A) rotation handling, (B) scale handling, (C) opacity sampling/mapping, (D) density accumulation/squash, or (E) densification/pruning.
@@ -107,4 +112,13 @@ post_date: 2025-12-12
 - [ ] Check densification/pruning behavior in volume-only mode (ensure it does not remove points preferentially in the center).
 - [ ] Implement fix based on findings (likely candidates: rotation convention bug, anisotropy axis mix-up, or over-aggressive large-scale splats).
 - [ ] Add a targeted regression test using a synthetic cylinder mask: ensure density along the cylinder axis is unimodal/continuous (no central void) under `supervision_target=mask`.
+
+## Progress (2026-01-05)
+- Simplified volume renderer path for debugging: removed downsample/upsample shortcut and removed gradient checkpointing.
+- Added a hard anisotropy cap in the volume splatter to prevent needle-like spikes during rendering/supervision.
+
+## Next Steps (Recommended)
+1. Re-run the synthetic training command and compare `current.png` before/after the renderer simplification.
+2. If spikes persist, disable anisotropy initialization (`--anisotropy_strength 0`) to isolate whether it is an init/stretch issue.
+3. Add a small cylinder regression test once the artifact is resolved.
 
