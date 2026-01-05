@@ -16,6 +16,18 @@ post_date: 2025-12-12
 - Goal: make the diagnostics gating logic robust so training proceeds regardless of preset/flag combinations, allowing the synthetic medical test run to succeed without manual code edits.
 - Environment: Windows, conda env `avis_gaussian_splatting`, date 2025-12-12; crash occurs before optimization starts.
 
+## User Request Details (2025-12-22)
+- User reverted the repository back to the last commit because they did not like the previous set of changes.
+- Goal: re-analyze the training loop and determine whether it is mixing coordinate systems (e.g. normalized volume space vs world/camera space).
+- Key question: are Gaussian xyz coordinates, volume-grid coordinates, and any scene/camera extent transforms consistently defined for volume supervision?
+
+## User Request Details (2025-12-22, ROI Crop)
+- Goal: implement ROI cropping so volume rendering only evaluates the mask bounding box instead of the full volume every iteration.
+- Constraints:
+	- Loss must still be computed only over voxels inside the thresholded mask (mask > 1% of mask max).
+	- Training should require a mask volume.
+	- Coordinates remain normalized volume space ([0,1]^3).
+
 ## Action Plan
 1. Inspect `train.py` around line 316 to understand how `diagnostics_enabled` is set and why medical presets skip its initialization.
 2. Implement a robust initialization path so `diagnostics_enabled` is always defined before use, respecting CLI flags and preset overrides.
@@ -31,6 +43,68 @@ post_date: 2025-12-12
 - [x] Ensure any helper functions or preset overrides honor the user-provided flag without reintroducing unused diagnostics work.
 
 ### Phase 3 – Validation
-- [ ] Re-run `python train.py ...` (or a quicker equivalent) to verify the training loop starts without crashing.
-- [ ] Update this log with the validation outcome and any follow-up steps.
+- [x] Re-run `python train.py ...` (or a quicker equivalent) to verify the training loop starts without crashing. (Superseded by later repo changes; not re-validated here.)
+- [x] Update this log with the validation outcome and any follow-up steps.
+
+### ROI Crop – Implementation
+- [x] Add ROI bounds plumbing to the renderer (`grid_bounds` in `splat_to_volume`) so a subvolume grid can be generated over an arbitrary [min,max] box.
+- [x] Compute ROI bounding box from the thresholded mask inside `VolumeSupervisor.compute_loss`.
+- [x] Render only the ROI and slice `volume_gt`/mask to the same ROI before computing the masked loss.
+- [x] Preserve expected visualization shape by storing a full-size prediction volume with the ROI inserted into zeros.
+
+### ROI Crop – Validation
+- [ ] Run a short smoke test training run and confirm loss decreases and shapes/metrics/logging behave as expected.
+
+## User Request Details (2025-12-22, Optional Resizing)
+- Goal: make initial volume/mask resizing optional and provide a CLI flag to downsample by an integer factor (e.g. 2 or 4).
+- Desired behavior:
+	- When the flag is set to 2/4/...: downsample each axis by that factor during load.
+	- When the flag is set to 1 (or 0): keep native resolution (no resampling), unless the overflow safety guard triggers.
+	- When the flag is omitted: preserve existing behavior using `--volume_shape`.
+
+## User Request Details (2026-01-04, Mask Supervision)
+- Goal: start implementing the redesign to supervise the mask probability volume directly.
+- Required points:
+  - Supervision target = mask probability (not CT intensity) when selected.
+  - A density/alpha render mode (sum of contributions) suitable for mask supervision.
+  - Probability-faithful opacity mapping with no forced minimum; optional gamma shaping.
+
+## Action Plan (2026-01-04)
+1. Add CLI flags to switch supervision target and configure mask/opacity mapping.
+2. Add `render_mode='density'` path in `splat_to_volume` for mask supervision.
+3. Wire mask supervision through `VolumeSupervisor` and initialization.
+4. Update tests for API changes and do a quick smoke run.
+
+## Task Tracker (2026-01-04)
+- [x] Add `--supervision_target {mask,ct}` and `--mask_loss_threshold_rel`.
+- [x] Add `--opacity_gamma` and apply gamma mapping to mask-sampled opacities.
+- [x] Remove forced opacity min/max during mask sampling.
+- [x] Add density render mode to the volume splatter.
+- [x] Route mask supervision to density rendering and mask target in `VolumeSupervisor`.
+- [ ] Run a short training smoke test and confirm the new mode learns.
+
+## User Request Details (2026-01-05, Spiky/Missing Center)
+- Observed: volume rendering looks broadly correct, but the center of the tubular structure becomes spiky and/or has missing density.
+- Context: synthetic run completed (1000 iters) with `--supervision_target mask` and `--opacity_gamma 1.0`.
+- Goal: diagnose root cause (renderer vs optimization vs initialization) and fix to produce smooth, contiguous density throughout the structure.
+
+## Action Plan (2026-01-05)
+1. Reproduce and quantify the artifact with diagnostics (before/after snapshots and basic stats).
+2. Isolate whether the artifact comes from (A) rotation handling, (B) scale handling, (C) opacity sampling/mapping, (D) density accumulation/squash, or (E) densification/pruning.
+3. Implement the minimal fix once the culprit is confirmed.
+4. Add a small regression test or diagnostic assertion so the artifact does not silently return.
+
+## Task Tracker (2026-01-05)
+- [ ] Confirm artifact is present in the saved `volume_pred` tensor (not just viewer / colormap).
+- [ ] Inspect per-point stats split by axial regions (center vs ends): position histogram, scales (min/mean/max), rotations (norm, stability), opacities (min/mean/max).
+- [ ] Run A/B toggles to isolate cause:
+	- [ ] Disable rotation usage in volume renderer (treat as identity) and compare.
+	- [ ] Disable anisotropy at init (`--anisotropy_strength 0`) and compare.
+	- [ ] Clamp max scale (temporary) to see if large splats create spikes.
+	- [ ] Try `--opacity_gamma 2.0` and `0.7` to see if opacity mapping causes center dropout.
+- [ ] Validate quaternion convention end-to-end (confirm stored quats are (w,x,y,z)); if mismatch, fix rotation-to-matrix conversion.
+- [ ] Verify ROI bounds mapping aligns voxel centers (ensure ROI grid covers the correct region without internal seams).
+- [ ] Check densification/pruning behavior in volume-only mode (ensure it does not remove points preferentially in the center).
+- [ ] Implement fix based on findings (likely candidates: rotation convention bug, anisotropy axis mix-up, or over-aggressive large-scale splats).
+- [ ] Add a targeted regression test using a synthetic cylinder mask: ensure density along the cylinder axis is unimodal/continuous (no central void) under `supervision_target=mask`.
 

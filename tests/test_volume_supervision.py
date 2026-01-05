@@ -100,10 +100,10 @@ def test_splat_to_volume():
         [0.5, 0.5, 0.5],  # Center
         [0.25, 0.25, 0.25],  # Corner
         [0.75, 0.75, 0.75]  # Opposite corner
-    ], device=device)
+    ], device=device, requires_grad=True)
     
     # Test volume creation
-    volume = splat_to_volume(splats, volume_shape)
+    volume = splat_to_volume(splats, volume_shape=volume_shape)
     assert volume.shape == volume_shape
     assert volume.min() >= 0.0
     assert volume.max() <= 1.0
@@ -143,34 +143,26 @@ def test_end_to_end():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     shape = (32, 32, 32)
 
-    # Create test volume
+    # Create test volume + mask
     volume = create_synthetic_volume(shape)
+    mask = (volume > 0.5).float()
     path = 'test_volume.npy'
+    mask_path = 'test_mask.npy'
     np.save(path, volume.numpy())
+    np.save(mask_path, mask.numpy())
 
     try:
         # Initialize supervisor
         supervisor = VolumeSupervisor(
             volume_path=path,
             volume_shape=shape,
-            loss_type='dice'
+            mask_path=mask_path,
+            loss_type='mse',
+            supervision_target='mask',
+            intensity_update_interval=1,
         )
 
-        # Create mock gaussian model
-        class MockGaussians:
-            def __init__(self):
-                self.xyz = torch.rand(100, 3, device=device)
-                self.scaling = torch.ones(100, 3, 3, device=device)
-
-            @property
-            def get_xyz(self):
-                return self.xyz
-
-            @property
-            def get_scaling(self):
-                return self.scaling
-
-        gaussians = MockGaussians()
+        gaussians = _seed_gaussian_model(100, device)
 
         # Test loss computation
         loss, metrics, _ = supervisor.compute_loss(gaussians)
@@ -180,13 +172,15 @@ def test_end_to_end():
 
         # Test gradient flow
         loss.backward()
-        assert gaussians.xyz.grad is not None
-        assert not torch.isnan(gaussians.xyz.grad).any()
+        assert gaussians._xyz.grad is not None
+        assert not torch.isnan(gaussians._xyz.grad).any()
 
     finally:
         # Cleanup
         if os.path.exists(path):
             os.remove(path)
+        if os.path.exists(mask_path):
+            os.remove(mask_path)
 
 
 def test_volume_supervisor_populates_mask_opacity(tmp_path):

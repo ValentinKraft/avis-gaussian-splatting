@@ -134,6 +134,8 @@ def splat_to_volume(
     device: Optional[torch.device] = None,
     active_idx: Optional[Tensor] = None,
     grid_bounds: Optional[Tuple[Tensor, Tensor]] = None,
+    render_mode: str = "intensity",
+    density_scale: float = 1.0,
 ) -> Tensor:
     """
     Convert 3D Gaussian splats to a volumetric representation.
@@ -279,9 +281,15 @@ def splat_to_volume(
     # Handle scaling parameters
     # point_scales, point_opacities, point_intensities already passed as parameters
 
-    # Use default intensity values if not provided
-    if point_intensities is None:
-        # Default to 1.0 intensity if not provided
+    if render_mode not in {"intensity", "density"}:
+        raise ValueError(
+            "render_mode must be one of {'intensity','density'}, got "
+            f"{render_mode!r}."
+        )
+
+    # Use default intensity values if not provided.
+    # (Not needed in density mode.)
+    if render_mode == "intensity" and point_intensities is None:
         point_intensities = torch.ones(total_points, device=device, dtype=accum_dtype)
 
     # Use torch.cuda.empty_cache() to clear memory periodically
@@ -323,7 +331,7 @@ def splat_to_volume(
         elif point_opacities.ndim > 2:
             point_opacities = point_opacities.view(point_opacities.shape[0], -1)[:, 0]
 
-    if point_intensities is not None:
+    if point_intensities is not None and render_mode == "intensity":
         if point_intensities.ndim == 2:
             point_intensities = point_intensities.view(-1)
         elif point_intensities.ndim > 2:
@@ -377,13 +385,15 @@ def splat_to_volume(
         else:
             alpha = torch.ones(Bcur, device=device, dtype=bp.dtype)
 
-        if point_intensities is not None:
+        if point_intensities is not None and render_mode == "intensity":
             value_scale = point_intensities[s:e]
         else:
             value_scale = torch.ones(Bcur, device=device, dtype=bp.dtype)
 
         inv_scales = 1.0 / (scales_batch + 1e-6)  # (B,3)
-        contrib_flat = torch.zeros(G, device=device, dtype=accum_dtype)
+        contrib_flat = None
+        if render_mode == "intensity":
+            contrib_flat = torch.zeros(G, device=device, dtype=accum_dtype)
         weight_flat = torch.zeros(G, device=device, dtype=accum_dtype)
 
         for g0 in range(0, G, grid_chunk):
@@ -401,23 +411,35 @@ def splat_to_volume(
             sq = (diff_scaled * diff_scaled).sum(-1)  # (Cg,B)
             sq = sq.masked_fill(~support_mask, 36.0)
             kern = torch.exp(-0.5 * sq)
-            value_contrib = kern * (alpha * value_scale).unsqueeze(0)
             weight_contrib = kern * alpha.unsqueeze(0)
-            contrib_flat[g0:g1] += value_contrib.to(accum_dtype).sum(dim=1)
             weight_flat[g0:g1] += weight_contrib.to(accum_dtype).sum(dim=1)
-            del diff, diff_local, diff_scaled, sq, kern, value_contrib, weight_contrib
 
-        small_volume = small_volume + contrib_flat.view(small_shape)
+            if render_mode == "intensity":
+                value_contrib = kern * (alpha * value_scale).unsqueeze(0)
+                contrib_flat[g0:g1] += value_contrib.to(accum_dtype).sum(dim=1)
+                del value_contrib
+
+            del diff, diff_local, diff_scaled, sq, kern, weight_contrib
+
+        if render_mode == "intensity":
+            small_volume = small_volume + contrib_flat.view(small_shape)
         weight_volume = weight_volume + weight_flat.view(small_shape)
-        del contrib_flat
+        if contrib_flat is not None:
+            del contrib_flat
         del weight_flat
 
-    # Normalize the working volume to [0, 1] - ensure we preserve gradient flow
-    small_volume = torch.where(
-        weight_volume > 1e-6,
-        small_volume / (weight_volume + 1e-6),
-        torch.zeros_like(small_volume),
-    )
+    if render_mode == "intensity":
+        # Normalize the working volume to [0, 1] - ensure we preserve gradient flow
+        small_volume = torch.where(
+            weight_volume > 1e-6,
+            small_volume / (weight_volume + 1e-6),
+            torch.zeros_like(small_volume),
+        )
+    else:
+        # Density rendering: accumulate opacity mass and squash to [0,1].
+        # The squash keeps the output bounded while preserving monotonicity.
+        density = weight_volume * float(density_scale)
+        small_volume = 1.0 - torch.exp(-density)
 
     # If we used a smaller working grid, upsample back to full resolution
     if small_shape != volume_shape:

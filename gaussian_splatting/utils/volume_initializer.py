@@ -600,6 +600,7 @@ def initialize_gaussians(
     structure_min_vesselness = kwargs.pop("structure_min_vesselness", 0.2)
     anisotropy_strength = kwargs.pop("anisotropy_strength", 1.5)
     volume_downscale_factor = kwargs.pop("volume_downscale_factor", None)
+    opacity_gamma = float(kwargs.pop("opacity_gamma", 1.0))
 
     # Get points in volume space
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -683,6 +684,10 @@ def initialize_gaussians(
         opacity_values, mask_min, mask_max = update_opacities(
             points, mask_volume, scales
         )
+
+        if opacity_gamma != 1.0 and opacity_values is not None:
+            opacity_values = opacity_values.clamp(0.0, 1.0).pow(opacity_gamma)
+
         print(
             f"Opacity range: [{opacity_values.min().item():.4f}, {opacity_values.max().item():.4f}]"
         )

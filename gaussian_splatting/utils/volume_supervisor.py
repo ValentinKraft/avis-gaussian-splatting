@@ -51,6 +51,9 @@ class VolumeSupervisor:
         mask_path: Optional[str] = None,
         loss_type: str = "mse",
         loss_weight: float = 1.0,
+        supervision_target: str = "mask",
+        mask_loss_threshold_rel: float = 0.01,
+        opacity_gamma: float = 1.0,
         device: torch.device = torch.device("cuda"),
         intensity_update_interval: int = 10,
         dirty_threshold_xyz: float = 1e-3,
@@ -73,6 +76,15 @@ class VolumeSupervisor:
         self.loss_weight = loss_weight
         self.verbose = bool(verbose)
 
+        if supervision_target not in {"mask", "ct"}:
+            raise ValueError(
+                "supervision_target must be one of {'mask','ct'}, got "
+                f"{supervision_target!r}."
+            )
+        self.supervision_target = str(supervision_target)
+        self.opacity_gamma = float(opacity_gamma)
+        self.mask_loss_threshold_rel = float(mask_loss_threshold_rel)
+
         # Training is defined to be mask-driven; without a mask the objective is
         # ill-posed for the intended medical workflows.
         if not mask_path:
@@ -80,9 +92,8 @@ class VolumeSupervisor:
                 "mask_path is required for volume supervision (training without a mask is not supported)."
             )
 
-        # Loss masking: only voxels above a small fraction of the mask max
-        # contribute to the supervision objective.
-        self.mask_loss_threshold_rel = 0.01
+        # Loss masking: only voxels above a fraction of mask max contribute.
+        # Default matches the medical workflow requirement: 1% of mask max.
 
         # Initialize volume loader and loss
         # Default behavior (omitted flag) matches downscale_factor=1: keep native resolution.
@@ -275,6 +286,9 @@ class VolumeSupervisor:
             gaussians.volume_max = v_max
 
         if opacities is not None:
+            if self.opacity_gamma != 1.0:
+                opacities = opacities.clamp(0.0, 1.0).pow(self.opacity_gamma)
+
             if xyz.dim() == 2 and xyz.shape[0] == 3:
                 total = xyz.shape[1]
             else:
@@ -582,7 +596,7 @@ class VolumeSupervisor:
                 gaussians.intensities.requires_grad = False
                 use_intensities = gaussians.intensities
 
-        # Convert gaussians to volume using intensity values
+        # Convert gaussians to volume using intensity values (or density for mask supervision)
         # Use non-learnable opacities if they exist, otherwise use the opacity parameter
         use_opacity = opacity
         if hasattr(gaussians, 'opacities') and gaussians.opacities.numel() > 0:
@@ -677,6 +691,8 @@ class VolumeSupervisor:
         bounds_min = torch.tensor([x0, y0, z0], device=xyz.device, dtype=torch.float32) / denom
         bounds_max = torch.tensor([x1, y1, z1], device=xyz.device, dtype=torch.float32) / denom
 
+        render_mode = "density" if self.supervision_target == "mask" else "intensity"
+
         # Convert gaussians to volume ROI (directly uses parameter tensors for gradient flow)
         def _render(points, scales, rotations, opacities, intensities):
             return splat_to_volume(
@@ -684,11 +700,12 @@ class VolumeSupervisor:
                 point_scales=scales,
                 point_rotations=rotations,
                 point_opacities=opacities,
-                point_intensities=intensities,
+                point_intensities=(intensities if render_mode == "intensity" else None),
                 volume_shape=roi_shape,
                 device=xyz.device,
                 active_idx=active_idx,
                 grid_bounds=(bounds_min, bounds_max),
+                render_mode=render_mode,
             )
 
         render_inputs = (xyz, scaling, rotation, use_opacity, use_intensities)
@@ -712,8 +729,12 @@ class VolumeSupervisor:
         self.volume_pred = full_pred.detach().clone()
 
         # Slice targets/mask to ROI for loss.
-        self.volume_gt = self.volume_gt.to(volume_pred_roi.device)
-        target_roi = self.volume_gt[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1]
+        if self.supervision_target == "mask":
+            target_full = self.mask_volume.to(volume_pred_roi.device)
+        else:
+            target_full = self.volume_gt.to(volume_pred_roi.device)
+
+        target_roi = target_full[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1]
         mask_roi = mask_bool[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1]
 
         if self.criterion.loss_type == "mse":

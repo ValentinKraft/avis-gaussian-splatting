@@ -169,6 +169,40 @@ class ModelParams(ParamGroup):
         )
         self._register("volume_loss_weight")
 
+        core.add_argument(
+            "--supervision_target",
+            type=str,
+            default="mask",
+            choices=["mask", "ct"],
+            help=(
+                "Supervision target volume: 'mask' optimizes a probability/density field; "
+                "'ct' optimizes the CT/MR intensity volume."
+            ),
+        )
+        self._register("supervision_target")
+
+        core.add_argument(
+            "--mask_loss_threshold_rel",
+            type=float,
+            default=0.01,
+            help=(
+                "Relative mask threshold used to define the loss support. "
+                "Loss is computed only where mask > (mask_loss_threshold_rel * mask.max())."
+            ),
+        )
+        self._register("mask_loss_threshold_rel")
+
+        core.add_argument(
+            "--opacity_gamma",
+            type=float,
+            default=1.0,
+            help=(
+                "Gamma applied to sampled mask probabilities when converting to per-Gaussian opacity: "
+                "opacity = clamp(p,0,1) ** opacity_gamma. Use 1.0 for identity."
+            ),
+        )
+        self._register("opacity_gamma")
+
         # Number of Gaussians sampled from the mask.
         core.add_argument(
             "--init_n_points",

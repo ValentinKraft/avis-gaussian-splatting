@@ -151,8 +151,8 @@ def sample_opacities_from_mask(
     mask: Tensor,
     scale: Optional[Tensor] = None,
     radius_scale: float = 2.0,
-    min_opacity: float = 0.05,
-    max_opacity: float = 0.95,
+    min_opacity: float = 0.0,
+    max_opacity: float = 1.0,
 ) -> Tuple[Tensor, float, float]:
     """
     Sample opacity values from a mask volume for each point position.
@@ -177,7 +177,7 @@ def sample_opacities_from_mask(
         points, mask, scale, radius_scale
     )
 
-    # Apply opacity range limits
+    # Map mask values to opacity. Defaults preserve the raw [0,1] mask range.
     opacities = min_opacity + raw_opacities * (max_opacity - min_opacity)
 
     return opacities, mask_min, mask_max
