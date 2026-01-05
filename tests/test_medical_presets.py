@@ -7,7 +7,7 @@ def _make_args(**overrides) -> SimpleNamespace:
     """Return a namespace that mimics the CLI arguments used by train.py."""
 
     defaults = {
-        "medical_mode": "organ",
+        "medical_mode": "none",
         "enable_diversity": False,
         "enable_diagnostics": False,
         "init_n_points": 4000,

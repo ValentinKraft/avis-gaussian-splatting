@@ -444,9 +444,12 @@ class TrainingScriptParams(ParamGroup):
         group.add_argument(
             "--medical_mode",
             type=str,
-            choices=["organ", "vessel"],
-            default="organ",
-            help="Applies a simplified preset for medical volumes: organ (default) or vessel.",
+            choices=["none", "organ", "vessel"],
+            default="none",
+            help=(
+                "Optional medical-training presets. Use 'organ' or 'vessel' to enable preset overrides; "
+                "use 'none' (default) to keep all CLI knobs (including --init_n_points) fully user-controlled."
+            ),
         )
         self._register("medical_mode")
 

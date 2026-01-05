@@ -55,7 +55,7 @@ class MedicalPresetState:
 def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
     """Apply organ/vessel presets and return the resulting state."""
 
-    mode = getattr(args, "medical_mode", "organ")
+    mode = getattr(args, "medical_mode", "none")
     active = mode in ("organ", "vessel")
     diversity_enabled = bool(getattr(args, "enable_diversity", False))
     diagnostics_enabled = bool(getattr(args, "enable_diagnostics", False))
