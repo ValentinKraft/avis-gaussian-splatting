@@ -59,6 +59,7 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
     active = mode in ("organ", "vessel")
     diversity_enabled = bool(getattr(args, "enable_diversity", False))
     diagnostics_enabled = bool(getattr(args, "enable_diagnostics", False))
+    disable_densification = bool(getattr(args, "disable_densification", False))
     init_points = getattr(args, "init_n_points", 0)
 
     state = MedicalPresetState(
@@ -66,7 +67,7 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
         active=active,
         diversity_enabled=diversity_enabled,
         diagnostics_enabled=diagnostics_enabled,
-        densification_enabled=True,
+        densification_enabled=not disable_densification,
         scale_constraints_enabled=True,
         init_points=init_points,
     )
@@ -101,13 +102,19 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
         opt.densify_from_iter = max(opt.iterations + 1, opt.densify_from_iter)
         opt.densify_until_iter = opt.iterations
     else:
-        state.densification_enabled = True
-        opt.densification_interval = max(opt.densification_interval, 200)
-        opt.densify_grad_threshold = max(opt.densify_grad_threshold, 5e-4)
-        opt.densify_from_iter = max(opt.densify_from_iter, 400)
-        opt.densify_until_iter = min(
-            opt.densify_until_iter, opt.iterations, opt.densify_from_iter + 2000
-        )
+        state.densification_enabled = not disable_densification
+        if state.densification_enabled:
+            opt.densification_interval = max(opt.densification_interval, 200)
+            opt.densify_grad_threshold = max(opt.densify_grad_threshold, 5e-4)
+            opt.densify_from_iter = max(opt.densify_from_iter, 400)
+            opt.densify_until_iter = min(
+                opt.densify_until_iter, opt.iterations, opt.densify_from_iter + 2000
+            )
+
+    if disable_densification:
+        state.densification_enabled = False
+        opt.densify_from_iter = max(opt.iterations + 1, opt.densify_from_iter)
+        opt.densify_until_iter = opt.iterations
 
     return state
 

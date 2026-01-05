@@ -615,6 +615,14 @@ class OptimizationParams(ParamGroup):
 
         densify = parser.add_argument_group("Densification & Regularization")
 
+        densify.add_argument(
+            "--disable_densification",
+            default=False,
+            action="store_true",
+            help="Disable densification and pruning passes during training.",
+        )
+        self._register("disable_densification")
+
         # Dense fraction (legacy compatibility).
         densify.add_argument(
             "--percent_dense",
