@@ -741,8 +741,8 @@ module LoadNIfTI {
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1509 613 420 274"
-        relativePosition = "-0.0003 -0.0589"
+        geometry = "1507 613 420 274"
+        relativePosition = "-0.0009 -0.0589"
         sizeHint = "420 274"
         wasOpen = no
       }
@@ -750,7 +750,7 @@ module LoadNIfTI {
   }
   fields {
     instanceName = LoadNIfTI
-    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_test-data_/volume.nii.gz
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/volume.nii.gz
     inApplyMode = AutoLoad
   }
 }
@@ -802,10 +802,10 @@ module View3D {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "424 215 1181 894"
-        relativePosition = "-0.2049 -0.3448"
+        geometry = "423 215 1181 894"
+        relativePosition = "-0.2052 -0.3448"
         sizeHint = "1005 629"
-        wasOpen = yes
+        wasOpen = no
       }
     }
   }
@@ -834,12 +834,12 @@ module View3D {
     alphaFactor = 1
     colorFactor = "1 1 1"
     camType = TRUE
-    camPosition = "248.527954101563 -813.512390136719 -272.570007324219"
-    camOrientation = "0.972390651702881 0.184011816978455 0.143513575196266 1.66153514385223"
+    camPosition = "0.876576960086823 -2.45526504516602 -0.178089365363121"
+    camOrientation = "0.972390651702881 0.184011831879616 0.143513575196266 1.66153514385223"
     initialCameraOrientation = CAMERA_KEEP_AS_IS
-    camFar = 942.8006
-    camNear = 497.66077
-    camFocal = 720.00873
+    camFar = 3.6131265
+    camNear = 1.6131265
+    camFocal = 2.6131265
     camHeight = 0.78539801
     decoration = FALSE
     annotations = TRUE
@@ -943,10 +943,10 @@ module SoLUTEditor {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1628 225 513 459"
-        relativePosition = "0.0480 -0.3376"
+        geometry = "1627 225 513 459"
+        relativePosition = "0.0477 -0.3376"
         sizeHint = "513 459"
-        wasOpen = yes
+        wasOpen = no
       }
     }
   }
