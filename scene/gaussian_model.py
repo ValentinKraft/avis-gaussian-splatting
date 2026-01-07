@@ -641,33 +641,71 @@ class GaussianModel:
             self.get_scaling, scaling_modifier, self._rotation
         )
 
-    def enforce_scaling_constraint(self, iteration: Optional[int] = None) -> None:
-        """Clamp log-scale values with optional warmup relaxation."""
-        if self._initial_scaling.numel() == 0 or self._scaling.numel() == 0:
+    def enforce_scaling_constraint(
+        self,
+        iteration: Optional[int] = None,
+        *,
+        apply_relative: bool = True,
+    ) -> None:
+        """Clamp log-scale values.
+
+        Applies absolute voxel-unit min/max clamps when voxel spacing is available.
+        Optionally applies the existing relative-to-initial max clamp with warmup.
+        """
+        if self._scaling.numel() == 0:
             return
 
         with torch.no_grad():
             if iteration is None:
                 iteration = self._latest_iteration
-            warmup_iters = max(int(self.scaling_constraint_warmup_iters), 0)
-            relax = max(float(self.scaling_constraint_relaxation), 1.0)
-            warmup_multiplier = 1.0
-            if warmup_iters > 0:
-                progress = min(max(float(iteration), 0.0) / warmup_iters, 1.0)
-                warmup_multiplier = 1.0 + (relax - 1.0) * (1.0 - progress)
-            effective_factor = float(self.max_scale_factor * warmup_multiplier)
-            max_log_scaling = self._initial_scaling + torch.log(
-                torch.as_tensor(
-                    effective_factor,
-                    device=self._scaling.device,
-                    dtype=self._scaling.dtype,
+
+            device = self._scaling.device
+            dtype = self._scaling.dtype
+
+            abs_min_log = None
+            abs_max_log = None
+            voxel_size = getattr(self, "voxel_size", None)
+            if voxel_size is not None:
+                voxel = torch.as_tensor(voxel_size, device=device, dtype=dtype)
+                if voxel.numel() == 1:
+                    voxel = voxel.view(1).repeat(3)
+                voxel = voxel.view(1, 3)
+
+                min_scale_vox = float(getattr(self, "min_scale_vox", 0.0))
+                max_scale_vox = float(getattr(self, "max_scale_vox", 0.0))
+                if min_scale_vox > 0.0 and max_scale_vox > 0.0:
+                    if max_scale_vox < min_scale_vox:
+                        max_scale_vox = min_scale_vox
+                    abs_min = (voxel * min_scale_vox).clamp_min(1e-12)
+                    abs_max = (voxel * max_scale_vox).clamp_min(1e-12)
+                    abs_min_log = torch.log(abs_min)
+                    abs_max_log = torch.log(abs_max)
+
+            max_log_scaling = None
+            if apply_relative and self._initial_scaling.numel() != 0:
+                warmup_iters = max(int(self.scaling_constraint_warmup_iters), 0)
+                relax = max(float(self.scaling_constraint_relaxation), 1.0)
+                warmup_multiplier = 1.0
+                if warmup_iters > 0:
+                    progress = min(max(float(iteration), 0.0) / warmup_iters, 1.0)
+                    warmup_multiplier = 1.0 + (relax - 1.0) * (1.0 - progress)
+                effective_factor = float(self.max_scale_factor * warmup_multiplier)
+                max_log_scaling = self._initial_scaling + torch.log(
+                    torch.as_tensor(effective_factor, device=device, dtype=dtype)
                 )
-            )
-            self._scaling.copy_(torch.minimum(self._scaling, max_log_scaling))
-            if (
-                self._prev_scaling is not None
-                and self._prev_scaling.shape == self._scaling.shape
-            ):
+
+            if abs_min_log is not None:
+                self._scaling.copy_(torch.maximum(self._scaling, abs_min_log))
+
+            if abs_max_log is not None and max_log_scaling is not None:
+                combined_max = torch.minimum(max_log_scaling, abs_max_log)
+                self._scaling.copy_(torch.minimum(self._scaling, combined_max))
+            elif abs_max_log is not None:
+                self._scaling.copy_(torch.minimum(self._scaling, abs_max_log))
+            elif max_log_scaling is not None:
+                self._scaling.copy_(torch.minimum(self._scaling, max_log_scaling))
+
+            if self._prev_scaling is not None and self._prev_scaling.shape == self._scaling.shape:
                 self._prev_scaling.copy_(self._scaling.detach())
 
     def enforce_position_displacement_constraint(self) -> None:
@@ -1719,14 +1757,17 @@ class GaussianModel:
                 )
 
             normalized = np.clip(normalized, 0.0, 1.0)
-            divisor = getattr(self, "intensity_color_divisor", 1.0)
-            scaled = normalized / np.abs(divisor)
-            rgb_values = np.round(np.clip(scaled, 0.0, 255.0)).astype(np.float32)
-            f_dc = np.repeat(rgb_values[:, None], 3, axis=1)
+            divisor = float(getattr(self, "intensity_color_divisor", 1.0))
+            divisor = max(abs(divisor), 1e-8)
+            gray01 = np.clip(normalized / divisor, 0.0, 1.0)
+
+            # Store as SH DC coefficients (renderer applies +0.5), so use [-0.5, 0.5].
+            gray_dc = (gray01 - 0.5).astype(np.float32)
+            f_dc = np.repeat(gray_dc[:, None], 3, axis=1)
         else:
             # Default to mid-gray if no intensities available
             print("Could not find intensity values, using default mid-gray.")
-            f_dc = np.ones((num_points, 3), dtype=np.float32) * 128.0
+            f_dc = np.zeros((num_points, 3), dtype=np.float32)
 
         return f_dc
 

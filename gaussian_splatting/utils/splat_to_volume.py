@@ -274,7 +274,7 @@ def splat_to_volume(
             dtype=accum_dtype,
         )
     min_sigma = voxel_spacing * scale_ratio
-    min_sigma = torch.maximum(min_sigma, 0.5 * voxel_spacing)
+    min_sigma = torch.maximum(min_sigma, 1.0 * voxel_spacing)
     min_sigma = min_sigma.to(accum_dtype)
     min_sigma_broadcast = min_sigma.unsqueeze(0)
 

@@ -59,7 +59,9 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
     active = mode in ("organ", "vessel")
     diversity_enabled = bool(getattr(args, "enable_diversity", False))
     diagnostics_enabled = bool(getattr(args, "enable_diagnostics", False))
+    enable_densification = bool(getattr(args, "enable_densification", False))
     disable_densification = bool(getattr(args, "disable_densification", False))
+    densification_enabled = bool(enable_densification and not disable_densification)
     init_points = getattr(args, "init_n_points", 0)
 
     state = MedicalPresetState(
@@ -67,10 +69,14 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
         active=active,
         diversity_enabled=diversity_enabled,
         diagnostics_enabled=diagnostics_enabled,
-        densification_enabled=not disable_densification,
+        densification_enabled=densification_enabled,
         scale_constraints_enabled=True,
         init_points=init_points,
     )
+
+    if not state.densification_enabled:
+        opt.densify_from_iter = max(opt.iterations + 1, opt.densify_from_iter)
+        opt.densify_until_iter = opt.iterations
 
     if not active:
         return state
@@ -102,7 +108,7 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
         opt.densify_from_iter = max(opt.iterations + 1, opt.densify_from_iter)
         opt.densify_until_iter = opt.iterations
     else:
-        state.densification_enabled = not disable_densification
+        state.densification_enabled = densification_enabled
         if state.densification_enabled:
             opt.densification_interval = max(opt.densification_interval, 200)
             opt.densify_grad_threshold = max(opt.densify_grad_threshold, 5e-4)
@@ -111,7 +117,7 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
                 opt.densify_until_iter, opt.iterations, opt.densify_from_iter + 2000
             )
 
-    if disable_densification:
+    if disable_densification and state.densification_enabled:
         state.densification_enabled = False
         opt.densify_from_iter = max(opt.iterations + 1, opt.densify_from_iter)
         opt.densify_until_iter = opt.iterations
@@ -299,6 +305,10 @@ def training(
     )
     gaussians.set_intensity_color_divisor(getattr(opt, "intensity_color_divisor", 1.0))
 
+    # Absolute voxel-unit scale clamps (applied per-axis).
+    gaussians.min_scale_vox = float(getattr(opt, "min_scale_vox", 1.0))
+    gaussians.max_scale_vox = float(getattr(opt, "max_scale_vox", 10.0))
+
     # Propagate constraint-related knobs from CLI into the Gaussian model.
     gaussians.max_scale_factor = getattr(opt, "max_scale_factor", gaussians.max_scale_factor)
     gaussians._max_scale_factor_base = gaussians.max_scale_factor
@@ -360,10 +370,15 @@ def training(
         loss_type=loss_type,
         loss_weight=loss_weight,
         supervision_target=getattr(args, "supervision_target", "mask"),
+        density_scale=getattr(args, "density_scale", 1.0),
         mask_loss_threshold_rel=getattr(args, "mask_loss_threshold_rel", 0.01),
         opacity_gamma=getattr(args, "opacity_gamma", 1.0),
+        outside_mask_weight=getattr(args, "outside_mask_weight", 0.1),
         intensity_update_interval=getattr(opt, "intensity_update_interval", 10),
     )
+
+    # Provide voxel spacing to the Gaussian model so voxel-unit clamps work.
+    gaussians.voxel_size = volume_supervisor.voxel_size
     if hasattr(args, "structure_sigma"):
         volume_supervisor.structure_sigma = float(args.structure_sigma)
     if hasattr(args, "structure_mask_threshold"):
@@ -712,9 +727,11 @@ def training(
             # Verify learning rates on first few iterations
             _log_learning_rates(gaussians, iteration)
 
-            # Enforce maximum scaling constraint (2x initial size)
-            if scale_constraints_enabled:
-                gaussians.enforce_scaling_constraint()
+            # Enforce scale clamps (absolute clamps always; relative clamp can be disabled by presets).
+            gaussians.enforce_scaling_constraint(
+                iteration=iteration,
+                apply_relative=bool(scale_constraints_enabled),
+            )
             gaussians.enforce_position_displacement_constraint()
 
             # Adaptive density control for volume-based training
@@ -747,7 +764,7 @@ def training(
                         # Perform densification and pruning
                         gaussians.densify_and_prune(
                             max_grad=opt.densify_grad_threshold,
-                            min_opacity=0.005,  # Lower threshold for volume-based training
+                            min_opacity=1e-4,  # Less aggressive pruning for volume-based training
                             extent=extent,
                             max_screen_size=None,  # No screen size limit for volume training
                             radii=None,  # No radii for volume training

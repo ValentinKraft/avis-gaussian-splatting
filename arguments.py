@@ -182,6 +182,17 @@ class ModelParams(ParamGroup):
         self._register("supervision_target")
 
         core.add_argument(
+            "--density_scale",
+            type=float,
+            default=1.0,
+            help=(
+                "Multiplier applied to accumulated density before squashing when render_mode='density'. "
+                "Lower values reduce saturation (fewer hard-white blobs)."
+            ),
+        )
+        self._register("density_scale")
+
+        core.add_argument(
             "--mask_loss_threshold_rel",
             type=float,
             default=0.01,
@@ -202,6 +213,17 @@ class ModelParams(ParamGroup):
             ),
         )
         self._register("opacity_gamma")
+
+        core.add_argument(
+            "--outside_mask_weight",
+            type=float,
+            default=0.1,
+            help=(
+                "Soft penalty applied to predictions outside the mask within the ROI. "
+                "Adds outside_mask_weight * mean(pred[outside]^2) to the loss when supervision_target='mask'."
+            ),
+        )
+        self._register("outside_mask_weight")
 
         # Number of Gaussians sampled from the mask.
         core.add_argument(
@@ -616,10 +638,24 @@ class OptimizationParams(ParamGroup):
         densify = parser.add_argument_group("Densification & Regularization")
 
         densify.add_argument(
+            "--enable_densification",
+            default=False,
+            action="store_true",
+            help=(
+                "Enable densification + pruning passes during training. "
+                "Disabled by default for stability in volume-only training."
+            ),
+        )
+        self._register("enable_densification")
+
+        densify.add_argument(
             "--disable_densification",
             default=False,
             action="store_true",
-            help="Disable densification and pruning passes during training.",
+            help=(
+                "Disable densification + pruning passes during training (override). "
+                "Prefer leaving densification disabled by default unless explicitly enabled."
+            ),
         )
         self._register("disable_densification")
 
@@ -780,6 +816,22 @@ class OptimizationParams(ParamGroup):
             help="Cap on how much a Gaussian scale may grow vs. initialization (slightly tighter to avoid oversized splats).",
         )
         self._register("max_scale_factor")
+
+        constraint.add_argument(
+            "--min_scale_vox",
+            type=float,
+            default=1.0,
+            help="Absolute minimum Gaussian scale in voxel units (applied per-axis).",
+        )
+        self._register("min_scale_vox")
+
+        constraint.add_argument(
+            "--max_scale_vox",
+            type=float,
+            default=10.0,
+            help="Absolute maximum Gaussian scale in voxel units (applied per-axis).",
+        )
+        self._register("max_scale_vox")
 
         # Warmup iterations for the scaling constraint.
         constraint.add_argument(

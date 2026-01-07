@@ -54,6 +54,8 @@ class VolumeSupervisor:
         supervision_target: str = "mask",
         mask_loss_threshold_rel: float = 0.01,
         opacity_gamma: float = 1.0,
+        density_scale: float = 1.0,
+        outside_mask_weight: float = 0.1,
         device: torch.device = torch.device("cuda"),
         intensity_update_interval: int = 10,
         dirty_threshold_xyz: float = 1e-3,
@@ -83,7 +85,9 @@ class VolumeSupervisor:
             )
         self.supervision_target = str(supervision_target)
         self.opacity_gamma = float(opacity_gamma)
+        self.density_scale = float(density_scale)
         self.mask_loss_threshold_rel = float(mask_loss_threshold_rel)
+        self.outside_mask_weight = float(outside_mask_weight)
 
         # Training is defined to be mask-driven; without a mask the objective is
         # ill-posed for the intended medical workflows.
@@ -161,6 +165,7 @@ class VolumeSupervisor:
         self.metrics = {
             'volume_loss': 0.0,
             'dice_score': 0.0,
+            'outside_mask_loss': 0.0,
         }
         self._step = 0
         self.last_intensity_update_count = 0
@@ -706,6 +711,7 @@ class VolumeSupervisor:
                 active_idx=active_idx,
                 grid_bounds=(bounds_min, bounds_max),
                 render_mode=render_mode,
+                density_scale=float(getattr(self, "density_scale", 1.0)),
             )
 
         render_inputs = (xyz, scaling, rotation, use_opacity, use_intensities)
@@ -737,17 +743,32 @@ class VolumeSupervisor:
         target_roi = target_full[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1]
         mask_roi = mask_bool[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1]
 
+        main_loss = None
         if self.criterion.loss_type == "mse":
             pred_vals = volume_pred_roi[mask_roi]
             tgt_vals = target_roi[mask_roi]
             diff = pred_vals - tgt_vals
-            loss = (diff * diff).mean()
+            main_loss = (diff * diff).mean()
         else:
             # For non-MSE objectives, masking by zeroing outside-mask voxels
             # restricts the loss support to the ROI.
             masked_pred = volume_pred_roi * mask_roi.to(dtype=volume_pred_roi.dtype)
             masked_tgt = target_roi * mask_roi.to(dtype=target_roi.dtype)
-            loss = self.criterion(masked_pred, masked_tgt)
+            main_loss = self.criterion(masked_pred, masked_tgt)
+
+        loss = main_loss
+
+        outside_loss = None
+        outside_weight = float(getattr(self, "outside_mask_weight", 0.0))
+        if (
+            outside_weight > 0.0
+            and self.supervision_target == "mask"
+        ):
+            outside_roi = ~mask_roi
+            if outside_roi.any():
+                outside_vals = volume_pred_roi[outside_roi]
+                outside_loss = (outside_vals * outside_vals).mean()
+                loss = loss + outside_weight * outside_loss
 
         unweighted_loss = loss
 
@@ -770,8 +791,12 @@ class VolumeSupervisor:
         with torch.no_grad():
             self.metrics["volume_loss"] = float(loss.item())
             self.metrics["volume_loss_unweighted"] = float(unweighted_loss.item())
+            if outside_loss is not None:
+                self.metrics["outside_mask_loss"] = float(outside_loss.item())
+            else:
+                self.metrics["outside_mask_loss"] = 0.0
             if self.criterion.loss_type == 'dice':
-                dice_score = 1.0 - float(unweighted_loss.item())
+                dice_score = 1.0 - float(main_loss.item())
                 self.metrics["dice_score"] = float(dice_score)
 
         # Return both loss and volume gradients for parameter diversity losses
