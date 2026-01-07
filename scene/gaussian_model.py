@@ -1733,13 +1733,25 @@ class GaussianModel:
                 f"range: [{intensity_values.min():.4f}, {intensity_values.max():.4f}]"
             )
 
-            if (
+            # Intensities produced by volume sampling are typically already normalized to [0,1].
+            # Avoid re-normalizing against CT HU min/max (which collapses contrast).
+            already_normalized = (
+                intensity_values.size > 0
+                and float(intensity_values.min()) >= -0.05
+                and float(intensity_values.max()) <= 1.05
+            )
+
+            if already_normalized:
+                normalized = intensity_values.astype(np.float32)
+            elif (
                 hasattr(self, "volume_min")
                 and hasattr(self, "volume_max")
                 and self.volume_max > self.volume_min
             ):
                 denom = max(self.volume_max - self.volume_min, 1e-8)
-                normalized = (intensity_values - self.volume_min) / denom
+                normalized = ((intensity_values - self.volume_min) / denom).astype(
+                    np.float32
+                )
                 print(
                     f"Applying cached global min/max [{self.volume_min:.4f}, {self.volume_max:.4f}]"
                 )
@@ -1747,22 +1759,21 @@ class GaussianModel:
                 local_min = float(intensity_values.min())
                 local_max = float(intensity_values.max())
                 if local_max > local_min:
-                    normalized = (intensity_values - local_min) / (
-                        local_max - local_min
+                    normalized = ((intensity_values - local_min) / (local_max - local_min)).astype(
+                        np.float32
                     )
                 else:
                     normalized = np.full_like(intensity_values, 0.5, dtype=np.float32)
-                print(
-                    f"Fallback normalization range [{local_min:.4f}, {local_max:.4f}]"
-                )
+                print(f"Fallback normalization range [{local_min:.4f}, {local_max:.4f}]")
 
             normalized = np.clip(normalized, 0.0, 1.0)
             divisor = float(getattr(self, "intensity_color_divisor", 1.0))
             divisor = max(abs(divisor), 1e-8)
             gray01 = np.clip(normalized / divisor, 0.0, 1.0)
 
-            # Store as SH DC coefficients (renderer applies +0.5), so use [-0.5, 0.5].
-            gray_dc = (gray01 - 0.5).astype(np.float32)
+            # Store as SH DC coefficients (see utils/sh_utils.RGB2SH): (rgb - 0.5) / C0
+            # so that SH2RGB (sh * C0 + 0.5) yields the intended grayscale.
+            gray_dc = ((gray01 - 0.5) / float(SH_C0)).astype(np.float32)
             f_dc = np.repeat(gray_dc[:, None], 3, axis=1)
         else:
             # Default to mid-gray if no intensities available

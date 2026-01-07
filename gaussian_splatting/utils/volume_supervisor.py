@@ -209,42 +209,17 @@ class VolumeSupervisor:
         coverage_mask: Optional[Tensor] = None
 
         if use_mean_cover:
-            large_mask = gaussians.large_splat_mask(
-                getattr(gaussians, "intensity_large_splat_threshold", 0.0)
-            )
-            large_mask = large_mask.to(device=pts.device)
-            if idx_tensor is None:
-                coverage_mask = large_mask
-            else:
-                coverage_mask = large_mask[idx_tensor]
-
-            intensities, v_min, v_max = sample_mean_covered_voxel_intensities(
+            # Footprint-aware sampling uses per-splat scales and trilinear interpolation.
+            # This approximates "enclosed voxel" averaging without the heavy Python loop.
+            intensities, opacities, v_min, v_max = update_intensities_and_opacities(
                 pts,
                 self.volume_gt,
-                scales,
-                self.volume_origin,
-                self.voxel_size,
-                radius_scale=getattr(gaussians, "mean_covered_radius", 2.5),
-                coverage_mask=coverage_mask,
+                mask=self.mask_volume,
+                scale=scales,
                 normalize=True,
                 min_val=self.global_intensity_min,
                 max_val=self.global_intensity_max,
             )
-            if self.mask_volume is not None:
-                opacities, _, _ = sample_mean_covered_voxel_intensities(
-                    pts,
-                    self.mask_volume,
-                    scales,
-                    self.volume_origin,
-                    self.voxel_size,
-                    radius_scale=getattr(gaussians, "mean_covered_radius", 2.5),
-                    coverage_mask=coverage_mask,
-                    normalize=False,
-                    min_val=0.0,
-                    max_val=1.0,
-                )
-            else:
-                opacities = None
         else:
             intensities, opacities, v_min, v_max = update_intensities_and_opacities(
                 pts,

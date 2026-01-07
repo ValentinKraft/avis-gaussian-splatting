@@ -129,6 +129,8 @@ def sample_intensities_from_volume(
         print(f"Trilinear sampling check max |diff| = {diff:.4e}")
 
     volume_5d = volume.unsqueeze(0).unsqueeze(0)
+
+    # Base (center) sample.
     samples = F.grid_sample(
         volume_5d,
         grid,
@@ -137,6 +139,56 @@ def sample_intensities_from_volume(
         align_corners=True,
     )
     intensities = samples.view(-1, 1)
+
+    # If a splat is larger than about one voxel, approximate the mean intensity within
+    # its footprint by sampling a small grid of offsets and Gaussian-weight averaging.
+    if scale is not None and scale.numel() > 0 and radius_scale > 0.0:
+        scales_n3 = _ensure_n3(scale).to(device=device, dtype=torch.float32)
+        # Voxel size in normalized [0,1]^3 coordinates.
+        D, H, W = volume.shape
+        voxel_norm = torch.tensor(
+            [1.0 / max(W - 1, 1), 1.0 / max(H - 1, 1), 1.0 / max(D - 1, 1)],
+            device=device,
+            dtype=torch.float32,
+        )
+        large_mask = scales_n3.max(dim=1).values >= voxel_norm.max()
+
+        if large_mask.any():
+            # Offsets in "sigma units"; weights are independent of the actual scale.
+            # Using [-1,0,1]^3 with a 0.5 factor keeps samples within ~1.5*sigma.
+            offset_vals = torch.tensor([-1.0, 0.0, 1.0], device=device, dtype=torch.float32)
+            offsets = torch.stack(
+                torch.meshgrid(offset_vals, offset_vals, offset_vals, indexing="ij"),
+                dim=-1,
+            ).view(-1, 3)
+            offsets = offsets * (0.5 * float(radius_scale))
+            weights = torch.exp(-0.5 * (offsets ** 2).sum(dim=1))
+            weights = weights / weights.sum().clamp_min(1e-8)
+
+            idx = torch.nonzero(large_mask, as_tuple=False).view(-1)
+            pts_large = points_n3[idx]
+            scale_large = scales_n3[idx]
+
+            pts_samples = pts_large[:, None, :] + scale_large[:, None, :] * offsets[None, :, :]
+            pts_samples = pts_samples.clamp(0.0, 1.0)
+
+            grid_large = world_to_grid(
+                pts_samples.reshape(-1, 3),
+                origin,
+                voxel,
+                volume.shape,
+            ).view(1, -1, 1, 1, 3)
+            samples_large = F.grid_sample(
+                volume_5d,
+                grid_large,
+                mode="bilinear",
+                padding_mode="zeros",
+                align_corners=True,
+            ).view(idx.shape[0], -1)
+
+            pooled = (samples_large * weights[None, :]).sum(dim=1, keepdim=True)
+            intensities = intensities.clone()
+            intensities[idx] = pooled
 
     if normalize and volume_max > volume_min:
         denominator = max(volume_max - volume_min, 1e-8)
