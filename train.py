@@ -428,6 +428,10 @@ def training(
         structure_sigma=getattr(args, "structure_sigma", 1.0),
         structure_min_vesselness=getattr(args, "structure_min_vesselness", 0.1),
         anisotropy_strength=getattr(args, "anisotropy_strength", 0.0),
+        init_anisotropy_ratio=getattr(args, "init_anisotropy_ratio", 1.0),
+        border_distance_vox=getattr(args, "border_distance_vox", 0.0),
+        border_flatten_ratio=getattr(args, "border_flatten_ratio", 1.0),
+        border_grad_sigma=getattr(args, "border_grad_sigma", 1.5),
     )
 
     # Set spatial_lr_scale after volume initialization

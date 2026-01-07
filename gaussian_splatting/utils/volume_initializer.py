@@ -29,7 +29,11 @@ from gaussian_splatting.utils.intensity_sampler import (
 )
 from gaussian_splatting.utils.orientation_field import (
     build_structure_field,
+    compute_gradient_field,
+    compute_hessian_field,
     default_origin_and_spacing,
+    gather_rotation_from_gradient,
+    quat_from_directions,
     random_quat_perturb,
     sample_structure_field,
     world_to_voxel,
@@ -605,6 +609,10 @@ def initialize_gaussians(
     structure_sigma = kwargs.pop("structure_sigma", 1.0)
     structure_min_vesselness = kwargs.pop("structure_min_vesselness", 0.2)
     anisotropy_strength = kwargs.pop("anisotropy_strength", 0.0)
+    init_anisotropy_ratio = float(kwargs.pop("init_anisotropy_ratio", 1.0))
+    border_distance_vox = float(kwargs.pop("border_distance_vox", 0.0))
+    border_flatten_ratio = float(kwargs.pop("border_flatten_ratio", 1.0))
+    border_grad_sigma = float(kwargs.pop("border_grad_sigma", 1.5))
     volume_downscale_factor = kwargs.pop("volume_downscale_factor", None)
     opacity_gamma = float(kwargs.pop("opacity_gamma", 1.0))
 
@@ -618,6 +626,16 @@ def initialize_gaussians(
         **kwargs,
     )
     volume_points = points.clone()
+
+    if init_anisotropy_ratio > 1.0:
+        # Make all Gaussians anisotropic at init time in their local frame.
+        # This uses the axis-2 scale component as the "long" axis by convention.
+        ratio = float(init_anisotropy_ratio)
+        ratio = max(ratio, 1.0 + 1e-6)
+        shrink = 1.0 / math.sqrt(ratio)
+        scales[:, 2] = scales[:, 2] * ratio
+        scales[:, 0] = scales[:, 0] * shrink
+        scales[:, 1] = scales[:, 1] * shrink
 
     # Sample intensity values from the volume if available
     intensities = None
@@ -746,6 +764,89 @@ def initialize_gaussians(
                 f"Applied Hessian anisotropy to {active.sum().item()} seeds "
                 f"(threshold={structure_min_vesselness:.2f})."
             )
+
+    # Border splats: align the Hessian largest-|lambda| eigenvector to the mask gradient
+    # surface normal, then flatten along that normal (init-only).
+    enable_border = (
+        mask_volume is not None
+        and border_distance_vox > 0.0
+        and border_flatten_ratio > 1.0
+        and volume_points.numel() != 0
+    )
+    if enable_border:
+        with torch.no_grad():
+            init_mask_threshold = float(kwargs.get("mask_threshold", structure_mask_threshold))
+            origin, spacing = default_origin_and_spacing(
+                mask_volume.shape, volume_points.device
+            )
+            ijk = world_to_voxel(volume_points, origin, spacing)
+            ijk_round = ijk.round().long()
+            D, H, W = mask_volume.shape
+            ijk_round[:, 0].clamp_(0, D - 1)
+            ijk_round[:, 1].clamp_(0, H - 1)
+            ijk_round[:, 2].clamp_(0, W - 1)
+
+            dist_field = _compute_distance_field(
+                mask_volume, threshold=max(float(init_mask_threshold), 1e-4)
+            )
+            dist_at = dist_field[
+                ijk_round[:, 0], ijk_round[:, 1], ijk_round[:, 2]
+            ]
+            border_mask = dist_at <= float(border_distance_vox)
+
+            if border_mask.any():
+                grad_field, mag_field = compute_gradient_field(
+                    mask_volume, sigma_pre=float(border_grad_sigma)
+                )
+                rot_g, fallback_g = gather_rotation_from_gradient(
+                    grad_field, mag_field, ijk
+                )
+                normal_dir = rot_g[:, :, 2]
+
+                hessian = compute_hessian_field(
+                    mask_volume, sigma_pre=float(structure_sigma)
+                )
+                hess_pts = hessian[
+                    ijk_round[border_mask, 0],
+                    ijk_round[border_mask, 1],
+                    ijk_round[border_mask, 2],
+                ]
+                hess_pts = torch.nan_to_num(
+                    hess_pts, nan=0.0, posinf=0.0, neginf=0.0
+                )
+                evals, evecs = torch.linalg.eigh(hess_pts)
+                idx = evals.abs().argmax(dim=1)
+                arange = torch.arange(
+                    evecs.shape[0], device=evecs.device, dtype=torch.long
+                )
+                h_dir = evecs[arange, :, idx]
+                h_dir = torch.nan_to_num(h_dir, nan=0.0, posinf=0.0, neginf=0.0)
+
+                n_dir = normal_dir[border_mask]
+                dot = (h_dir * n_dir).sum(dim=1, keepdim=True)
+                flip = torch.where(dot < 0.0, -1.0, 1.0).to(h_dir.dtype)
+                h_dir = h_dir * flip
+
+                # Skip overrides where the gradient field fell back to identity.
+                border_idx = border_mask.nonzero(as_tuple=False).squeeze(1)
+                good = ~fallback_g[border_idx]
+                if good.any():
+                    quats_border, _ = quat_from_directions(h_dir[good])
+                    initial_rotations[border_idx[good]] = quats_border
+
+                    # Flatten along local axis-2 (normal) and expand tangential axes.
+                    ratio = float(border_flatten_ratio)
+                    ratio = max(ratio, 1.0 + 1e-6)
+                    tangential = math.sqrt(ratio)
+                    idx_good = border_idx[good]
+                    scales[idx_good, 2] = scales[idx_good, 2] / ratio
+                    scales[idx_good, 0] = scales[idx_good, 0] * tangential
+                    scales[idx_good, 1] = scales[idx_good, 1] * tangential
+
+                    print(
+                        f"Applied border normal alignment + flattening to {idx_good.numel()} seeds "
+                        f"(dist<= {border_distance_vox:.2f} vox, ratio={border_flatten_ratio:.2f})."
+                    )
 
     # Set up model parameters and feature tensors
     _setup_model_parameters(

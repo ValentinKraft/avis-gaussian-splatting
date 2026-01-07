@@ -283,6 +283,50 @@ class ModelParams(ParamGroup):
         )
         self._register("anisotropy_strength")
 
+        core.add_argument(
+            "--init_anisotropy_ratio",
+            type=float,
+            default=1.0,
+            help=(
+                "Global anisotropy ratio applied to all Gaussians at initialization. "
+                "Values > 1.0 make splats anisotropic (stretch axis-2 in the local frame and shrink the other axes to roughly preserve volume). "
+                "Set to 1.0 to keep isotropic initialization."
+            ),
+        )
+        self._register("init_anisotropy_ratio")
+
+        core.add_argument(
+            "--border_distance_vox",
+            type=float,
+            default=0.0,
+            help=(
+                "If > 0, classifies Gaussians within this many voxels of the mask boundary as 'border' and aligns them to the surface normal (mask gradient) at init time."
+            ),
+        )
+        self._register("border_distance_vox")
+
+        core.add_argument(
+            "--border_flatten_ratio",
+            type=float,
+            default=1.0,
+            help=(
+                "Border-only flattening ratio applied at init time (requires --border_distance_vox > 0). "
+                "Values > 1.0 make border splats flatter by shrinking the local axis-2 scale and expanding the tangential axes to roughly preserve volume."
+            ),
+        )
+        self._register("border_flatten_ratio")
+
+        core.add_argument(
+            "--border_grad_sigma",
+            type=float,
+            default=1.5,
+            help=(
+                "Gaussian blur (voxels) applied before computing mask gradients for border surface normals. "
+                "Used only when --border_distance_vox > 0."
+            ),
+        )
+        self._register("border_grad_sigma")
+
         legacy = parser.add_argument_group("Legacy RGB Inputs (kept for compatibility)")
 
         # COLMAP/SfM dataset directory.

@@ -559,6 +559,35 @@ def rotmat_to_quat(rot_mats: Tensor) -> Tensor:
     return quats
 
 
+def quat_from_directions(direction: Tensor, eps: float = 1e-6) -> Tuple[Tensor, Tensor]:
+    """Return quaternions whose local z-axis aligns to the provided direction.
+
+    Args:
+        direction: Direction vectors in (x, y, z) order, shape [N, 3].
+        eps: Threshold below which identity quaternions are returned.
+
+    Returns:
+        Tuple of:
+            - quats: Unit quaternions [N, 4]
+            - fallback: Bool mask [N] indicating identity fallback.
+    """
+    if direction.numel() == 0:
+        return (
+            torch.empty(0, 4, device=direction.device, dtype=direction.dtype),
+            torch.empty(0, dtype=torch.bool, device=direction.device),
+        )
+
+    if direction.dim() != 2 or direction.shape[1] != 3:
+        raise ValueError("direction must have shape [N, 3].")
+
+    norm = direction.norm(dim=1)
+    fallback = norm < eps
+    safe = direction / norm.clamp_min(eps).unsqueeze(1)
+    rot = _frames_from_directions(safe, fallback)
+    quats = rotmat_to_quat(rot)
+    return quats.contiguous(), fallback.contiguous()
+
+
 def random_quat_perturb(quats: Tensor, deg: float = 2.0) -> Tensor:
     """Apply a small random axis-angle perturbation to quaternions."""
     if quats.numel() == 0 or deg <= 0.0:
