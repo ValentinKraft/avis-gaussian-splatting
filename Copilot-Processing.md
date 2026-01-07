@@ -123,3 +123,26 @@ post_date: 2025-12-12
 2. If spikes persist, disable anisotropy initialization (`--anisotropy_strength 0`) to isolate whether it is an init/stretch issue.
 3. Add a small cylinder regression test once the artifact is resolved.
 
+## User Request Details (2026-01-07, Global Scale Uniformity)
+- Observation: interior splats grow very large while boundary splats remain small.
+- Goal: keep some size variation, but globally constrain splat sizes to a tighter band.
+- Chosen spec: global target band of 1–3 voxels.
+
+## Action Plan (2026-01-07)
+1. Make initialization scales global (not distance-field driven), sampling in a 1–3 voxel band.
+2. Add a soft training regularizer that penalizes excessive spread in log-scales (in voxel units).
+3. Add CLI knobs for the init scale band and spread penalty (default spread penalty off).
+
+## Task Tracker (2026-01-07)
+- [x] Add init-scale band args (`--init_scale_min_vox`, `--init_scale_max_vox`).
+- [x] Initialize scales globally in the 1–3 voxel band during volume initialization.
+- [x] Add global log-scale spread penalty (`--scale_logvar_weight`, `--scale_logvar_warmup_iters`).
+
+## User Request Details (2026-01-07, Speed: Cache ROI Grid)
+- Request: training is slow; implement voxel grid caching since volume/ROI are fixed.
+- Assumption: volume shape/data and ROI bounds remain constant during training.
+
+## Task Tracker (2026-01-07, Speed)
+- [x] Cache `create_grid_points()` outputs keyed by `(shape, bounds, device, dtype)` to avoid per-iteration meshgrid allocations.
+- [x] Add sparse splatting path that scatter-adds only within each Gaussian's 3-sigma voxel neighborhood (fallback to dense when splats are large).
+

@@ -833,6 +833,40 @@ class OptimizationParams(ParamGroup):
         )
         self._register("max_scale_vox")
 
+        # Initialization scale band (in voxel units).
+        constraint.add_argument(
+            "--init_scale_min_vox",
+            type=float,
+            default=1.0,
+            help="Minimum initial Gaussian scale in voxel units (used during volume initialization).",
+        )
+        self._register("init_scale_min_vox")
+
+        constraint.add_argument(
+            "--init_scale_max_vox",
+            type=float,
+            default=3.0,
+            help="Maximum initial Gaussian scale in voxel units (used during volume initialization).",
+        )
+        self._register("init_scale_max_vox")
+
+        # Global spread penalty on log-scales (encourages more uniform splat sizes).
+        constraint.add_argument(
+            "--scale_logvar_weight",
+            type=float,
+            default=0.0,
+            help="Weight for a global log-scale spread penalty (0 disables).",
+        )
+        self._register("scale_logvar_weight")
+
+        constraint.add_argument(
+            "--scale_logvar_warmup_iters",
+            type=int,
+            default=0,
+            help="Iterations to wait before enabling the log-scale spread penalty.",
+        )
+        self._register("scale_logvar_warmup_iters")
+
         # Warmup iterations for the scaling constraint.
         constraint.add_argument(
             "--scaling_constraint_warmup_iters",

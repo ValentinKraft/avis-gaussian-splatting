@@ -184,6 +184,8 @@ def initialize_from_volume(
     device: torch.device = torch.device("cuda"),
     mask_threshold: float = 0.01,
     volume_downscale_factor: Optional[int] = None,
+    init_scale_min_vox: float = 1.0,
+    init_scale_max_vox: float = 3.0,
     dedup_cell_size: int = 2,
     dedup_max_per_cell: int = 4,
     oversample_factor: float = 2.5,
@@ -262,11 +264,15 @@ def initialize_from_volume(
 
     _, voxel_size = default_origin_and_spacing((D, H, W), device)
     voxel_sizes_xyz = voxel_size
-    max_dist = sampled_dist.max().clamp_min(1e-3)
-    dist_norm = sampled_dist / max_dist
-    scale_min = voxel_sizes_xyz * 1.0
-    scale_max = voxel_sizes_xyz * 2.5
-    scales = scale_min + dist_norm.unsqueeze(1) * (scale_max - scale_min)
+
+    # Global initialization scale band (in voxel units). This avoids systematically
+    # larger interior splats and smaller boundary splats from distance-field scaling.
+    min_vox = max(float(init_scale_min_vox), 1e-3)
+    max_vox = max(float(init_scale_max_vox), min_vox)
+    scale_min = voxel_sizes_xyz * min_vox
+    scale_max = voxel_sizes_xyz * max_vox
+    u = torch.rand(points.shape[0], 1, device=device, dtype=torch.float32)
+    scales = scale_min + u * (scale_max - scale_min)
 
     val_min = float(candidate_vals.min().item())
     val_max = float(candidate_vals.max().item())

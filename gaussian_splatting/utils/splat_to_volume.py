@@ -10,10 +10,34 @@ from gaussian_splatting.utils.orientation_field import default_origin_and_spacin
 # constructing covariances, and (3) avoid reallocation / unnecessary empty_cache calls.
 
 
+_GRID_CACHE: dict[tuple, Tensor] = {}
+
+
+def _grid_bounds_cache_key(
+    grid_bounds: Optional[Tuple[Tensor, Tensor]],
+    *,
+    precision: float = 1e-6,
+) -> Optional[tuple[int, int, int, int, int, int]]:
+    """Build a stable, hashable key for grid bounds.
+
+    Rounds to a fixed precision to avoid cache misses from tiny float noise.
+    """
+    if grid_bounds is None:
+        return None
+    bounds_min, bounds_max = grid_bounds
+    scale = 1.0 / max(float(precision), 1e-12)
+    bmin = bounds_min.detach().to(dtype=torch.float32)
+    bmax = bounds_max.detach().to(dtype=torch.float32)
+    vals = torch.cat([bmin, bmax], dim=0)
+    # Convert to python ints.
+    return tuple(int(round(float(v.item()) * scale)) for v in vals)
+
+
 def create_grid_points(
     volume_shape: Tuple[int, int, int],
     device: torch.device,
     grid_bounds: Optional[Tuple[Tensor, Tensor]] = None,
+    dtype: torch.dtype = torch.float32,
 ) -> Tensor:
     """
     Create a grid of 3D points for volume rendering.
@@ -27,24 +51,42 @@ def create_grid_points(
     """
     D, H, W = volume_shape
 
+    cache_key = (
+        volume_shape,
+        _grid_bounds_cache_key(grid_bounds),
+        str(device),
+        str(dtype),
+    )
+    cached = _GRID_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     if grid_bounds is None:
-        bounds_min = torch.tensor([0.0, 0.0, 0.0], device=device)
-        bounds_max = torch.tensor([1.0, 1.0, 1.0], device=device)
+        bounds_min = torch.tensor([0.0, 0.0, 0.0], device=device, dtype=dtype)
+        bounds_max = torch.tensor([1.0, 1.0, 1.0], device=device, dtype=dtype)
     else:
         bounds_min, bounds_max = grid_bounds
-        bounds_min = bounds_min.to(device=device, dtype=torch.float32)
-        bounds_max = bounds_max.to(device=device, dtype=torch.float32)
+        bounds_min = bounds_min.to(device=device, dtype=dtype)
+        bounds_max = bounds_max.to(device=device, dtype=dtype)
 
     # Create normalized coordinate grid for the requested bounds.
-    z = torch.linspace(float(bounds_min[2]), float(bounds_max[2]), D, device=device)
-    y = torch.linspace(float(bounds_min[1]), float(bounds_max[1]), H, device=device)
-    x = torch.linspace(float(bounds_min[0]), float(bounds_max[0]), W, device=device)
+    z = torch.linspace(
+        float(bounds_min[2]), float(bounds_max[2]), D, device=device, dtype=dtype
+    )
+    y = torch.linspace(
+        float(bounds_min[1]), float(bounds_max[1]), H, device=device, dtype=dtype
+    )
+    x = torch.linspace(
+        float(bounds_min[0]), float(bounds_max[0]), W, device=device, dtype=dtype
+    )
 
     # Create meshgrid
     grid_z, grid_y, grid_x = torch.meshgrid(z, y, x, indexing='ij')
 
     # Stack coordinates
-    return torch.stack([grid_x, grid_y, grid_z], dim=-1)
+    grid = torch.stack([grid_x, grid_y, grid_z], dim=-1)
+    _GRID_CACHE[cache_key] = grid
+    return grid
 
 
 def gaussian_kernel_3d(
@@ -215,8 +257,11 @@ def splat_to_volume(
     # Avoid verbose printing here for performance
 
     # Create volume grid - these don't need gradients
-    grid_points = create_grid_points(volume_shape, device, grid_bounds=grid_bounds).to(
-        compute_dtype
+    grid_points = create_grid_points(
+        volume_shape,
+        device,
+        grid_bounds=grid_bounds,
+        dtype=compute_dtype,
     )
 
     # Allocate final volume (grad will flow through ops populating it)
@@ -232,8 +277,11 @@ def splat_to_volume(
         small_shape = tuple(max(16, d // 2) for d in volume_shape)
         # Only create the grid once and reuse it
         small_grid_points = create_grid_points(
-            small_shape, device, grid_bounds=grid_bounds
-        ).to(compute_dtype)
+            small_shape,
+            device,
+            grid_bounds=grid_bounds,
+            dtype=compute_dtype,
+        )
         # We'll upsample back to full resolution at the end
     else:
         small_shape = volume_shape
@@ -277,6 +325,133 @@ def splat_to_volume(
     min_sigma = torch.maximum(min_sigma, 1.0 * voxel_spacing)
     min_sigma = min_sigma.to(accum_dtype)
     min_sigma_broadcast = min_sigma.unsqueeze(0)
+
+    def _splat_sparse_batch(
+        *,
+        bp: Tensor,
+        scales_batch: Tensor,
+        rb: Optional[Tensor],
+        alpha: Tensor,
+        value_scale: Tensor,
+        out_shape: Tuple[int, int, int],
+        bounds_min: Tensor,
+        bounds_max: Tensor,
+        voxel_spacing_local: Tensor,
+        render_mode_local: str,
+        density_scale_local: float,
+        max_radius_vox: int = 8,
+    ) -> Tuple[Optional[Tensor], Tensor]:
+        """Sparse splat into flat buffers for one batch.
+
+        Returns (contrib_flat or None, weight_flat), both shaped [G].
+        """
+        D, H, W = out_shape
+        G = D * H * W
+
+        # Convert batch point positions to voxel-space coordinates in this grid.
+        denom = torch.tensor(
+            [max(W - 1, 1), max(H - 1, 1), max(D - 1, 1)],
+            device=device,
+            dtype=bp.dtype,
+        )
+        extent = (bounds_max - bounds_min).clamp_min(1e-8)
+        centers_vox = (bp - bounds_min.unsqueeze(0)) / extent.unsqueeze(0) * denom
+
+        # Compute support radius (in voxels) per axis: ceil(3*sigma_vox)
+        sigma_vox = scales_batch / voxel_spacing_local.unsqueeze(0).clamp_min(1e-8)
+        radii = torch.ceil(3.0 * sigma_vox).to(torch.long)
+        R = int(radii.max().item()) if radii.numel() > 0 else 0
+        if R <= 0:
+            if render_mode_local == "intensity":
+                return torch.zeros(G, device=device, dtype=accum_dtype), torch.zeros(
+                    G, device=device, dtype=accum_dtype
+                )
+            return None, torch.zeros(G, device=device, dtype=accum_dtype)
+
+        # Keep sparse mode bounded; fall back to dense for large splats.
+        if R > max_radius_vox:
+            raise RuntimeError("sparse_radius_too_large")
+
+        offset_vals = torch.arange(-R, R + 1, device=device, dtype=torch.long)
+        offsets = torch.stack(
+            torch.meshgrid(offset_vals, offset_vals, offset_vals, indexing="ij"),
+            dim=-1,
+        ).view(-1, 3)
+        K = offsets.shape[0]
+
+        # Build voxel coordinates (B,K,3) and mask for points that don't use full cube.
+        diff_vox = offsets.to(device=device, dtype=bp.dtype).unsqueeze(0)  # (1,K,3)
+        diff_vox = diff_vox.expand(centers_vox.shape[0], -1, -1)  # (B,K,3)
+
+        # Per-point radius mask (in voxel units).
+        radii_xyz = radii.to(device=device)
+        within = (diff_vox.abs() <= radii_xyz.unsqueeze(1).to(diff_vox.dtype)).all(
+            dim=-1
+        )
+
+        # Absolute voxel coords in (x,y,z) indexing.
+        vox = torch.round(centers_vox).to(torch.long).unsqueeze(1) + offsets.unsqueeze(
+            0
+        )
+        x = vox[..., 0]
+        y = vox[..., 1]
+        z = vox[..., 2]
+        valid = (
+            (x >= 0)
+            & (x < W)
+            & (y >= 0)
+            & (y < H)
+            & (z >= 0)
+            & (z < D)
+            & within
+        )
+
+        if not valid.any():
+            if render_mode_local == "intensity":
+                return torch.zeros(G, device=device, dtype=accum_dtype), torch.zeros(
+                    G, device=device, dtype=accum_dtype
+                )
+            return None, torch.zeros(G, device=device, dtype=accum_dtype)
+
+        # Compute normalized-coordinate diffs for kernel evaluation.
+        diff_norm = diff_vox * voxel_spacing_local.unsqueeze(0).unsqueeze(0)
+        if rb is not None:
+            # (B,K,3) rotated by (B,3,3)
+            diff_local = torch.einsum("bkj,bji->bki", diff_norm, rb)
+        else:
+            diff_local = diff_norm
+
+        diff_scaled = diff_local / (scales_batch.unsqueeze(1) + 1e-6)
+        support_mask = (diff_scaled.abs() <= 3.0).all(dim=-1)
+        valid = valid & support_mask
+
+        if not valid.any():
+            if render_mode_local == "intensity":
+                return torch.zeros(G, device=device, dtype=accum_dtype), torch.zeros(
+                    G, device=device, dtype=accum_dtype
+                )
+            return None, torch.zeros(G, device=device, dtype=accum_dtype)
+
+        sq = (diff_scaled * diff_scaled).sum(dim=-1)
+        kern = torch.exp(-0.5 * sq)
+
+        # Flatten valid contributions.
+        idx_lin = (z * (H * W) + y * W + x)
+        idx_lin = idx_lin[valid].view(-1)
+        w_vals = (kern * alpha.unsqueeze(1))[valid].to(accum_dtype).view(-1)
+
+        weight_flat = torch.zeros(G, device=device, dtype=accum_dtype)
+        weight_flat.index_add_(0, idx_lin, w_vals)
+
+        if render_mode_local == "intensity":
+            c_vals = (kern * (alpha * value_scale).unsqueeze(1))[valid].to(
+                accum_dtype
+            ).view(-1)
+            contrib_flat = torch.zeros(G, device=device, dtype=accum_dtype)
+            contrib_flat.index_add_(0, idx_lin, c_vals)
+            return contrib_flat, weight_flat
+
+        return None, weight_flat
 
     # Handle scaling parameters
     # point_scales, point_opacities, point_intensities already passed as parameters
@@ -345,6 +520,23 @@ def splat_to_volume(
     # Lower chunk size to reduce peak memory (important under checkpoint recompute).
     grid_chunk = 8192
 
+    # Precompute sparse-mode ROI bounds and voxel spacing for the working grid.
+    if grid_bounds is None:
+        sparse_bounds_min = torch.zeros(3, device=device, dtype=accum_dtype)
+        sparse_bounds_max = torch.ones(3, device=device, dtype=accum_dtype)
+    else:
+        bmin, bmax = grid_bounds
+        sparse_bounds_min = bmin.to(device=device, dtype=accum_dtype)
+        sparse_bounds_max = bmax.to(device=device, dtype=accum_dtype)
+
+    dims_xyz = torch.tensor(
+        [small_shape[2], small_shape[1], small_shape[0]],
+        device=device,
+        dtype=accum_dtype,
+    ).clamp_min(1)
+    denom = (dims_xyz - 1.0).clamp_min(1.0)
+    sparse_voxel_spacing = (sparse_bounds_max - sparse_bounds_min) / denom
+
     for i in range(num_batches):
         s = i * batch_size
         e = min((i + 1) * batch_size, total_points)
@@ -390,36 +582,65 @@ def splat_to_volume(
         else:
             value_scale = torch.ones(Bcur, device=device, dtype=bp.dtype)
 
-        inv_scales = 1.0 / (scales_batch + 1e-6)  # (B,3)
-        contrib_flat = None
-        if render_mode == "intensity":
-            contrib_flat = torch.zeros(G, device=device, dtype=accum_dtype)
-        weight_flat = torch.zeros(G, device=device, dtype=accum_dtype)
+        # Heuristic: use sparse splatting when splats are reasonably small in voxel units.
+        use_sparse = True
+        if scales_batch.numel() > 0:
+            sigma_vox = scales_batch / sparse_voxel_spacing.unsqueeze(0).clamp_min(1e-8)
+            # If splats get too large, sparse neighborhoods explode.
+            if float(sigma_vox.max().item()) > 4.0:
+                use_sparse = False
 
-        for g0 in range(0, G, grid_chunk):
-            g1 = min(g0 + grid_chunk, G)
-            grid_chunk_pts = work_grid[g0:g1]  # (Cg,3)
-            diff = grid_chunk_pts.unsqueeze(1) - bp.unsqueeze(0)  # (Cg,B,3)
-            if rb is not None:
-                # Vectorized rotation: for each b, apply diff[:, b, :] @ rb[b].T.
-                # einsum uses rb indices (b, j, i) to represent transpose.
-                diff_local = torch.einsum("gbi,bji->gbj", diff, rb)
-            else:
-                diff_local = diff
-            diff_scaled = diff_local * inv_scales.unsqueeze(0)  # (Cg,B,3)
-            support_mask = (diff_scaled.abs() <= 3.0).all(dim=-1)
-            sq = (diff_scaled * diff_scaled).sum(-1)  # (Cg,B)
-            sq = sq.masked_fill(~support_mask, 36.0)
-            kern = torch.exp(-0.5 * sq)
-            weight_contrib = kern * alpha.unsqueeze(0)
-            weight_flat[g0:g1] += weight_contrib.to(accum_dtype).sum(dim=1)
+        if use_sparse:
+            try:
+                contrib_flat, weight_flat = _splat_sparse_batch(
+                    bp=bp,
+                    scales_batch=scales_batch,
+                    rb=rb,
+                    alpha=alpha,
+                    value_scale=value_scale,
+                    out_shape=small_shape,
+                    bounds_min=sparse_bounds_min,
+                    bounds_max=sparse_bounds_max,
+                    voxel_spacing_local=sparse_voxel_spacing,
+                    render_mode_local=render_mode,
+                    density_scale_local=density_scale,
+                )
+            except RuntimeError as exc:
+                if str(exc) != "sparse_radius_too_large":
+                    raise
+                use_sparse = False
 
+        if not use_sparse:
+            inv_scales = 1.0 / (scales_batch + 1e-6)  # (B,3)
+            contrib_flat = None
             if render_mode == "intensity":
-                value_contrib = kern * (alpha * value_scale).unsqueeze(0)
-                contrib_flat[g0:g1] += value_contrib.to(accum_dtype).sum(dim=1)
-                del value_contrib
+                contrib_flat = torch.zeros(G, device=device, dtype=accum_dtype)
+            weight_flat = torch.zeros(G, device=device, dtype=accum_dtype)
 
-            del diff, diff_local, diff_scaled, sq, kern, weight_contrib
+            for g0 in range(0, G, grid_chunk):
+                g1 = min(g0 + grid_chunk, G)
+                grid_chunk_pts = work_grid[g0:g1]  # (Cg,3)
+                diff = grid_chunk_pts.unsqueeze(1) - bp.unsqueeze(0)  # (Cg,B,3)
+                if rb is not None:
+                    # Vectorized rotation: for each b, apply diff[:, b, :] @ rb[b].T.
+                    # einsum uses rb indices (b, j, i) to represent transpose.
+                    diff_local = torch.einsum("gbi,bji->gbj", diff, rb)
+                else:
+                    diff_local = diff
+                diff_scaled = diff_local * inv_scales.unsqueeze(0)  # (Cg,B,3)
+                support_mask = (diff_scaled.abs() <= 3.0).all(dim=-1)
+                sq = (diff_scaled * diff_scaled).sum(-1)  # (Cg,B)
+                sq = sq.masked_fill(~support_mask, 36.0)
+                kern = torch.exp(-0.5 * sq)
+                weight_contrib = kern * alpha.unsqueeze(0)
+                weight_flat[g0:g1] += weight_contrib.to(accum_dtype).sum(dim=1)
+
+                if render_mode == "intensity":
+                    value_contrib = kern * (alpha * value_scale).unsqueeze(0)
+                    contrib_flat[g0:g1] += value_contrib.to(accum_dtype).sum(dim=1)
+                    del value_contrib
+
+                del diff, diff_local, diff_scaled, sq, kern, weight_contrib
 
         if render_mode == "intensity":
             small_volume = small_volume + contrib_flat.view(small_shape)

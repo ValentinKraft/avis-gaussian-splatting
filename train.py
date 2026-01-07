@@ -414,6 +414,8 @@ def training(
         volume_transform=volume_transform,
         scene_bounds=scene_bounds,
         volume_downscale_factor=volume_downscale_factor,
+        init_scale_min_vox=getattr(args, "init_scale_min_vox", 1.0),
+        init_scale_max_vox=getattr(args, "init_scale_max_vox", 3.0),
         opacity_gamma=getattr(args, "opacity_gamma", 1.0),
         noise_std=(
             args.position_noise
@@ -568,6 +570,33 @@ def training(
                     scale_reg = scale_norm.mean() * float(scale_l2_weight)
                     loss = loss + scale_reg
                     vol_metrics["scale_l2_reg"] = float(scale_reg.detach().item())
+
+            # Optional log-scale spread penalty (global). Encourages more uniform splat sizes
+            # without forcing them identical.
+            scale_logvar_weight = float(getattr(args, "scale_logvar_weight", 0.0))
+            scale_logvar_warmup = int(getattr(args, "scale_logvar_warmup_iters", 0))
+            if scale_logvar_weight > 0.0 and iteration >= scale_logvar_warmup:
+                scales = gaussians.get_scaling
+                voxel_size = getattr(gaussians, "voxel_size", None)
+                if (
+                    scales.numel() > 0
+                    and isinstance(voxel_size, torch.Tensor)
+                    and voxel_size.numel() == 3
+                ):
+                    voxel_size_xyz = voxel_size.to(
+                        device=scales.device, dtype=scales.dtype
+                    ).clamp_min(1e-8)
+                    scales_vox = scales / voxel_size_xyz.unsqueeze(0)
+                    log_scales_vox = torch.log(scales_vox.clamp_min(1e-8))
+                    centered = log_scales_vox - log_scales_vox.mean(
+                        dim=0, keepdim=True
+                    )
+                    spread = (centered * centered).mean()
+                    scale_spread_reg = spread * scale_logvar_weight
+                    loss = loss + scale_spread_reg
+                    vol_metrics["scale_logvar_reg"] = float(
+                        scale_spread_reg.detach().item()
+                    )
 
         if log_mem and total_points > 0:
             _log_gpu_memory("after_forward", iteration, total_points, active_points)
