@@ -263,6 +263,69 @@ def initialize_from_volume(
     jittered[:, 1].clamp_(0, H - 1)
     jittered[:, 2].clamp_(0, D - 1)
 
+    # Ensure jitter does not push samples outside the mask threshold.
+    # This is important for float masks with soft boundaries.
+    if mask_threshold is not None and candidate_coords.numel() > 0:
+        threshold = float(mask_threshold)
+        if threshold > 0.0:
+            nearest = jittered.round().long()
+            x_idx = nearest[:, 0].clamp(0, W - 1)
+            y_idx = nearest[:, 1].clamp(0, H - 1)
+            z_idx = nearest[:, 2].clamp(0, D - 1)
+            valid = sampling_volume[z_idx, y_idx, x_idx] >= threshold
+
+            if not bool(valid.all().item()):
+                invalid = torch.nonzero(~valid, as_tuple=False).view(-1)
+                attempts = 0
+                while invalid.numel() > 0 and attempts < max(1, max_sampling_attempts):
+                    need = int(invalid.numel())
+                    draw = max(int(math.ceil(need * max(1.0, oversample_factor))), need)
+                    draw = min(draw, candidate_coords.shape[0])
+                    rand_idx = torch.randint(
+                        0, candidate_coords.shape[0], (draw,), device=device
+                    )
+                    res_coords = candidate_coords[rand_idx]
+                    res_vals = candidate_vals[rand_idx]
+                    res_dist = candidate_dist[rand_idx]
+
+                    if jitter_scale > 0:
+                        res_jitter = (torch.rand_like(res_coords) - 0.5) * (
+                            jitter_scale * 2.0
+                        )
+                        res_coords = res_coords + res_jitter
+
+                    res_coords[:, 0].clamp_(0, W - 1)
+                    res_coords[:, 1].clamp_(0, H - 1)
+                    res_coords[:, 2].clamp_(0, D - 1)
+
+                    nearest_res = res_coords.round().long()
+                    rx = nearest_res[:, 0].clamp(0, W - 1)
+                    ry = nearest_res[:, 1].clamp(0, H - 1)
+                    rz = nearest_res[:, 2].clamp(0, D - 1)
+                    valid_res = sampling_volume[rz, ry, rx] >= threshold
+
+                    if bool(valid_res.any().item()):
+                        chosen = torch.nonzero(valid_res, as_tuple=False).view(-1)
+                        take = min(need, int(chosen.numel()))
+                        chosen = chosen[:take]
+                        tgt = invalid[:take]
+                        jittered[tgt] = res_coords[chosen]
+                        sampled_vals[tgt] = res_vals[chosen]
+                        sampled_dist[tgt] = res_dist[chosen]
+                        invalid = invalid[take:]
+
+                    attempts += 1
+
+                # Final fallback: snap remaining invalid samples to in-mask voxels (no jitter).
+                if invalid.numel() > 0:
+                    need = int(invalid.numel())
+                    rand_idx = torch.randint(
+                        0, candidate_coords.shape[0], (need,), device=device
+                    )
+                    jittered[invalid] = candidate_coords[rand_idx]
+                    sampled_vals[invalid] = candidate_vals[rand_idx]
+                    sampled_dist[invalid] = candidate_dist[rand_idx]
+
     scale_den = torch.tensor([W - 1, H - 1, D - 1], device=device).clamp_min(1)
     points = jittered / scale_den
 

@@ -793,6 +793,79 @@ class GaussianModel:
             if self._prev_xyz is not None and self._prev_xyz.shape == self._xyz.shape:
                 self._prev_xyz.copy_(self._xyz.detach())
 
+    def _resample_points_from_reference_mask(
+        self, n: int, *, threshold: float
+    ) -> Optional[torch.Tensor]:
+        mask = getattr(self, "reference_mask", None)
+        if n <= 0 or mask is None or not isinstance(mask, torch.Tensor) or mask.numel() == 0:
+            return None
+
+        device = self._xyz.device if self._xyz.numel() > 0 else mask.device
+        mask_t = mask.to(device=device, dtype=torch.float32)
+
+        idx = torch.nonzero(mask_t >= float(threshold), as_tuple=False)
+        if idx.numel() == 0:
+            return None
+
+        choice = idx[torch.randint(0, idx.shape[0], (int(n),), device=device)]
+        z = choice[:, 0].to(dtype=torch.float32)
+        y = choice[:, 1].to(dtype=torch.float32)
+        x = choice[:, 2].to(dtype=torch.float32)
+
+        denom = torch.tensor(
+            [mask_t.shape[2] - 1, mask_t.shape[1] - 1, mask_t.shape[0] - 1],
+            device=device,
+            dtype=torch.float32,
+        ).clamp_min(1.0)
+        pts = torch.stack([x, y, z], dim=1) / denom
+        return pts.transpose(0, 1).contiguous()
+
+    def _ensure_points_inside_reference_mask(
+        self, xyz: torch.Tensor, *, threshold: float
+    ) -> torch.Tensor:
+        mask = getattr(self, "reference_mask", None)
+        if mask is None or not isinstance(mask, torch.Tensor) or mask.numel() == 0:
+            return xyz
+        if xyz is None or not isinstance(xyz, torch.Tensor) or xyz.numel() == 0:
+            return xyz
+
+        # xyz is typically [3, N] in this codebase.
+        pts_n3 = xyz.transpose(0, 1) if xyz.dim() == 2 and xyz.shape[0] == 3 else xyz
+        if pts_n3.dim() != 2 or pts_n3.shape[1] != 3:
+            pts_n3 = pts_n3.reshape(-1, 3)
+
+        from gaussian_splatting.utils.intensity_sampler import sample_intensities_from_volume
+
+        vals, _, _ = sample_intensities_from_volume(
+            pts_n3,
+            mask,
+            scale=None,
+            padding_mode="border",
+        )
+        outside = vals.view(-1) < float(threshold)
+        if not bool(outside.any().item()):
+            return xyz
+
+        outside_idx = torch.nonzero(outside, as_tuple=False).view(-1)
+        repl = self._resample_points_from_reference_mask(
+            int(outside_idx.numel()), threshold=float(threshold)
+        )
+        if repl is None or repl.numel() == 0:
+            return xyz
+
+        if xyz.dim() == 2 and xyz.shape[0] == 3:
+            xyz = xyz.clone()
+            xyz[:, outside_idx] = repl[:, : outside_idx.numel()].to(
+                device=xyz.device, dtype=xyz.dtype
+            )
+            return xyz
+
+        pts_n3 = pts_n3.clone()
+        pts_n3[outside_idx] = repl.transpose(0, 1)[: outside_idx.numel()].to(
+            device=pts_n3.device, dtype=pts_n3.dtype
+        )
+        return pts_n3
+
     def oneupSHdegree(self) -> None:
         """Increase spherical harmonics degree by one when below the maximum."""
         if self.active_sh_degree < self.max_sh_degree:
@@ -2250,6 +2323,10 @@ class GaussianModel:
             new_rotation: New rotation values
             new_tmp_radii: New temporary radii (unused)
         """
+        # Enforce that newly created points stay inside the mask.
+        # This uses the current `reference_mask` when available.
+        new_xyz = self._ensure_points_inside_reference_mask(new_xyz, threshold=0.5)
+
         # Prepare dictionary of new tensors - only include those that are in the optimizer
         new_tensors = {
             "xyz": new_xyz,

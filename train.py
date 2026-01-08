@@ -431,7 +431,11 @@ def training(
             else opt.position_noise
         ),
         orientation_helper=volume_supervisor,
-        mask_threshold=getattr(args, "init_mask_threshold", 0.01),
+        mask_threshold=(
+            max(float(getattr(args, "init_mask_threshold", 0.5)), 0.5)
+            if getattr(args, "mask_path", None)
+            else float(getattr(args, "init_mask_threshold", 0.5))
+        ),
         structure_mask_threshold=getattr(args, "structure_mask_threshold", 0.1),
         structure_sigma=getattr(args, "structure_sigma", 1.0),
         structure_min_vesselness=getattr(args, "structure_min_vesselness", 0.1),

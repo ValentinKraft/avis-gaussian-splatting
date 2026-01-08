@@ -1,3 +1,9 @@
+
+## Summary / Current State
+Implemented Option B: New splats are now enforced to spawn inside the mask (mask value >= 0.5).
+	- Init-time: `initialize_from_volume()` now resamples any jittered seeds that fall below the mask threshold.
+	- CLI/training: `--init_mask_threshold` default is now 0.5 and values < 0.5 are treated as 0.5 when `--mask_path` is provided.
+	- Densification: `densification_postfix()` now resamples any newly created points that land outside the reference mask.
 ---
 post_title: Copilot Processing Log
 author1: GitHub Copilot
@@ -5,13 +11,6 @@ post_slug: copilot-processing
 microsoft_alias: copilot
 featured_image: ''
 categories: []
-tags: []
-ai_note: true
-summary: Tracking fix for the diagnostics flag crash during medical training presets
-post_date: 2025-12-12
----
-
-## User Request Details
 - Running `python train.py --model_path _output_/synth-test --mask_path _input_/synthetic-mask-binary.nii.gz --volume_path _input_/synthetic-gradient.nii.gz --iterations 2000 --init_n_points 5000 --save_ply_every 100` now raises `UnboundLocalError: cannot access local variable 'diagnostics_enabled' where it is not associated with a value` inside `training()` at line 316.
 - Goal: make the diagnostics gating logic robust so training proceeds regardless of preset/flag combinations, allowing the synthetic medical test run to succeed without manual code edits.
 - Environment: Windows, conda env `avis_gaussian_splatting`, date 2025-12-12; crash occurs before optimization starts.
@@ -24,6 +23,12 @@ post_date: 2025-12-12
 ## User Request Details (2025-12-22, ROI Crop)
 - Goal: implement ROI cropping so volume rendering only evaluates the mask bounding box instead of the full volume every iteration.
 - Constraints:
+
+## Summary / Current State
+- Implemented Option B: New splats are now enforced to spawn inside the mask (mask value >= 0.5).
+- Init-time: `initialize_from_volume()` now resamples any jittered seeds that fall below the mask threshold.
+- CLI/training: `--init_mask_threshold` default is now 0.5 and values < 0.5 are treated as 0.5 when `--mask_path` is provided.
+- Densification: `densification_postfix()` now resamples any newly created points that land outside the reference mask.
 	- Loss must still be computed only over voxels inside the thresholded mask (mask > 1% of mask max).
 	- Training should require a mask volume.
 	- Coordinates remain normalized volume space ([0,1]^3).

@@ -246,8 +246,8 @@ class ModelParams(ParamGroup):
         core.add_argument(
             "--init_mask_threshold",
             type=float,
-            default=0.01,
-            help="Minimum mask intensity (0-1) required for a voxel to spawn an initial Gaussian.",
+            default=0.5,
+            help="Minimum mask intensity (0-1) required for a voxel to spawn an initial Gaussian. Values < 0.5 are treated as 0.5.",
         )
         self._register("init_mask_threshold")
 
