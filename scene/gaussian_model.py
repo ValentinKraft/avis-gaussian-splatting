@@ -107,6 +107,11 @@ class GaussianModel:
         self.intensity_large_splat_threshold = 0.03
         self.mean_covered_radius = 2.5
         self.mean_covered_interval = 10
+        # Optional spatial bounds (min/max in normalized xyz) to clamp positions.
+        self.position_bounds = None
+        # Allow movement by providing a warmup and a minimum displacement in voxel units.
+        self.position_displacement_warmup_iters = 50
+        self.min_position_displacement_vox = 0.5
 
         # --- Adaptive densification tracking ---
         self._scale_history = deque(maxlen=32)
@@ -717,12 +722,18 @@ class GaussianModel:
         ):
             return
 
+        warmup = max(int(getattr(self, "position_displacement_warmup_iters", 0)), 0)
+        if self._latest_iteration < warmup:
+            return
+
         if self._initial_xyz.shape != self._xyz.shape:
             self._ensure_initial_position_buffer()
             if self._initial_xyz.shape != self._xyz.shape:
                 return
 
         with torch.no_grad():
+            device = self._xyz.device
+            dtype = self._xyz.dtype
             scales = self.get_scaling
             if scales.numel() == 0:
                 return
@@ -737,6 +748,15 @@ class GaussianModel:
 
             max_axis = torch.max(scale_axes, dim=1).values
             allowed = max_axis * float(self.max_position_displacement_scale)
+            voxel = getattr(self, "voxel_size", None)
+            if voxel is not None:
+                voxel = torch.as_tensor(voxel, device=device, dtype=dtype)
+                if voxel.numel() == 1:
+                    voxel = voxel.view(1).repeat(3)
+                min_vox = float(getattr(self, "min_position_displacement_vox", 0.0))
+                if min_vox > 0.0:
+                    min_allow = voxel.max() * min_vox
+                    allowed = torch.maximum(allowed, torch.full_like(allowed, min_allow))
             delta = self._xyz - self._initial_xyz
             delta_norm = torch.linalg.norm(delta, dim=0)
             mask = delta_norm > allowed
@@ -750,6 +770,28 @@ class GaussianModel:
             self._xyz[:, mask] = self._initial_xyz[:, mask] + delta[:, mask]
             if self._prev_xyz is not None and self._prev_xyz.shape == self._xyz.shape:
                 self._prev_xyz[:, mask] = self._xyz[:, mask].detach()
+
+    def enforce_position_bounds(self) -> None:
+        """Clamp positions to configured bounds (normalized [0,1]^3)."""
+        if self._xyz.numel() == 0:
+            return
+
+        bounds = getattr(self, "position_bounds", None)
+        if not bounds or len(bounds) != 2:
+            return
+
+        bounds_min, bounds_max = bounds
+        if bounds_min is None or bounds_max is None:
+            return
+
+        with torch.no_grad():
+            device = self._xyz.device
+            dtype = self._xyz.dtype
+            bmin = bounds_min.to(device=device, dtype=dtype).view(3, 1)
+            bmax = bounds_max.to(device=device, dtype=dtype).view(3, 1)
+            self._xyz.copy_(torch.clamp(self._xyz, min=bmin, max=bmax))
+            if self._prev_xyz is not None and self._prev_xyz.shape == self._xyz.shape:
+                self._prev_xyz.copy_(self._xyz.detach())
 
     def oneupSHdegree(self) -> None:
         """Increase spherical harmonics degree by one when below the maximum."""

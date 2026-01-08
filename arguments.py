@@ -593,8 +593,8 @@ class OptimizationParams(ParamGroup):
         lr.add_argument(
             "--position_lr_delay_mult",
             type=float,
-            default=0.01,
-            help="Multiplier that delays how fast the position LR ramps up.",
+            default=1.0,
+            help="Multiplier that delays how fast the position LR ramps up. Use 1.0 to start moving immediately.",
         )
         self._register("position_lr_delay_mult")
 

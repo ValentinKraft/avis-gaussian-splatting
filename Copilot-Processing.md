@@ -158,4 +158,10 @@ post_date: 2025-12-12
 - [x] Mean-covered intensity mode now reuses the coverage refinement path and de-duplicates sampler logic.
 - [x] Mask ROI stats (thresholded mask, bbox, bounds, roi_shape) cached once in `VolumeSupervisor` instead of recomputing each iteration.
 - [x] Sampling padding mode is configurable; default switched to `border` to avoid darkening at volume edges.
+- [x] Added position bounds clamp to keep splats within the mask ROI each iteration.
+ - [x] Relaxed position bounds (padded by ~1.5 voxels) so splats can move while remaining inside the mask ROI.
+ - [x] Added displacement warmup and a minimum voxel-based allowance to prevent splats from freezing early.
+- [x] Fixed displacement clamp NameError by defining device/dtype before voxel-based min movement.
+- [x] Updated default `--position_lr_delay_mult` to 1.0 so xyz starts moving immediately (avoids near-zero early LR).
+- [x] Fixed sparse splatting kernel to depend on continuous center positions (restore xyz gradients/motion).
 

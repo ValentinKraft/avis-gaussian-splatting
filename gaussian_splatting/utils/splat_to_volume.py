@@ -413,8 +413,16 @@ def splat_to_volume(
                 )
             return None, torch.zeros(G, device=device, dtype=accum_dtype)
 
-        # Compute normalized-coordinate diffs for kernel evaluation.
-        diff_norm = diff_vox * voxel_spacing_local.unsqueeze(0).unsqueeze(0)
+        # Compute continuous diffs for kernel evaluation.
+        # IMPORTANT: using only integer voxel offsets would make the kernel
+        # independent of bp (center positions), yielding near-zero xyz gradients.
+        denom_f = denom.to(device=device, dtype=bp.dtype).clamp_min(1.0)
+        extent_f = extent.to(device=device, dtype=bp.dtype)
+        bmin_f = bounds_min.to(device=device, dtype=bp.dtype).unsqueeze(0).unsqueeze(0)
+        vox_f = vox.to(device=device, dtype=bp.dtype)
+        grid_pos = bmin_f + (vox_f / denom_f.view(1, 1, 3)) * extent_f.view(1, 1, 3)
+        diff_norm = grid_pos - bp.unsqueeze(1)
+
         if rb is not None:
             # (B,K,3) rotated by (B,3,3)
             diff_local = torch.einsum("bkj,bji->bki", diff_norm, rb)

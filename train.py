@@ -383,6 +383,10 @@ def training(
     gaussians.sampling_padding_mode = getattr(
         opt, "sampling_padding_mode", volume_supervisor.sampling_padding_mode
     )
+    gaussians.position_bounds = (
+        getattr(volume_supervisor, "bounds_min_padded", volume_supervisor.bounds_min),
+        getattr(volume_supervisor, "bounds_max_padded", volume_supervisor.bounds_max),
+    )
     if hasattr(args, "structure_sigma"):
         volume_supervisor.structure_sigma = float(args.structure_sigma)
     if hasattr(args, "structure_mask_threshold"):
@@ -770,6 +774,7 @@ def training(
                 apply_relative=bool(scale_constraints_enabled),
             )
             gaussians.enforce_position_displacement_constraint()
+            gaussians.enforce_position_bounds()
 
             # Adaptive density control for volume-based training
             with torch.no_grad():

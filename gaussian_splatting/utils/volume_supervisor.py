@@ -192,6 +192,10 @@ class VolumeSupervisor:
         bounds_max = torch.tensor([x1, y1, z1], device=self.device, dtype=torch.float32) / denom
         self.bounds_min = bounds_min
         self.bounds_max = bounds_max
+        # Loosen bounds slightly (1.5 voxels) to avoid freezing positions at the ROI edge.
+        pad = self.voxel_size * 1.5
+        self.bounds_min_padded = torch.clamp(bounds_min - pad, min=0.0)
+        self.bounds_max_padded = torch.clamp(bounds_max + pad, max=1.0)
 
         # Initialize metrics tracking
         self.metrics = {
