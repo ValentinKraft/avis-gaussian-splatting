@@ -146,3 +146,16 @@ post_date: 2025-12-12
 - [x] Cache `create_grid_points()` outputs keyed by `(shape, bounds, device, dtype)` to avoid per-iteration meshgrid allocations.
 - [x] Add sparse splatting path that scatter-adds only within each Gaussian's 3-sigma voxel neighborhood (fallback to dense when splats are large).
 
+## User Request Details (2026-01-08, Movement Constraint)
+- Request: limit splat movement (~5 voxels) and keep splats inside the mask.
+- Update: user withdrew the constraint and asked to keep existing behavior.
+
+## Task Tracker (2026-01-08)
+- [x] Retain the current scale-based `enforce_position_displacement_constraint` behavior with `--position_displacement_scale` (default 1.1).
+- [ ] Optional: revisit the default displacement scale if more drift is desired without adding new constraints.
+
+## Progress (2026-01-08)
+- [x] Mean-covered intensity mode now reuses the coverage refinement path and de-duplicates sampler logic.
+- [x] Mask ROI stats (thresholded mask, bbox, bounds, roi_shape) cached once in `VolumeSupervisor` instead of recomputing each iteration.
+- [x] Sampling padding mode is configurable; default switched to `border` to avoid darkening at volume edges.
+

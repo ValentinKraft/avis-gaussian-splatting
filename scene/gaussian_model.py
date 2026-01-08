@@ -2965,6 +2965,7 @@ class GaussianModel:
                     normalize=normalize_samples,
                     min_val=global_min,
                     max_val=global_max,
+                    padding_mode=getattr(self, "sampling_padding_mode", "zeros"),
                 )
             )
 

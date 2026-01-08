@@ -62,6 +62,7 @@ class VolumeSupervisor:
         dirty_threshold_scale: float = 5e-3,
         dirty_threshold_rot: float = 8.726646e-3,
         verbose: bool = False,
+        sampling_padding_mode: str = "border",
     ):
         """
         Args:
@@ -161,6 +162,37 @@ class VolumeSupervisor:
                 f"[{self.mask_volume.min().item():.4f}, {self.mask_volume.max().item():.4f}]"
             )
 
+        # Cache mask-derived data for reuse during loss computation.
+        self.mask_max = float(self.mask_volume.max().item())
+        self.mask_threshold = float(self.mask_loss_threshold_rel) * self.mask_max
+        self.mask_bool = (self.mask_volume > self.mask_threshold).to(device=self.device)
+        if not self.mask_bool.any():
+            raise RuntimeError(
+                "Mask thresholding produced an empty region. "
+                f"mask_max={self.mask_max:.6f}, rel_thr={self.mask_loss_threshold_rel:.6f}"
+            )
+
+        nz = torch.nonzero(self.mask_bool, as_tuple=False)
+        z0 = int(nz[:, 0].min().item())
+        z1 = int(nz[:, 0].max().item())
+        y0 = int(nz[:, 1].min().item())
+        y1 = int(nz[:, 1].max().item())
+        x0 = int(nz[:, 2].min().item())
+        x1 = int(nz[:, 2].max().item())
+        self.mask_bounds = (z0, z1, y0, y1, x0, x1)
+
+        D, H, W = self.volume_shape
+        self.roi_shape = (z1 - z0 + 1, y1 - y0 + 1, x1 - x0 + 1)
+        denom = torch.tensor(
+            [max(W - 1, 1), max(H - 1, 1), max(D - 1, 1)],
+            device=self.device,
+            dtype=torch.float32,
+        )
+        bounds_min = torch.tensor([x0, y0, z0], device=self.device, dtype=torch.float32) / denom
+        bounds_max = torch.tensor([x1, y1, z1], device=self.device, dtype=torch.float32) / denom
+        self.bounds_min = bounds_min
+        self.bounds_max = bounds_max
+
         # Initialize metrics tracking
         self.metrics = {
             'volume_loss': 0.0,
@@ -173,6 +205,7 @@ class VolumeSupervisor:
         self.dirty_threshold_xyz = float(dirty_threshold_xyz)
         self.dirty_threshold_scale = float(dirty_threshold_scale)
         self.dirty_threshold_rot = float(dirty_threshold_rot)
+        self.sampling_padding_mode = str(sampling_padding_mode)
 
     def _orientation_source(self) -> Tensor:
         """Return the tensor used to derive orientations."""
@@ -205,61 +238,49 @@ class VolumeSupervisor:
             idx_tensor = idx
 
         intensity_mode = getattr(gaussians, "intensity_mode", "learned")
-        use_mean_cover = intensity_mode == "sampled_mean_covered"
         coverage_mask: Optional[Tensor] = None
 
-        if use_mean_cover:
-            # Footprint-aware sampling uses per-splat scales and trilinear interpolation.
-            # This approximates "enclosed voxel" averaging without the heavy Python loop.
-            intensities, opacities, v_min, v_max = update_intensities_and_opacities(
-                pts,
-                self.volume_gt,
-                mask=self.mask_volume,
-                scale=scales,
-                normalize=True,
-                min_val=self.global_intensity_min,
-                max_val=self.global_intensity_max,
-            )
-        else:
-            intensities, opacities, v_min, v_max = update_intensities_and_opacities(
-                pts,
-                self.volume_gt,
-                mask=self.mask_volume,
-                scale=scales,
-                normalize=True,
-                min_val=self.global_intensity_min,
-                max_val=self.global_intensity_max,
-            )
+        intensities, opacities, v_min, v_max = update_intensities_and_opacities(
+            pts,
+            self.volume_gt,
+            mask=self.mask_volume,
+            scale=scales,
+            normalize=True,
+            min_val=self.global_intensity_min,
+            max_val=self.global_intensity_max,
+            padding_mode=self.sampling_padding_mode,
+        )
 
-            if (
-                self.mask_volume is not None
-                and opacities is not None
-                and scales is not None
-                and scales.numel() > 0
-            ):
-                large_mask_global = gaussians.large_splat_mask(
-                    getattr(gaussians, "intensity_large_splat_threshold", 0.0)
-                ).to(device=pts.device)
-                if indices is None:
-                    coverage_mask = large_mask_global
-                else:
-                    coverage_mask = large_mask_global[indices.long()]
+        if (
+            self.mask_volume is not None
+            and opacities is not None
+            and scales is not None
+            and scales.numel() > 0
+        ):
+            large_mask_global = gaussians.large_splat_mask(
+                getattr(gaussians, "intensity_large_splat_threshold", 0.0)
+            ).to(device=pts.device)
+            if indices is None:
+                coverage_mask = large_mask_global
+            else:
+                coverage_mask = large_mask_global[indices.long()]
 
-                if coverage_mask is not None and coverage_mask.any():
-                    refined, _, _ = sample_mean_covered_voxel_intensities(
-                        pts,
-                        self.mask_volume,
-                        scales,
-                        self.volume_origin,
-                        self.voxel_size,
-                        radius_scale=getattr(gaussians, "mean_covered_radius", 2.5),
-                        coverage_mask=coverage_mask,
-                        normalize=False,
-                        min_val=0.0,
-                        max_val=1.0,
-                    )
-                    opacities = opacities.clone()
-                    opacities[coverage_mask] = refined[coverage_mask]
+            if coverage_mask is not None and coverage_mask.any():
+                refined, _, _ = sample_mean_covered_voxel_intensities(
+                    pts,
+                    self.mask_volume,
+                    scales,
+                    self.volume_origin,
+                    self.voxel_size,
+                    radius_scale=getattr(gaussians, "mean_covered_radius", 2.5),
+                    coverage_mask=coverage_mask,
+                    normalize=False,
+                    min_val=0.0,
+                    max_val=1.0,
+                    padding_mode=self.sampling_padding_mode,
+                )
+                opacities = opacities.clone()
+                opacities[coverage_mask] = refined[coverage_mask]
 
         if indices is None:
             gaussians.volume_min = v_min
@@ -644,32 +665,11 @@ class VolumeSupervisor:
 
         # Compute loss only inside the mask. Also compute the tight ROI bounding
         # box of the mask and render only that subvolume for speed.
-        mask = self.mask_volume.to(xyz.device)
-        with torch.no_grad():
-            mask_max = float(mask.max().item())
-            thr = float(self.mask_loss_threshold_rel) * mask_max
-        mask_bool = mask > thr
-        if not mask_bool.any():
-            raise RuntimeError(
-                "Mask thresholding produced an empty region. "
-                f"mask_max={mask_max:.6f}, rel_thr={self.mask_loss_threshold_rel:.6f}"
-            )
-
-        with torch.no_grad():
-            nz = torch.nonzero(mask_bool, as_tuple=False)
-            z0 = int(nz[:, 0].min().item())
-            z1 = int(nz[:, 0].max().item())
-            y0 = int(nz[:, 1].min().item())
-            y1 = int(nz[:, 1].max().item())
-            x0 = int(nz[:, 2].min().item())
-            x1 = int(nz[:, 2].max().item())
-
-        D, H, W = self.volume_shape
-        roi_shape = (z1 - z0 + 1, y1 - y0 + 1, x1 - x0 + 1)
-
-        denom = torch.tensor([max(W - 1, 1), max(H - 1, 1), max(D - 1, 1)], device=xyz.device, dtype=torch.float32)
-        bounds_min = torch.tensor([x0, y0, z0], device=xyz.device, dtype=torch.float32) / denom
-        bounds_max = torch.tensor([x1, y1, z1], device=xyz.device, dtype=torch.float32) / denom
+        mask_bool = self.mask_bool.to(xyz.device)
+        z0, z1, y0, y1, x0, x1 = self.mask_bounds
+        roi_shape = self.roi_shape
+        bounds_min = self.bounds_min.to(xyz.device)
+        bounds_max = self.bounds_max.to(xyz.device)
 
         render_mode = "density" if self.supervision_target == "mask" else "intensity"
 

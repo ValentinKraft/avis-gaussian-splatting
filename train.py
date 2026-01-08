@@ -375,10 +375,14 @@ def training(
         opacity_gamma=getattr(args, "opacity_gamma", 1.0),
         outside_mask_weight=getattr(args, "outside_mask_weight", 0.1),
         intensity_update_interval=getattr(opt, "intensity_update_interval", 10),
+        sampling_padding_mode=getattr(opt, "sampling_padding_mode", "border"),
     )
 
     # Provide voxel spacing to the Gaussian model so voxel-unit clamps work.
     gaussians.voxel_size = volume_supervisor.voxel_size
+    gaussians.sampling_padding_mode = getattr(
+        opt, "sampling_padding_mode", volume_supervisor.sampling_padding_mode
+    )
     if hasattr(args, "structure_sigma"):
         volume_supervisor.structure_sigma = float(args.structure_sigma)
     if hasattr(args, "structure_mask_threshold"):

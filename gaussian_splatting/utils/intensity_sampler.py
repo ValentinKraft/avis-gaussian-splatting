@@ -56,6 +56,7 @@ def sample_intensities_from_volume(
     normalize: bool = False,
     min_val: Optional[float] = None,
     max_val: Optional[float] = None,
+    padding_mode: str = "zeros",
 ) -> Tuple[Tensor, float, float]:
     """
     Sample intensity values from a volume for each point position.
@@ -122,7 +123,7 @@ def sample_intensities_from_volume(
             gt_samples,
             full_grid,
             mode="bilinear",
-            padding_mode="zeros",
+            padding_mode=padding_mode,
             align_corners=True,
         ).view(-1)
         diff = (round_trip - volume.view(-1)).abs().max().item()
@@ -135,7 +136,7 @@ def sample_intensities_from_volume(
         volume_5d,
         grid,
         mode="bilinear",
-        padding_mode="zeros",
+        padding_mode=padding_mode,
         align_corners=True,
     )
     intensities = samples.view(-1, 1)
@@ -182,7 +183,7 @@ def sample_intensities_from_volume(
                 volume_5d,
                 grid_large,
                 mode="bilinear",
-                padding_mode="zeros",
+                padding_mode=padding_mode,
                 align_corners=True,
             ).view(idx.shape[0], -1)
 
@@ -247,6 +248,7 @@ def sample_mean_covered_voxel_intensities(
     normalize: bool = False,
     min_val: Optional[float] = None,
     max_val: Optional[float] = None,
+    padding_mode: str = "zeros",
 ) -> Tuple[Tensor, float, float]:
     """Average voxel intensities across mean-covered regions for each splat."""
     if points.numel() == 0:
@@ -279,6 +281,7 @@ def sample_mean_covered_voxel_intensities(
         normalize=False,
         min_val=volume_min,
         max_val=volume_max,
+        padding_mode=padding_mode,
     )
     raw_values = base_samples.view(-1)
 
@@ -368,6 +371,7 @@ def update_intensities(
     normalize: bool = False,
     min_val: Optional[float] = None,
     max_val: Optional[float] = None,
+    padding_mode: str = "zeros",
 ) -> Tuple[Tensor, float, float]:
     """
     Update intensity values for points based on their current positions.
@@ -395,6 +399,7 @@ def update_intensities(
         normalize=normalize,
         min_val=min_val,
         max_val=max_val,
+        padding_mode=padding_mode,
     )
 
 
@@ -436,6 +441,7 @@ def update_intensities_and_opacities(
     normalize: bool = False,
     min_val: Optional[float] = None,
     max_val: Optional[float] = None,
+    padding_mode: str = "zeros",
 ) -> Tuple[Tensor, Optional[Tensor], float, float]:
     """
     Update both intensity and opacity values for points based on their current positions.
@@ -465,6 +471,7 @@ def update_intensities_and_opacities(
         normalize,
         min_val=min_val,
         max_val=max_val,
+        padding_mode=padding_mode,
     )
 
     # Update opacities if mask is provided
