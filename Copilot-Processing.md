@@ -33,6 +33,9 @@ categories: []
 
 ## In Progress
 - ROI padding/caching + adaptive sparse splat support implementation started (ROI pad set to 3 voxels, ROI tensors cached, sparse support radius driven by max-axis sigma and a 0.5 weight cutoff).
+
+## Change Log
+- Init seeding now samples point locations from the full-resolution mask (`downscale_factor=1`) regardless of `--volume_downscale_factor`.
 	- Loss must still be computed only over voxels inside the thresholded mask (mask > 1% of mask max).
 	- Training should require a mask volume.
 	- Coordinates remain normalized volume space ([0,1]^3).

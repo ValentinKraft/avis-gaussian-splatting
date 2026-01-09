@@ -188,6 +188,7 @@ def initialize_from_volume(
     device: torch.device = torch.device("cuda"),
     mask_threshold: float = 0.01,
     volume_downscale_factor: Optional[int] = None,
+    voxel_size_override: Optional[Tensor] = None,
     init_scale_min_vox: float = 1.0,
     init_scale_max_vox: float = 3.0,
     dedup_cell_size: int = 2,
@@ -331,6 +332,12 @@ def initialize_from_volume(
 
     _, voxel_size = default_origin_and_spacing((D, H, W), device)
     voxel_sizes_xyz = voxel_size
+    if voxel_size_override is not None:
+        override = torch.as_tensor(voxel_size_override, device=device, dtype=torch.float32)
+        if override.numel() == 1:
+            override = override.view(1).repeat(3)
+        if override.numel() == 3:
+            voxel_sizes_xyz = override
 
     # Global initialization scale band (in voxel units). This avoids systematically
     # larger interior splats and smaller boundary splats from distance-field scaling.
@@ -679,13 +686,22 @@ def initialize_gaussians(
     volume_downscale_factor = kwargs.pop("volume_downscale_factor", None)
     opacity_gamma = float(kwargs.pop("opacity_gamma", 1.0))
 
+    # Sample initial point locations from the full-resolution mask by default.
+    # This avoids seeding points on ambiguous downscaled boundary voxels.
+    init_sampling_downscale = 1 if mask_path else volume_downscale_factor
+
     # Get points in volume space
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     points, scales, opacities = initialize_from_volume(
         mask_path if mask_path else volume_path,
         n_points,
         device=device,
-        volume_downscale_factor=volume_downscale_factor,
+        volume_downscale_factor=init_sampling_downscale,
+        voxel_size_override=(
+            getattr(orientation_helper, "voxel_size", None)
+            if orientation_helper is not None
+            else None
+        ),
         **kwargs,
     )
     volume_points = points.clone()
