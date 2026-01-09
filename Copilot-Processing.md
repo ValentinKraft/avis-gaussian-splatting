@@ -30,6 +30,9 @@ categories: []
 - CLI/training: `--init_mask_threshold` default is now 0.5 and values < 0.5 are treated as 0.5 when `--mask_path` is provided.
 - Densification: `densification_postfix()` now resamples any newly created points that land outside the reference mask.
 - Color sampling: splat intensities/colors are now sampled from the full-resolution input CT volume even when `--volume_downscale_factor` is used for supervision.
+
+## In Progress
+- ROI padding/caching + adaptive sparse splat support implementation started (ROI pad set to 3 voxels, ROI tensors cached, sparse support radius driven by max-axis sigma and a 0.5 weight cutoff).
 	- Loss must still be computed only over voxels inside the thresholded mask (mask > 1% of mask max).
 	- Training should require a mask volume.
 	- Coordinates remain normalized volume space ([0,1]^3).

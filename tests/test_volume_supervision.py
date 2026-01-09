@@ -112,6 +112,7 @@ def test_splat_to_volume():
     volume.sum().backward()
     assert splats.grad is not None
     assert not torch.isnan(splats.grad).any()
+    assert float(splats.grad.abs().sum().item()) > 0.0
 
 def test_volume_loader():
     """Test volume data loading and preprocessing."""

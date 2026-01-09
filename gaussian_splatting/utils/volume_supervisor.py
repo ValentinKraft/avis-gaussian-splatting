@@ -203,10 +203,23 @@ class VolumeSupervisor:
         bounds_max = torch.tensor([x1, y1, z1], device=self.device, dtype=torch.float32) / denom
         self.bounds_min = bounds_min
         self.bounds_max = bounds_max
-        # Loosen bounds slightly (1.5 voxels) to avoid freezing positions at the ROI edge.
-        pad = self.voxel_size * 1.5
+        # Loosen bounds slightly (3 voxels) to avoid freezing positions at the ROI edge.
+        # Padding is expressed in voxel units of the current supervision grid.
+        self.roi_pad_vox = 3.0
+        pad = self.voxel_size * float(self.roi_pad_vox)
         self.bounds_min_padded = torch.clamp(bounds_min - pad, min=0.0)
         self.bounds_max_padded = torch.clamp(bounds_max + pad, max=1.0)
+
+        # Cache ROI-aligned tensors for per-iteration reuse.
+        self._roi_slices = (
+            slice(z0, z1 + 1),
+            slice(y0, y1 + 1),
+            slice(x0, x1 + 1),
+        )
+        zsl, ysl, xsl = self._roi_slices
+        self.volume_gt_roi = self.volume_gt[zsl, ysl, xsl]
+        self.mask_volume_roi = self.mask_volume[zsl, ysl, xsl]
+        self.mask_bool_roi = self.mask_bool[zsl, ysl, xsl]
 
         # Initialize metrics tracking
         self.metrics = {
@@ -680,8 +693,6 @@ class VolumeSupervisor:
 
         # Compute loss only inside the mask. Also compute the tight ROI bounding
         # box of the mask and render only that subvolume for speed.
-        mask_bool = self.mask_bool.to(xyz.device)
-        z0, z1, y0, y1, x0, x1 = self.mask_bounds
         roi_shape = self.roi_shape
         bounds_min = self.bounds_min.to(xyz.device)
         bounds_max = self.bounds_max.to(xyz.device)
@@ -718,20 +729,24 @@ class VolumeSupervisor:
         if hasattr(self, "verbose") and self.verbose:
             print(f"volume_pred requires_grad: {volume_pred_roi.requires_grad}")
 
-        # Store predicted volume for visualization as a full-size volume.
-        # (Loss is still computed on the cropped ROI for speed.)
-        full_pred = torch.zeros(self.volume_shape, device=volume_pred_roi.device, dtype=volume_pred_roi.dtype)
-        full_pred[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1] = volume_pred_roi
-        self.volume_pred = full_pred.detach().clone()
-
         # Slice targets/mask to ROI for loss.
+        mask_roi = self.mask_bool_roi.to(device=volume_pred_roi.device)
         if self.supervision_target == "mask":
-            target_full = self.mask_volume.to(volume_pred_roi.device)
+            target_roi = self.mask_volume_roi.to(device=volume_pred_roi.device)
         else:
-            target_full = self.volume_gt.to(volume_pred_roi.device)
+            target_roi = self.volume_gt_roi.to(device=volume_pred_roi.device)
 
-        target_roi = target_full[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1]
-        mask_roi = mask_bool[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1]
+        # Store predicted volume for visualization only when needed.
+        # (Loss is still computed on the cropped ROI for speed.)
+        if getattr(self, "iteration", 0) % 1000 == 0:
+            z0, z1, y0, y1, x0, x1 = self.mask_bounds
+            full_pred = torch.zeros(
+                self.volume_shape,
+                device=volume_pred_roi.device,
+                dtype=volume_pred_roi.dtype,
+            )
+            full_pred[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1] = volume_pred_roi
+            self.volume_pred = full_pred.detach().clone()
 
         main_loss = None
         if self.criterion.loss_type == "mse":

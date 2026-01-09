@@ -1,3 +1,4 @@
+import os
 from typing import Optional, Tuple
 
 import torch
@@ -357,9 +358,19 @@ def splat_to_volume(
         extent = (bounds_max - bounds_min).clamp_min(1e-8)
         centers_vox = (bp - bounds_min.unsqueeze(0)) / extent.unsqueeze(0) * denom
 
-        # Compute support radius (in voxels) per axis: ceil(3*sigma_vox)
-        sigma_vox = scales_batch / voxel_spacing_local.unsqueeze(0).clamp_min(1e-8)
-        radii = torch.ceil(3.0 * sigma_vox).to(torch.long)
+        alpha = alpha.view(-1)
+        value_scale = value_scale.view(-1)
+
+        # Adaptive support: include voxels where the (isotropic) Gaussian weight >= cutoff.
+        # Use max-axis sigma (in voxel units) to define a conservative neighborhood.
+        support_cutoff = 0.5
+        cutoff = float(support_cutoff)
+        cutoff = min(max(cutoff, 1e-6), 0.999999)
+        k = float((-2.0 * torch.log(torch.tensor(cutoff))).sqrt().item())
+
+        sigma_vox_axes = scales_batch / voxel_spacing_local.unsqueeze(0).clamp_min(1e-8)
+        sigma_vox_max = sigma_vox_axes.max(dim=1).values
+        radii = torch.ceil(k * sigma_vox_max).to(torch.long).clamp_min(1)
         R = int(radii.max().item()) if radii.numel() > 0 else 0
         if R <= 0:
             if render_mode_local == "intensity":
@@ -379,20 +390,16 @@ def splat_to_volume(
         ).view(-1, 3)
         K = offsets.shape[0]
 
-        # Build voxel coordinates (B,K,3) and mask for points that don't use full cube.
-        diff_vox = offsets.to(device=device, dtype=bp.dtype).unsqueeze(0)  # (1,K,3)
+        # Build voxel coordinates (B,K,3) around each center.
+        diff_vox = offsets.to(device=device, dtype=bp.dtype).unsqueeze(0)
         diff_vox = diff_vox.expand(centers_vox.shape[0], -1, -1)  # (B,K,3)
 
-        # Per-point radius mask (in voxel units).
-        radii_xyz = radii.to(device=device)
-        within = (diff_vox.abs() <= radii_xyz.unsqueeze(1).to(diff_vox.dtype)).all(
-            dim=-1
-        )
+        # Per-point radius mask (isotropic in voxel units).
+        within = diff_vox.abs().max(dim=-1).values <= radii.to(device=device).unsqueeze(1).to(diff_vox.dtype)
 
         # Absolute voxel coords in (x,y,z) indexing.
-        vox = torch.round(centers_vox).to(torch.long).unsqueeze(1) + offsets.unsqueeze(
-            0
-        )
+        base = torch.floor(centers_vox).to(torch.long)
+        vox = base.unsqueeze(1) + offsets.unsqueeze(0)
         x = vox[..., 0]
         y = vox[..., 1]
         z = vox[..., 2]
@@ -423,15 +430,12 @@ def splat_to_volume(
         grid_pos = bmin_f + (vox_f / denom_f.view(1, 1, 3)) * extent_f.view(1, 1, 3)
         diff_norm = grid_pos - bp.unsqueeze(1)
 
-        if rb is not None:
-            # (B,K,3) rotated by (B,3,3)
-            diff_local = torch.einsum("bkj,bji->bki", diff_norm, rb)
-        else:
-            diff_local = diff_norm
-
-        diff_scaled = diff_local / (scales_batch.unsqueeze(1) + 1e-6)
-        support_mask = (diff_scaled.abs() <= 3.0).all(dim=-1)
-        valid = valid & support_mask
+        # Isotropic kernel using max-axis sigma in normalized space.
+        sigma_norm = scales_batch.max(dim=1).values.clamp_min(1e-6)
+        diff_scaled = diff_norm / sigma_norm.view(-1, 1, 1)
+        sq = (diff_scaled * diff_scaled).sum(dim=-1)
+        kern = torch.exp(-0.5 * sq)
+        valid = valid & (kern >= support_cutoff)
 
         if not valid.any():
             if render_mode_local == "intensity":
@@ -440,19 +444,16 @@ def splat_to_volume(
                 )
             return None, torch.zeros(G, device=device, dtype=accum_dtype)
 
-        sq = (diff_scaled * diff_scaled).sum(dim=-1)
-        kern = torch.exp(-0.5 * sq)
-
         # Flatten valid contributions.
         idx_lin = (z * (H * W) + y * W + x)
         idx_lin = idx_lin[valid].view(-1)
-        w_vals = (kern * alpha.unsqueeze(1))[valid].to(accum_dtype).view(-1)
+        w_vals = (kern * alpha.view(-1, 1))[valid].to(accum_dtype).view(-1)
 
         weight_flat = torch.zeros(G, device=device, dtype=accum_dtype)
         weight_flat.index_add_(0, idx_lin, w_vals)
 
         if render_mode_local == "intensity":
-            c_vals = (kern * (alpha * value_scale).unsqueeze(1))[valid].to(
+            c_vals = (kern * (alpha * value_scale).view(-1, 1))[valid].to(
                 accum_dtype
             ).view(-1)
             contrib_flat = torch.zeros(G, device=device, dtype=accum_dtype)
@@ -591,7 +592,14 @@ def splat_to_volume(
             value_scale = torch.ones(Bcur, device=device, dtype=bp.dtype)
 
         # Heuristic: use sparse splatting when splats are reasonably small in voxel units.
+        # Defaults are fully automatic; env overrides are only intended for tests/debug.
+        force_sparse = os.environ.get("GS_FORCE_SPARSE", "0") == "1"
+        disable_sparse = os.environ.get("GS_DISABLE_SPARSE", "0") == "1"
         use_sparse = True
+        if disable_sparse:
+            use_sparse = False
+        elif force_sparse:
+            use_sparse = True
         if scales_batch.numel() > 0:
             sigma_vox = scales_batch / sparse_voxel_spacing.unsqueeze(0).clamp_min(1e-8)
             # If splats get too large, sparse neighborhoods explode.
