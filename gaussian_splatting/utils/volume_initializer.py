@@ -706,13 +706,16 @@ def initialize_gaussians(
     volume_min = 0.0
     volume_max = 1.0
     downscale = int(volume_downscale_factor) if volume_downscale_factor is not None else 1
-    loader = VolumeLoader(target_shape=None, device=device, downscale_factor=downscale)
+    # Keep mask/opacity sampling aligned with the (possibly downscaled) init sampling space,
+    # but always sample CT intensities/colors from the full-resolution input volume.
+    loader_mask = VolumeLoader(target_shape=None, device=device, downscale_factor=downscale)
+    loader_intensity = VolumeLoader(target_shape=None, device=device, downscale_factor=1)
 
     # Load and sample intensities from volume if provided
     if volume_path:
         # Load volume for intensity sampling
         print(f"Loading intensity volume from: {volume_path}")
-        volume = loader.load_volume(volume_path)
+        volume = loader_intensity.load_volume(volume_path)
         global_min = float(volume.min().item())
         global_max = float(volume.max().item())
         normalize_samples = getattr(model, "intensity_mode", "learned") in {
@@ -764,7 +767,7 @@ def initialize_gaussians(
     opacity_values = None
     if mask_path:
         # Load mask for opacity sampling (use the same mask used for point sampling)
-        mask_volume = loader.load_volume(mask_path)
+        mask_volume = loader_mask.load_volume(mask_path)
 
         # Sample opacity values from the mask
         print("Sampling opacity values from mask...")

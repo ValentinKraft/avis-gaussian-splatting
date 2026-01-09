@@ -115,15 +115,26 @@ class VolumeSupervisor:
         # Apply loss_weight once in compute_loss for clarity.
         self.criterion = VolumeLoss(loss_type, 1.0)
 
-        # Load ground truth volume
+        # Load ground truth volume used for supervision/rendering (may be downscaled).
         self.volume_gt = self.loader.load_volume(volume_path)
+        # Also keep a full-resolution volume for sampling per-splat intensities/colors.
+        # This ensures color is not taken from the downscaled supervision volume.
+        self.volume_color = self.volume_gt
+        if downscale_factor != 1:
+            color_loader = VolumeLoader(
+                target_shape=None,
+                device=device,
+                downscale_factor=1,
+            )
+            self.volume_color = color_loader.load_volume(volume_path)
+
         # Always trust the loaded tensor shape for supervision/rendering.
         self.volume_shape = tuple(int(v) for v in self.volume_gt.shape)
-        self.global_intensity_min = float(self.volume_gt.min().item())
-        self.global_intensity_max = float(self.volume_gt.max().item())
+        self.global_intensity_min = float(self.volume_color.min().item())
+        self.global_intensity_max = float(self.volume_color.max().item())
         if self.verbose:
             print(
-                "Loaded volume intensity range: "
+                "Loaded color volume intensity range: "
                 f"[{self.global_intensity_min:.4f}, {self.global_intensity_max:.4f}]"
             )
         if abs(self.global_intensity_max - self.global_intensity_min) <= 1e-8:
@@ -215,7 +226,7 @@ class VolumeSupervisor:
         """Return the tensor used to derive orientations."""
         # Use the intensity volume for orientation - it has richer gradients
         # than binary/float masks which are mostly uniform
-        return self.volume_gt
+        return self.volume_color
 
     def _volume_sampler(self, gaussians, indices: Optional[Tensor]) -> Tensor:
         """Sample mean intensities (and optional opacities) for selected indices."""
@@ -246,7 +257,7 @@ class VolumeSupervisor:
 
         intensities, opacities, v_min, v_max = update_intensities_and_opacities(
             pts,
-            self.volume_gt,
+            self.volume_color,
             mask=self.mask_volume,
             scale=scales,
             normalize=True,
@@ -463,7 +474,7 @@ class VolumeSupervisor:
 
         use_intensities: Tensor
         if intensity_mode in {"sampled", "sampled_mean_covered"}:
-            gaussians.reference_volume = self.volume_gt
+            gaussians.reference_volume = self.volume_color
             if self.mask_volume is not None:
                 gaussians.reference_mask = self.mask_volume
 
