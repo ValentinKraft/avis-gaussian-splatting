@@ -49,7 +49,7 @@ class VolumeSupervisor:
         volume_shape: Tuple[int, int, int] = (64, 64, 64),
         volume_downscale_factor: Optional[int] = None,
         mask_path: Optional[str] = None,
-        loss_type: str = "mse",
+        loss_type: str = "dice",
         loss_weight: float = 1.0,
         supervision_target: str = "mask",
         mask_loss_threshold_rel: float = 0.01,
