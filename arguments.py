@@ -154,7 +154,7 @@ class ModelParams(ParamGroup):
         core.add_argument(
             "--volume_loss_type",
             type=str,
-            default="mse",
+            default="dice",
             choices=["mse", "dice", "tversky", "kl"],
             help="Volume-domain loss to optimize (dice/mse/tversky/kl).",
         )
