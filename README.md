@@ -14,7 +14,7 @@ python train.py --model_path _output_/liver-float-test --mask_path _input_/liver
 *Synthetic test dataset:*
 
 ```shell
-python train.py --model_path _output_/synthetic-float-test --mask_path _input_/synthetic-mask-float.nii.gz --volume_path _input_/synthetic-gradient.nii.gz --iterations 500 --volume_loss_type mse --init_n_points 10000 --save_ply_every 100
+python train.py --model_path _output_/synthetic-float-test --mask_path _input_/synthetic-mask-float.nii.gz --volume_path _input_/synthetic-gradient.nii.gz --iterations 500 --volume_loss_type mse --init_n_points 10000 --save_ply_every 100 --enable_diagnostics
 ```
 
 ### Intensity Sampling Modes

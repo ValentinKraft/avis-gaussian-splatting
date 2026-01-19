@@ -46,6 +46,11 @@ class VolumeLoader:
         """Load a NIfTI volume file."""
         nii = nib.load(str(path))
         volume = torch.from_numpy(nii.get_fdata()).float()
+        # nibabel returns arrays in voxel index order (i, j, k) which typically
+        # corresponds to (X, Y, Z). This project consistently represents volumes
+        # as torch tensors in (D, H, W) = (Z, Y, X) order.
+        if volume.dim() == 3:
+            volume = volume.permute(2, 1, 0).contiguous()
         return self._process_volume(volume)
 
     def load_npy(self, path: Union[str, Path]) -> Tensor:

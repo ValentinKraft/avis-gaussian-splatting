@@ -320,9 +320,9 @@ def sample_structure_field(
     D, H, W = quat_field.shape[:3]
     grid = torch.stack(
         [
-            _normalize_index(ijk[:, 0], D),
-            _normalize_index(ijk[:, 1], H),
             _normalize_index(ijk[:, 2], W),
+            _normalize_index(ijk[:, 1], H),
+            _normalize_index(ijk[:, 0], D),
         ],
         dim=-1,
     ).to(device=quat_field.device, dtype=quat_field.dtype)
@@ -395,13 +395,17 @@ def world_to_grid(
     voxel_size_xyz: Tensor,
     volume_shape: Tuple[int, int, int],
 ) -> Tensor:
-    """Convert world coordinates to grid_sample coordinates in [-1, 1]."""
+    """Convert world coordinates to grid_sample coordinates in [-1, 1].
+
+    Note: For 5D `grid_sample` with input shaped [N, C, D, H, W], the grid's last
+    dimension must be ordered (x, y, z), corresponding to (W, H, D).
+    """
     ijk = world_to_voxel(xyz_world, origin_xyz, voxel_size_xyz)
     D, H, W = volume_shape
     norm_z = _normalize_index(ijk[:, 0], D)
     norm_y = _normalize_index(ijk[:, 1], H)
     norm_x = _normalize_index(ijk[:, 2], W)
-    return torch.stack([norm_z, norm_y, norm_x], dim=-1)
+    return torch.stack([norm_x, norm_y, norm_z], dim=-1)
 
 
 def gather_rotation_from_gradient(
@@ -450,12 +454,13 @@ def gather_rotation_from_gradient(
         )
         gather_rotation_from_gradient._printed = True
 
-    # Convert voxel indices to normalized grid coordinates [-1, 1]
+    # Convert voxel indices (z, y, x) to normalized grid coordinates (x, y, z)
+    # for grid_sample on [N, C, D, H, W] tensors.
     grid = torch.stack(
         [
-            _normalize_index(ijk[:, 0], D),
-            _normalize_index(ijk[:, 1], H),
             _normalize_index(ijk[:, 2], W),
+            _normalize_index(ijk[:, 1], H),
+            _normalize_index(ijk[:, 0], D),
         ],
         dim=-1,
     ).to(device=device, dtype=dtype)
