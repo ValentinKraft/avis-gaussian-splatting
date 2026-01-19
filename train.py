@@ -103,19 +103,15 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
     else:
         state.scale_constraints_enabled = True
 
-    if mode == "organ":
-        state.densification_enabled = False
-        opt.densify_from_iter = max(opt.iterations + 1, opt.densify_from_iter)
-        opt.densify_until_iter = opt.iterations
-    else:
-        state.densification_enabled = densification_enabled
-        if state.densification_enabled:
-            opt.densification_interval = max(opt.densification_interval, 200)
-            opt.densify_grad_threshold = max(opt.densify_grad_threshold, 5e-4)
-            opt.densify_from_iter = max(opt.densify_from_iter, 400)
-            opt.densify_until_iter = min(
-                opt.densify_until_iter, opt.iterations, opt.densify_from_iter + 2000
-            )
+    # Allow densification for both organ and vessel presets when enabled.
+    state.densification_enabled = densification_enabled
+    if state.densification_enabled:
+        opt.densification_interval = max(opt.densification_interval, 200)
+        opt.densify_grad_threshold = max(opt.densify_grad_threshold, 5e-4)
+        opt.densify_from_iter = max(opt.densify_from_iter, 400)
+        opt.densify_until_iter = min(
+            opt.densify_until_iter, opt.iterations, opt.densify_from_iter + 2000
+        )
 
     if disable_densification and state.densification_enabled:
         state.densification_enabled = False
@@ -807,19 +803,36 @@ def training(
                         # Keep densification heuristics in the same normalized scale.
                         extent = 1.0
 
+                        points_before = gaussians._xyz.shape[1]
+
                         # Perform densification and pruning
                         gaussians.densify_and_prune(
                             max_grad=opt.densify_grad_threshold,
-                            min_opacity=1e-4,  # Less aggressive pruning for volume-based training
+                            min_opacity=float(getattr(opt, "prune_min_opacity", 1e-4)),
                             extent=extent,
                             max_screen_size=None,  # No screen size limit for volume training
                             radii=None,  # No radii for volume training
                         )
 
+                        points_after = gaussians._xyz.shape[1]
+                        last_counts = getattr(
+                            gaussians,
+                            "last_densify_counts",
+                            {"split": 0, "clone": 0, "hole_fill": 0},
+                        )
+                        added = int(sum(int(v) for v in last_counts.values()))
+                        pruned_est = max(0, points_before + added - points_after)
+
                         # Log densification
                         if iteration % 100 == 0 or iteration == opt.densify_from_iter:
                             print(
-                                f"\n[ITER {iteration}] Densification: {gaussians._xyz.shape[1]} points"
+                                (
+                                    f"\n[ITER {iteration}] Densify: +{added} pruned~{pruned_est} "
+                                    f"(split={int(last_counts.get('split', 0))}, "
+                                    f"clone={int(last_counts.get('clone', 0))}, "
+                                    f"hole_fill={int(last_counts.get('hole_fill', 0))}) "
+                                    f"-> {points_after} points"
+                                )
                             )
 
             if diagnostics_enabled:

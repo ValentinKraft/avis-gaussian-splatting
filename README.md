@@ -5,10 +5,10 @@
 *Clinical test dataset:*
 
 ```shell
-python train.py --model_path _output_/vessel-float-test --mask_path _input_/vessel-mask-float.nii.gz --volume_path _input_/volume.nii.gz --iterations 2000 --init_n_points 8000 --save_ply_every 100 --enable_diagnostics --volume_loss_type dice --volume_downscale_factor 4
+python train.py --model_path _output_/vessel-float-test --mask_path _input_/vessel-mask-float.nii.gz --volume_path _input_/volume.nii.gz --iterations 2000 --init_n_points 20000 --save_ply_every 100 --enable_diagnostics --volume_loss_type dice --volume_downscale_factor 2
 ```
 ```shell
-python train.py --model_path _output_/liver-float-test --mask_path _input_/liver-mask-float.nii.gz --volume_path _input_/ct.nii.gz --iterations 2000 --init_n_points 8000 --save_ply_every 100 --enable_diagnostics --volume_downscale_factor 4
+python train.py --model_path _output_/liver-float-test --mask_path _input_/liver-mask-float.nii.gz --volume_path _input_/ct.nii.gz --iterations 2000 --init_n_points 20000 --save_ply_every 100 --enable_diagnostics --volume_downscale_factor 2
 ```
 
 *Synthetic test dataset:*

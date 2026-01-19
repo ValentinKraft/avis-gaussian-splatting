@@ -683,11 +683,11 @@ class OptimizationParams(ParamGroup):
 
         densify.add_argument(
             "--enable_densification",
-            default=False,
+            default=True,
             action="store_true",
             help=(
                 "Enable densification + pruning passes during training. "
-                "Disabled by default for stability in volume-only training."
+                "Enabled by default; use --disable_densification to opt out."
             ),
         )
         self._register("enable_densification")
@@ -698,7 +698,7 @@ class OptimizationParams(ParamGroup):
             action="store_true",
             help=(
                 "Disable densification + pruning passes during training (override). "
-                "Prefer leaving densification disabled by default unless explicitly enabled."
+                "Overrides --enable_densification."
             ),
         )
         self._register("disable_densification")
@@ -725,8 +725,8 @@ class OptimizationParams(ParamGroup):
         densify.add_argument(
             "--densification_interval",
             type=int,
-            default=100,
-            help="Iterations between densification/splitting passes.",
+            default=200,
+            help="Iterations between densification/splitting passes (volume training: keep this relatively large).",
         )
         self._register("densification_interval")
 
@@ -734,8 +734,11 @@ class OptimizationParams(ParamGroup):
         densify.add_argument(
             "--opacity_reset_interval",
             type=int,
-            default=3000,
-            help="Iterations between global opacity resets.",
+            default=0,
+            help=(
+                "Iterations between global opacity resets. "
+                "Default 0 disables resets (recommended for volume-only supervision)."
+            ),
         )
         self._register("opacity_reset_interval")
 
@@ -743,7 +746,7 @@ class OptimizationParams(ParamGroup):
         densify.add_argument(
             "--densify_from_iter",
             type=int,
-            default=500,
+            default=400,
             help="Iteration to begin spawning/splitting Gaussians.",
         )
         self._register("densify_from_iter")
@@ -752,8 +755,11 @@ class OptimizationParams(ParamGroup):
         densify.add_argument(
             "--densify_until_iter",
             type=int,
-            default=12_000,
-            help="Iteration after which densification/pruning stops (earlier cooldown to reduce late noisy tails).",
+            default=2400,
+            help=(
+                "Iteration after which densification/pruning stops. "
+                "Default uses a short early window to avoid late noisy topology changes."
+            ),
         )
         self._register("densify_until_iter")
 
@@ -761,10 +767,21 @@ class OptimizationParams(ParamGroup):
         densify.add_argument(
             "--densify_grad_threshold",
             type=float,
-            default=0.0002,
-            help="Gradient energy required for a Gaussian to be split.",
+            default=0.0,
+            help=(
+                "Minimum gradient energy required for densification. "
+                "Default 0 relies on adaptive percentile thresholding."
+            ),
         )
         self._register("densify_grad_threshold")
+
+        densify.add_argument(
+            "--prune_min_opacity",
+            type=float,
+            default=1e-4,
+            help="Prune Gaussians whose opacity falls below this threshold.",
+        )
+        self._register("prune_min_opacity")
 
         # Depth L1 initial weight (RGB compatibility).
         densify.add_argument(
