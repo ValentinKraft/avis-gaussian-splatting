@@ -22,6 +22,7 @@ dependencies:
   - torchvision=0.22.0
   - torchaudio=2.7.0
   - pytorch-cuda=12.6
+  - nibabel
   - pip
   - pip:
     - -e submodules/diff-gaussian-rasterization

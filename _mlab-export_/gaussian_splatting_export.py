@@ -323,7 +323,7 @@ def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=
             ctx.field("RotateAtTarget.inPosition").setValue([x, y, z])
             ctx.field("RotateAtTarget.update").touch()
             ctx.field("OffscreenRenderer.update").touch()
-            ctx.field("ImageSave.filename").setValue(f"{output_path}/images/{i}.jpg")
+            ctx.field("ImageSave.filename").setValue(f"{output_path}/images/{i}.png")
             ctx.field("ImageSave.save").touch()
 
             rot = ctx.field("RotateAtTarget.outQuaternionRotation").value
@@ -341,7 +341,7 @@ def render_images_and_generate_cameras_txt(num_imgs=100, output_path="", extent=
             t = -r_cw.as_matrix() @ C
 
             f.write(
-                f"{i+1} {qw} {qx} {qy} {qz} {t[0]/10.0} {t[1]/10.0} {t[2]/10.0} {camera_id} {i}.jpg\n"
+                f"{i+1} {qw} {qx} {qy} {qz} {t[0]/10.0} {t[1]/10.0} {t[2]/10.0} {camera_id} {i}.png\n"
             )
 
     #print(f"data exported to {output_path}")

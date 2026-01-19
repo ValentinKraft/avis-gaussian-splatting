@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -11,17 +11,252 @@
 
 import os
 import torch
-from random import randint
-from utils.loss_utils import l1_loss, ssim
-from gaussian_renderer import render, network_gui
 import sys
-from scene import Scene, GaussianModel
+import numpy as np
+from dataclasses import dataclass
+from scene.gaussian_model import GaussianModel
+from scene.volume_scene import VolumeScene
 from utils.general_utils import safe_state, get_expon_lr_func
 import uuid
 from tqdm import tqdm
-from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
-from arguments import ModelParams, PipelineParams, OptimizationParams
+from typing import Optional
+from arguments import (
+    ExportParams,
+    ModelParams,
+    OptimizationParams,
+    PipelineParams,
+    TrainingScriptParams,
+)
+from gaussian_splatting.utils.parameter_monitor import (
+    ParameterMonitor,
+    add_parameter_regularization_loss,
+)
+from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
+from torch.cuda.amp import autocast, GradScaler
+
+
+MAX_POINTS_PER_ITER = 20000  # Upper bound of splats per forward pass to limit memory
+
+
+@dataclass
+class MedicalPresetState:
+    """Container describing how medical presets modify the training loop."""
+
+    mode: str
+    active: bool
+    diversity_enabled: bool
+    diagnostics_enabled: bool
+    densification_enabled: bool
+    scale_constraints_enabled: bool
+    init_points: int
+
+
+def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
+    """Apply organ/vessel presets and return the resulting state."""
+
+    mode = getattr(args, "medical_mode", "none")
+    active = mode in ("organ", "vessel")
+    diversity_enabled = bool(getattr(args, "enable_diversity", False))
+    diagnostics_enabled = bool(getattr(args, "enable_diagnostics", False))
+    enable_densification = bool(getattr(args, "enable_densification", False))
+    disable_densification = bool(getattr(args, "disable_densification", False))
+    densification_enabled = bool(enable_densification and not disable_densification)
+    init_points = getattr(args, "init_n_points", 0)
+
+    state = MedicalPresetState(
+        mode=mode,
+        active=active,
+        diversity_enabled=diversity_enabled,
+        diagnostics_enabled=diagnostics_enabled,
+        densification_enabled=densification_enabled,
+        scale_constraints_enabled=True,
+        init_points=init_points,
+    )
+
+    if not state.densification_enabled:
+        opt.densify_from_iter = max(opt.iterations + 1, opt.densify_from_iter)
+        opt.densify_until_iter = opt.iterations
+
+    if not active:
+        return state
+
+    target_points = 8000 if mode == "organ" else 6000
+    if hasattr(args, "init_n_points") and args.init_n_points < target_points:
+        args.init_n_points = target_points
+    state.init_points = getattr(args, "init_n_points", target_points)
+
+    if not diversity_enabled:
+        opt.diversity_warmup_iterations = 0
+        opt.diversity_scale_weight = 0.0
+        opt.diversity_rotation_weight = 0.0
+        opt.diversity_scale_range_weight = 0.0
+        opt.diversity_target_range_weight = 0.0
+        opt.diversity_rotation_entropy_weight = 0.0
+        opt.diversity_dispersion_weight = 0.0
+        opt.diversity_alignment_weight = 0.0
+        state.scale_constraints_enabled = False
+        if hasattr(args, "scale_l2_weight"):
+            args.scale_l2_weight = 0.0
+        if hasattr(opt, "scale_l2_weight"):
+            opt.scale_l2_weight = 0.0
+    else:
+        state.scale_constraints_enabled = True
+
+    if mode == "organ":
+        state.densification_enabled = False
+        opt.densify_from_iter = max(opt.iterations + 1, opt.densify_from_iter)
+        opt.densify_until_iter = opt.iterations
+    else:
+        state.densification_enabled = densification_enabled
+        if state.densification_enabled:
+            opt.densification_interval = max(opt.densification_interval, 200)
+            opt.densify_grad_threshold = max(opt.densify_grad_threshold, 5e-4)
+            opt.densify_from_iter = max(opt.densify_from_iter, 400)
+            opt.densify_until_iter = min(
+                opt.densify_until_iter, opt.iterations, opt.densify_from_iter + 2000
+            )
+
+    if disable_densification and state.densification_enabled:
+        state.densification_enabled = False
+        opt.densify_from_iter = max(opt.iterations + 1, opt.densify_from_iter)
+        opt.densify_until_iter = opt.iterations
+
+    return state
+
+def _select_active_indices(xyz: torch.Tensor) -> tuple[Optional[torch.Tensor], int]:
+    """Return a random subset of point indices capped at MAX_POINTS_PER_ITER."""
+    if xyz.dim() != 2:
+        total = xyz.shape[0]
+        return None, total
+
+    if xyz.shape[0] == 3 and xyz.shape[1] != 3:
+        total = xyz.shape[1]
+    else:
+        total = xyz.shape[0]
+
+    if total <= MAX_POINTS_PER_ITER:
+        return None, total
+
+    device = xyz.device
+    idx = torch.randperm(total, device=device)[:MAX_POINTS_PER_ITER]
+    return idx, total
+
+
+def _log_gpu_memory(
+    tag: str, iteration: int, total_points: int, active_points: int
+) -> None:
+    """Print lightweight CUDA memory diagnostics for early iterations."""
+    if not torch.cuda.is_available():
+        return
+    alloc = torch.cuda.max_memory_allocated() / 1e9
+    reserved = torch.cuda.max_memory_reserved() / 1e9
+    print(
+        (
+            f"[MEM][iter={iteration}] {tag}: alloc={alloc:.2f} GB, "
+            f"reserved={reserved:.2f} GB | points {active_points}/{total_points}"
+        )
+    )
+
+
+def _maybe_reset_opacity(
+    gaussians: GaussianModel, iteration: int, interval: int
+) -> bool:
+    """Reset learnable opacities when enabled and no mask buffer is active."""
+    if interval <= 0 or iteration % interval != 0:
+        return False
+
+    mask_check = getattr(gaussians, "_mask_opacity_active", None)
+    if callable(mask_check) and mask_check():
+        return False
+
+    has_mask_buffer = (
+        hasattr(gaussians, "opacities")
+        and isinstance(gaussians.opacities, torch.Tensor)
+        and gaussians.opacities.numel() > 0
+    )
+    if has_mask_buffer:
+        return False
+
+    gaussians.reset_opacity()
+    return True
+
+
+def _ensure_core_params_require_grad(gaussians: GaussianModel) -> None:
+    """Make sure the core tensors stay connected to the optimizer graph."""
+    for name in ("_xyz", "_scaling", "_rotation"):
+        tensor = getattr(gaussians, name, None)
+        if tensor is None or not isinstance(tensor, torch.nn.Parameter):
+            continue
+        if not tensor.requires_grad:
+            print(f"WARNING: {name} had requires_grad=False – enabling in-place.")
+            tensor.requires_grad_(True)
+
+
+def _collect_grad_norms(gaussians: GaussianModel) -> dict[str, float]:
+    """Return gradient norms for the main parameter tensors."""
+    norms: dict[str, float] = {}
+    if gaussians._xyz.grad is not None:
+        norms["xyz"] = gaussians._xyz.grad.norm().item()
+    if gaussians._scaling.grad is not None:
+        norms["scaling"] = gaussians._scaling.grad.norm().item()
+    if gaussians._rotation.grad is not None:
+        norms["rotation"] = gaussians._rotation.grad.norm().item()
+    return norms
+
+
+def _clip_gradients(gaussians: GaussianModel, max_norm: float) -> None:
+    """Apply gradient clipping to the core tensors if gradients exist."""
+    clip_candidates: list[torch.Tensor] = []
+
+    if gaussians._xyz.grad is not None:
+        clip_candidates.append(gaussians._xyz)
+
+    if gaussians._scaling.grad is not None:
+        clip_candidates.append(gaussians._scaling)
+
+    if gaussians._rotation.grad is not None:
+        clip_candidates.append(gaussians._rotation)
+
+    if (
+        hasattr(gaussians, "_features_dc")
+        and gaussians._features_dc is not None
+        and gaussians._features_dc.requires_grad
+        and gaussians._features_dc.grad is not None
+    ):
+        clip_candidates.append(gaussians._features_dc)
+
+    if clip_candidates:
+        torch.nn.utils.clip_grad_norm_(clip_candidates, max_norm=max_norm)
+
+
+def _log_gradient_snapshot(
+    gaussians: GaussianModel, iteration: int, interval: int
+) -> None:
+    """Log gradient norms to stdout at a fixed interval."""
+    if iteration % interval != 0:
+        return
+    with torch.no_grad():
+        if gaussians._xyz.grad is not None:
+            print(f"XYZ grad norm: {gaussians._xyz.grad.norm().item():.6f}")
+        if gaussians._scaling.grad is not None:
+            print(f"Scaling grad norm: {gaussians._scaling.grad.norm().item():.6f}")
+        if gaussians._rotation.grad is not None:
+            print(f"Rotation grad norm: {gaussians._rotation.grad.norm().item():.6f}")
+
+
+def _log_learning_rates(gaussians: GaussianModel, iteration: int) -> None:
+    """Dump learning rate information for the first iterations."""
+    if iteration > 3:
+        return
+    print(f"\n[ITER {iteration}] Learning Rates:")
+    for group in gaussians.optimizer.param_groups:
+        name = group.get("name", "?")
+        lr = group.get("lr", 0.0)
+        print(f"  {name:15s}: {lr:.8f}")
+    print(f"  spatial_lr_scale: {gaussians.spatial_lr_scale:.8f}")
+
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -29,165 +264,723 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 try:
-    from fused_ssim import fused_ssim
-    FUSED_SSIM_AVAILABLE = True
-except:
-    FUSED_SSIM_AVAILABLE = False
-
-try:
     from diff_gaussian_rasterization import SparseGaussianAdam
     SPARSE_ADAM_AVAILABLE = True
 except:
     SPARSE_ADAM_AVAILABLE = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+
+def training(
+    dataset,
+    opt,
+    pipe,
+    testing_iterations,
+    saving_iterations,
+    checkpoint_iterations,
+    checkpoint,
+    debug_from,
+    args,
+):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
+
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
     first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
-    scene = Scene(dataset, gaussians)
+    tb_writer = prepare_output_and_logger(args)
+
+    # Set default SH degree and create gaussians
+    gaussians = GaussianModel(
+        0, opt.optimizer_type
+    )  # Use degree 0 for volume-only training
+    gaussians.set_intensity_mode(getattr(opt, "intensity_mode", "learned"))
+    gaussians.configure_mean_covered_sampling(
+        large_splat_threshold=getattr(opt, "intensity_large_splat_threshold", 0.03),
+        radius_scale=getattr(opt, "intensity_mean_cover_radius", 2.5),
+        update_interval=getattr(
+            opt,
+            "intensity_mean_cover_interval",
+            getattr(opt, "intensity_update_interval", 10),
+        ),
+    )
+    gaussians.set_intensity_color_divisor(getattr(opt, "intensity_color_divisor", 1.0))
+
+    # Absolute voxel-unit scale clamps (applied per-axis).
+    gaussians.min_scale_vox = float(getattr(opt, "min_scale_vox", 1.0))
+    gaussians.max_scale_vox = float(getattr(opt, "max_scale_vox", 10.0))
+
+    # Propagate constraint-related knobs from CLI into the Gaussian model.
+    gaussians.max_scale_factor = getattr(opt, "max_scale_factor", gaussians.max_scale_factor)
+    gaussians._max_scale_factor_base = gaussians.max_scale_factor
+    gaussians.scaling_constraint_warmup_iters = getattr(
+        opt, "scaling_constraint_warmup_iters", gaussians.scaling_constraint_warmup_iters
+    )
+    gaussians.scaling_constraint_relaxation = getattr(
+        opt, "scaling_constraint_relaxation", gaussians.scaling_constraint_relaxation
+    )
+    gaussians.early_stats_window = getattr(
+        opt, "early_stats_window", gaussians.early_stats_window
+    )
+    gaussians.max_position_displacement_scale = getattr(
+        opt,
+        "position_displacement_scale",
+        gaussians.max_position_displacement_scale,
+    )
+
+    preset_state = _configure_medical_presets(args, opt)
+    diagnostics_enabled = preset_state.diagnostics_enabled
+    scale_constraints_enabled = (
+        preset_state.scale_constraints_enabled or not preset_state.active
+    )
+
+    # Initialize parameter monitoring with increased log interval for better performance
+    parameter_monitor = (
+        ParameterMonitor(args.model_path, log_interval=50)
+        if diagnostics_enabled
+        else None
+    )
+
+    # Initialize parameter update tracker
+    from utils.parameter_update_tracking import ParameterUpdateTracker
+
+    update_tracker = ParameterUpdateTracker() if diagnostics_enabled else None
+
+    # Create scene for volume-based training
+    scene = VolumeScene(args, gaussians)
+
+    volume_shape = tuple(
+        args.volume_shape if hasattr(args, "volume_shape") else opt.volume_shape
+    )
+    volume_downscale_factor = getattr(args, "volume_downscale_factor", None)
+    loss_type = (
+        args.volume_loss_type
+        if hasattr(args, "volume_loss_type")
+        else opt.volume_loss_type
+    )
+    loss_weight = (
+        args.volume_loss_weight
+        if hasattr(args, "volume_loss_weight")
+        else opt.volume_loss_weight
+    )
+    volume_supervisor = VolumeSupervisor(
+        volume_path=args.volume_path,
+        volume_shape=volume_shape,
+        volume_downscale_factor=volume_downscale_factor,
+        mask_path=args.mask_path if hasattr(args, "mask_path") else None,
+        loss_type=loss_type,
+        loss_weight=loss_weight,
+        supervision_target=getattr(args, "supervision_target", "mask"),
+        density_scale=getattr(args, "density_scale", 1.0),
+        mask_loss_threshold_rel=getattr(args, "mask_loss_threshold_rel", 0.01),
+        opacity_gamma=getattr(args, "opacity_gamma", 1.0),
+        outside_mask_weight=getattr(args, "outside_mask_weight", 0.1),
+        intensity_update_interval=getattr(opt, "intensity_update_interval", 10),
+        sampling_padding_mode=getattr(opt, "sampling_padding_mode", "border"),
+    )
+
+    # Provide voxel spacing to the Gaussian model so voxel-unit clamps work.
+    gaussians.voxel_size = volume_supervisor.voxel_size
+    gaussians.sampling_padding_mode = getattr(
+        opt, "sampling_padding_mode", volume_supervisor.sampling_padding_mode
+    )
+    gaussians.position_bounds = (
+        getattr(volume_supervisor, "bounds_min_padded", volume_supervisor.bounds_min),
+        getattr(volume_supervisor, "bounds_max_padded", volume_supervisor.bounds_max),
+    )
+    if hasattr(args, "structure_sigma"):
+        volume_supervisor.structure_sigma = float(args.structure_sigma)
+    if hasattr(args, "structure_mask_threshold"):
+        volume_supervisor.structure_mask_threshold = float(
+            args.structure_mask_threshold
+        )
+
+    from gaussian_splatting.utils.volume_initializer import initialize_gaussians
+
+    # Load volume transform if provided
+    volume_transform = None
+    if args.volume_transform:
+        # Volume supervision (splat_to_volume) operates in normalized [0,1]^3.
+        # Applying an arbitrary transform here can move points out of that domain.
+        # If you need a transform, the supervision mapping must be updated consistently.
+        print(
+            "WARNING: --volume_transform provided, but normalized volume-space training "
+            "keeps Gaussians in [0,1]^3 and will ignore volume_transform."
+        )
+        volume_transform = None
+
+    # Get scene bounds for scaling
+    # Volume supervision assumes normalized volume coordinates; do not remap
+    # points into camera/world bounds.
+    scene_bounds = None
+
+    # Initialize gaussians by sampling from mask/volume inputs
+    initialize_gaussians(
+        model=gaussians,
+        mask_path=args.mask_path,
+        volume_path=args.volume_path,
+        n_points=args.init_n_points,
+        volume_transform=volume_transform,
+        scene_bounds=scene_bounds,
+        volume_downscale_factor=volume_downscale_factor,
+        init_scale_min_vox=getattr(args, "init_scale_min_vox", 1.0),
+        init_scale_max_vox=getattr(args, "init_scale_max_vox", 3.0),
+        opacity_gamma=getattr(args, "opacity_gamma", 1.0),
+        noise_std=(
+            args.position_noise
+            if hasattr(args, "position_noise")
+            else opt.position_noise
+        ),
+        orientation_helper=volume_supervisor,
+        mask_threshold=(
+            max(float(getattr(args, "init_mask_threshold", 0.5)), 0.5)
+            if getattr(args, "mask_path", None)
+            else float(getattr(args, "init_mask_threshold", 0.5))
+        ),
+        structure_mask_threshold=getattr(args, "structure_mask_threshold", 0.1),
+        structure_sigma=getattr(args, "structure_sigma", 1.0),
+        structure_min_vesselness=getattr(args, "structure_min_vesselness", 0.1),
+        anisotropy_strength=getattr(args, "anisotropy_strength", 0.0),
+        init_anisotropy_ratio=getattr(args, "init_anisotropy_ratio", 1.0),
+        border_distance_vox=getattr(args, "border_distance_vox", 0.0),
+        border_flatten_ratio=getattr(args, "border_flatten_ratio", 1.0),
+        border_grad_sigma=getattr(args, "border_grad_sigma", 1.5),
+    )
+
+    # Set spatial_lr_scale after volume initialization
+    # For normalized [0,1]^3 coordinates, the natural spatial scale is 1.0.
+    gaussians.spatial_lr_scale = 1.0
+
+    print(
+        f"Initialized {gaussians._xyz.shape[1]} Gaussians; spatial_lr_scale={gaussians.spatial_lr_scale:.3f}"
+    )
+
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
 
-    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+        # Initialize intensity values if they don't exist
 
-    iter_start = torch.cuda.Event(enable_timing = True)
-    iter_end = torch.cuda.Event(enable_timing = True)
+    # Initialize mixed precision training
+    scaler = GradScaler()
+    use_amp = (
+        not args.disable_mixed_precision
+    )  # Use mixed precision unless explicitly disabled
+    if use_amp:
+        print("Using mixed precision training for better performance")
+        bf16_supported = False
+        if hasattr(torch.cuda, "is_bf16_supported") and torch.cuda.is_available():
+            bf16_supported = torch.cuda.is_bf16_supported()
+        amp_dtype = torch.bfloat16 if bf16_supported else torch.float16
+    else:
+        print("Mixed precision training disabled")
+        amp_dtype = torch.float32
 
-    use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
-    depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
-
-    viewpoint_stack = scene.getTrainCameras().copy()
-    viewpoint_indices = list(range(len(viewpoint_stack)))
+    # Initialize tracking variables
     ema_loss_for_log = 0.0
-    ema_Ll1depth_for_log = 0.0
+    ema_vol_loss_for_log = 0.0
+    param_stats = {"scale_change_rate": 0.0, "rot_change_rate": 0.0}
 
-    progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
+    diversity_warmup_iters = getattr(opt, "diversity_warmup_iterations", 0)
+    diversity_log_interval = max(1, getattr(opt, "diversity_log_interval", 25))
+    diversity_scale_weight = getattr(opt, "diversity_scale_weight", 0.0)
+    diversity_rotation_weight = getattr(opt, "diversity_rotation_weight", 0.0)
+    diversity_scale_range_weight = getattr(
+        opt, "diversity_scale_range_weight", 0.2
+    )
+    diversity_target_range_weight = getattr(
+        opt, "diversity_target_range_weight", 0.2
+    )
+    diversity_rotation_entropy_weight = getattr(
+        opt, "diversity_rotation_entropy_weight", 0.2
+    )
+    diversity_dispersion_weight = getattr(opt, "diversity_dispersion_weight", 0.2)
+    diversity_alignment_weight = getattr(opt, "diversity_alignment_weight", 0.1)
+    diversity_enabled = (
+        preset_state.diversity_enabled
+        and diversity_warmup_iters > 0
+        and (diversity_scale_weight > 0 or diversity_rotation_weight > 0)
+    )
+
+    class _NoopCudaEvent:
+        """Minimal stand-in when CUDA timing events are unavailable."""
+
+        def record(self) -> None:
+            return None
+
+        def elapsed_time(self, other) -> float:
+            return 0.0
+
+    if torch.cuda.is_available():
+        iter_start = torch.cuda.Event(enable_timing=True)
+        iter_end = torch.cuda.Event(enable_timing=True)
+    else:
+        iter_start = _NoopCudaEvent()
+        iter_end = _NoopCudaEvent()
+
+    progress_bar = tqdm(
+        range(first_iter, opt.iterations), desc="#### Training progress ####"
+    )
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
-        if network_gui.conn == None:
-            network_gui.try_connect()
-        while network_gui.conn != None:
-            try:
-                net_image_bytes = None
-                custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
-                if custom_cam != None:
-                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
-                    net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-                network_gui.send(net_image_bytes, dataset.source_path)
-                if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-                    break
-            except Exception as e:
-                network_gui.conn = None
+        # Skip GUI network in volume-only mode
 
         iter_start.record()
 
+        log_mem = iteration <= 3
+        if log_mem and torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
+        xyz_grad_norm = None
+        scaling_grad_norm = None
+        rotation_grad_norm = None
+        scaling_lr = next(
+            (
+                group["lr"]
+                for group in gaussians.optimizer.param_groups
+                if group["name"] == "scaling"
+            ),
+            None,
+        )
+
         gaussians.update_learning_rate(iteration)
+        gaussians.optimizer.zero_grad(set_to_none=True)
 
-        # Every 1000 its we increase the levels of SH up to a maximum degree
-        if iteration % 1000 == 0:
-            gaussians.oneupSHdegree()
+        xyz_for_sampling = gaussians.get_xyz
+        active_idx, total_points = _select_active_indices(xyz_for_sampling)
+        active_points = active_idx.numel() if active_idx is not None else total_points
+        if log_mem and total_points > 0:
+            _log_gpu_memory("before_forward", iteration, total_points, active_points)
+            if active_idx is not None:
+                print(
+                    f"[Points][iter={iteration}] using {active_points} / {total_points} splats"
+                )
 
-        # Pick a random Camera
-        if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
-            viewpoint_indices = list(range(len(viewpoint_stack)))
-        rand_idx = randint(0, len(viewpoint_indices) - 1)
-        viewpoint_cam = viewpoint_stack.pop(rand_idx)
-        vind = viewpoint_indices.pop(rand_idx)
+        # No SH updates needed for volume-only training
 
-        # Render
-        if (iteration - 1) == debug_from:
-            pipe.debug = True
+        # Initialize total loss
+        loss = 0.0
+        # Volume supervision loss
+        volume_loss = 0.0
+        reg_loss_value = None
+        reg_metrics = None
+        warmup_active = diversity_enabled and iteration <= diversity_warmup_iters
 
-        bg = torch.rand((3), device="cuda") if opt.random_background else background
+        # Compute the volume loss and get volume gradients for parameter diversity loss
+        with autocast(enabled=use_amp, dtype=amp_dtype if use_amp else None):
+            vol_loss, vol_metrics, vol_gradients = volume_supervisor.compute_loss(
+                gaussians,
+                active_idx=active_idx,
+                total_points=total_points,
+            )
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
-        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+            # CRITICAL: Don't call item() on the loss until after backward() is called!
+            loss = vol_loss
 
-        if viewpoint_cam.alpha_mask is not None:
-            alpha_mask = viewpoint_cam.alpha_mask.cuda()
-            image *= alpha_mask
+            # Optional global scale L2 regularization to discourage oversized splats
+            scale_l2_weight = getattr(args, "scale_l2_weight", 0.0)
+            if scale_constraints_enabled and scale_l2_weight > 0.0:
+                scales = gaussians.get_scaling
+                if scales.numel() > 0:
+                    scale_norm = scales.norm(dim=1)
+                    scale_reg = scale_norm.mean() * float(scale_l2_weight)
+                    loss = loss + scale_reg
+                    vol_metrics["scale_l2_reg"] = float(scale_reg.detach().item())
 
-        # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        if FUSED_SSIM_AVAILABLE:
-            ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+            # Optional log-scale spread penalty (global). Encourages more uniform splat sizes
+            # without forcing them identical.
+            scale_logvar_weight = float(getattr(args, "scale_logvar_weight", 0.0))
+            scale_logvar_warmup = int(getattr(args, "scale_logvar_warmup_iters", 0))
+            if scale_logvar_weight > 0.0 and iteration >= scale_logvar_warmup:
+                scales = gaussians.get_scaling
+                voxel_size = getattr(gaussians, "voxel_size", None)
+                if (
+                    scales.numel() > 0
+                    and isinstance(voxel_size, torch.Tensor)
+                    and voxel_size.numel() == 3
+                ):
+                    voxel_size_xyz = voxel_size.to(
+                        device=scales.device, dtype=scales.dtype
+                    ).clamp_min(1e-8)
+                    scales_vox = scales / voxel_size_xyz.unsqueeze(0)
+                    log_scales_vox = torch.log(scales_vox.clamp_min(1e-8))
+                    centered = log_scales_vox - log_scales_vox.mean(
+                        dim=0, keepdim=True
+                    )
+                    spread = (centered * centered).mean()
+                    scale_spread_reg = spread * scale_logvar_weight
+                    loss = loss + scale_spread_reg
+                    vol_metrics["scale_logvar_reg"] = float(
+                        scale_spread_reg.detach().item()
+                    )
+
+        if log_mem and total_points > 0:
+            _log_gpu_memory("after_forward", iteration, total_points, active_points)
+
+        # Store value for logging only
+        volume_loss = vol_loss.detach().item()
+
+        # Apply diversity warmup regularization when requested
+        if warmup_active:
+            base_loss = loss
+            reg_scale_weight = diversity_scale_weight * 0.5
+            reg_rotation_weight = diversity_rotation_weight * 0.5
+            reg_scale_range_weight = diversity_scale_range_weight * 0.25
+            reg_target_range_weight = diversity_target_range_weight * 0.25
+            reg_entropy_weight = diversity_rotation_entropy_weight * 0.25
+            reg_dispersion_weight = diversity_dispersion_weight * 0.25
+            reg_alignment_weight = diversity_alignment_weight * 0.5
+            loss, reg_metrics = add_parameter_regularization_loss(
+                model=gaussians,
+                loss=loss,
+                scale_diversity_weight=reg_scale_weight,
+                rotation_diversity_weight=reg_rotation_weight,
+                scale_range_weight=reg_scale_range_weight,
+                rotation_entropy_weight=reg_entropy_weight,
+                target_range_weight=reg_target_range_weight,
+                dispersion_weight=reg_dispersion_weight,
+                alignment_weight=reg_alignment_weight,
+                volume_gradients=vol_gradients,
+            )
+            reg_loss_value = reg_metrics.get("total") if reg_metrics else None
+            if reg_loss_value is None:
+                reg_loss_value = (loss - base_loss).detach().item()
+
+            if iteration <= 3 or iteration % diversity_log_interval == 0:
+                remaining = diversity_warmup_iters - iteration
+                scale_total = (
+                    reg_metrics.get("scale_total", 0.0) if reg_metrics else 0.0
+                )
+                rotation_total = (
+                    reg_metrics.get("rotation_total", 0.0) if reg_metrics else 0.0
+                )
+                print(
+                    (
+                        f"[REG][iter={iteration}] total={reg_loss_value:.6f} "
+                        f"scale={scale_total:.6f} rotation={rotation_total:.6f} "
+                        f"remaining={max(0, remaining)}"
+                    )
+                )
+
+        # Track parameter statistics for monitoring (only on every 50th iteration)
+        if diagnostics_enabled and parameter_monitor is not None:
+            if iteration % 50 == 0:
+                new_stats = parameter_monitor.update(
+                    iteration,
+                    gaussians._xyz,
+                    gaussians.get_scaling,
+                    gaussians.get_rotation,
+                    loss=loss.item(),
+                    volume_loss=vol_loss.item() if vol_loss is not None else None,
+                    reg_loss=reg_loss_value,
+                )
+                if new_stats:
+                    param_stats.update(new_stats)
+
+        # Log volume metrics
+        if tb_writer and iteration % 10 == 0:
+            for name, value in vol_metrics.items():
+                tb_writer.add_scalar(f"volume/{name}", value, iteration)
+
+            if diagnostics_enabled:
+                tb_writer.add_scalar(
+                    "diversity/scale_weight", diversity_scale_weight, iteration
+                )
+                tb_writer.add_scalar(
+                    "diversity/rotation_weight", diversity_rotation_weight, iteration
+                )
+                if reg_loss_value is not None:
+                    tb_writer.add_scalar(
+                        "loss/regularization", reg_loss_value, iteration
+                    )
+                    if reg_metrics:
+                        for metric_name, metric_value in reg_metrics.items():
+                            tb_writer.add_scalar(
+                                f"diversity/{metric_name}", metric_value, iteration
+                            )
+
+        # Make sure the loss requires gradients before calling backward
+        if loss.requires_grad:
+            # Make sure parameters require gradients BEFORE calling backward
+            _ensure_core_params_require_grad(gaussians)
+
+            if use_amp:
+                scaler.scale(loss).backward()
+                scaler.unscale_(gaussians.optimizer)
+            else:
+                loss.backward()
+
+            grad_norms = _collect_grad_norms(gaussians)
+            xyz_grad_norm = grad_norms.get("xyz")
+            scaling_grad_norm = grad_norms.get("scaling")
+            rotation_grad_norm = grad_norms.get("rotation")
+
+            if log_mem and total_points > 0:
+                _log_gpu_memory(
+                    "after_backward", iteration, total_points, active_points
+                )
+
+            # Debug: Save pre-step values to verify updates happen
+            if iteration <= 5 or iteration % 500 == 0:
+                pre_xyz_mean = gaussians._xyz.mean().item()
+                pre_scaling_mean = gaussians._scaling.mean().item()
+
+            if diagnostics_enabled:
+                _log_gradient_snapshot(gaussians, iteration, interval=50)
+
+            # Clip gradients to prevent numerical instability
+            if iteration > 1:
+                _clip_gradients(gaussians, max_norm=10.0)
+
+            if use_amp:
+                prev_scale = scaler.get_scale()
+                scaler.step(gaussians.optimizer)
+                scaler.update()
+            else:
+                gaussians.optimizer.step()
+
+            if log_mem and total_points > 0:
+                _log_gpu_memory("after_step", iteration, total_points, active_points)
+
+            # Debug: Check if scaler skipped the step (happens when gradients are inf/nan)
+            if diagnostics_enabled and (iteration <= 10 or iteration % 500 == 0):
+                if use_amp:
+                    scale = scaler.get_scale()
+                    print(
+                        f"[ITER {iteration}] GradScaler scale: {scale:.2f} (prev {prev_scale:.2f})"
+                    )
+
+                if iteration <= 5 or iteration % 500 == 0:
+                    post_xyz_mean = gaussians._xyz.mean().item()
+                    post_scaling_mean = gaussians._scaling.mean().item()
+                    xyz_change = abs(post_xyz_mean - pre_xyz_mean)
+                    scaling_change = abs(post_scaling_mean - pre_scaling_mean)
+                    print(f"  XYZ mean change: {xyz_change:.10f}")
+                    print(f"  Scaling mean change: {scaling_change:.10f}")
+                    if scaling_lr is not None and scaling_grad_norm is not None:
+                        print(
+                            "  Scaling lr: {:.6e} | grad norm: {:.6e}".format(
+                                scaling_lr,
+                                scaling_grad_norm,
+                            )
+                        )
+                    if xyz_grad_norm is not None:
+                        print(f"  XYZ grad norm: {xyz_grad_norm:.6e}")
+                    if rotation_grad_norm is not None:
+                        print(f"  Rotation grad norm: {rotation_grad_norm:.6e}")
+
+            # Verify learning rates on first few iterations
+            _log_learning_rates(gaussians, iteration)
+
+            # Enforce scale clamps (absolute clamps always; relative clamp can be disabled by presets).
+            gaussians.enforce_scaling_constraint(
+                iteration=iteration,
+                apply_relative=bool(scale_constraints_enabled),
+            )
+            gaussians.enforce_position_displacement_constraint()
+            gaussians.enforce_position_bounds()
+
+            # Adaptive density control for volume-based training
+            with torch.no_grad():
+                # For volume-based training, use position gradients instead of viewspace gradients
+                if (
+                    preset_state.densification_enabled
+                    and iteration >= opt.densify_from_iter
+                    and iteration <= opt.densify_until_iter
+                ):
+                    # Accumulate gradients for densification (every iteration during densification period)
+                    if gaussians._xyz.grad is not None:
+                        # _xyz has shape [3, N], so grad also has shape [3, N]
+                        # Compute norm across the 3D dimension (dim=0) to get magnitude per point
+                        # Result shape: [N]
+                        xyz_grad_per_point = torch.norm(
+                            gaussians._xyz.grad, dim=0, keepdim=False
+                        )
+                        # Reshape to [N, 1] to match xyz_gradient_accum shape
+                        xyz_grad_per_point = xyz_grad_per_point.unsqueeze(1)
+                        gaussians.xyz_gradient_accum += xyz_grad_per_point
+                        gaussians.denom += 1
+
+                    # Perform densification and pruning at intervals
+                    if iteration % opt.densification_interval == 0:
+                        # Volume-only training uses normalized [0,1]^3 coordinates.
+                        # Keep densification heuristics in the same normalized scale.
+                        extent = 1.0
+
+                        # Perform densification and pruning
+                        gaussians.densify_and_prune(
+                            max_grad=opt.densify_grad_threshold,
+                            min_opacity=1e-4,  # Less aggressive pruning for volume-based training
+                            extent=extent,
+                            max_screen_size=None,  # No screen size limit for volume training
+                            radii=None,  # No radii for volume training
+                        )
+
+                        # Log densification
+                        if iteration % 100 == 0 or iteration == opt.densify_from_iter:
+                            print(
+                                f"\n[ITER {iteration}] Densification: {gaussians._xyz.shape[1]} points"
+                            )
+
+            if diagnostics_enabled:
+                _log_gradient_snapshot(gaussians, iteration, interval=50)
+
+            gaussians.optimizer.zero_grad(set_to_none=True)
+
+            # Add a manual gradient perturbation if gradients are zero
+            # This is a drastic measure to force parameter updates
+            # REMOVE direct random parameter perturbations (they break true gradient-based optimization)
         else:
-            ssim_value = ssim(image, gt_image)
-
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
-
-        # Depth regularization
-        Ll1depth_pure = 0.0
-        if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
-            invDepth = render_pkg["depth"]
-            mono_invdepth = viewpoint_cam.invdepthmap.cuda()
-            depth_mask = viewpoint_cam.depth_mask.cuda()
-
-            Ll1depth_pure = torch.abs((invDepth  - mono_invdepth) * depth_mask).mean()
-            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure 
-            loss += Ll1depth
-            Ll1depth = Ll1depth.item()
-        else:
-            Ll1depth = 0
-
-        loss.backward()
+            # This should no longer happen with the fixed gradient chain
+            print("WARNING: Loss does not require gradients! Check gradient chain.")
+            dummy_loss = (gaussians._xyz.sum() * 0) + loss
+            dummy_loss.backward()
 
         iter_end.record()
 
         with torch.no_grad():
             # Progress bar
+            # Update EMA loss values
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
-            ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
+            ema_vol_loss_for_log = 0.4 * volume_loss + 0.6 * ema_vol_loss_for_log
 
-            if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
-                progress_bar.update(10)
+            # Get scaling and rotation stats for logging
+            with torch.no_grad():
+                scaling = gaussians.get_scaling
+                scaling_mean = scaling.mean().item()
+                scaling_std = scaling.std().item()
+
+                rotation = gaussians.get_rotation
+                # Simple approximation of rotation "magnitude"
+                rotation_magnitude = torch.norm(rotation[:, 1:], dim=1).mean().item()
+
+                # Calculate changes from previous iterations
+                scale_change = param_stats.get("scale_change_rate", 0.0)
+                rot_change = param_stats.get("rot_change_rate", 0.0)
+
+            # Update progress bar every iteration
+            postfix = {
+                "Loss": f"{ema_loss_for_log:.{5}f}",
+                "Vol": f"{ema_vol_loss_for_log:.{5}f}",
+                "Scale": f"{scaling_mean:.{3}f}±{scaling_std:.{3}f}",
+                "Rot": f"{rotation_magnitude:.{3}f}",
+                "Δs": f"{scale_change:.{3}f}",
+                "Δr": f"{rot_change:.{3}f}",
+            }
+            progress_bar.set_postfix(postfix)
+            progress_bar.update(1)  # Update by 1 each iteration
             if iteration == opt.iterations:
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
+            if tb_writer is not None:
+                tb_writer.add_scalar("loss/total", loss.item(), iteration)
+                tb_writer.add_scalar("loss/volume", volume_loss, iteration)
+                tb_writer.add_scalar(
+                    "timing/iter_ms", iter_start.elapsed_time(iter_end), iteration
+                )
+                tb_writer.add_scalar("model/points", gaussians._xyz.shape[1], iteration)
+
+                if diagnostics_enabled:
+                    tb_writer.add_scalar(
+                        "parameters/scaling_mean", scaling_mean, iteration
+                    )
+                    tb_writer.add_scalar(
+                        "parameters/scaling_std", scaling_std, iteration
+                    )
+                    tb_writer.add_scalar(
+                        "parameters/rotation_magnitude", rotation_magnitude, iteration
+                    )
+
+                    if xyz_grad_norm is not None:
+                        tb_writer.add_scalar("grads/xyz_norm", xyz_grad_norm, iteration)
+                    if scaling_grad_norm is not None:
+                        tb_writer.add_scalar(
+                            "grads/scaling_norm", scaling_grad_norm, iteration
+                        )
+                    if rotation_grad_norm is not None:
+                        tb_writer.add_scalar(
+                            "grads/rotation_norm", rotation_grad_norm, iteration
+                        )
+                    if scaling_lr is not None:
+                        tb_writer.add_scalar("lr/scaling", scaling_lr, iteration)
+
+                    if update_tracker is not None:
+                        update_metrics = update_tracker.update(gaussians)
+                        for name, value in update_metrics.items():
+                            tb_writer.add_scalar(
+                                f"updates/{name}", value, iteration
+                            )
+
+                        if iteration % 100 == 0:
+                            xyz_delta = update_metrics.get("xyz_delta_avg", 0)
+                            scale_delta = update_metrics.get("scaling_delta_avg", 0)
+                            rot_delta = update_metrics.get("rotation_delta_avg", 0)
+                            print(
+                                f"\n[ITER {iteration}] Parameter updates - XYZ: {xyz_delta:.5f}, Scale: {scale_delta:.5f}, Rot: {rot_delta:.5f}"
+                            )
+
+            # Save PLY file at specified iterations
+            save_ply_every = (
+                args.save_ply_every if hasattr(args, "save_ply_every") else 1
+            )
+            if (
+                iteration % save_ply_every == 0
+                or iteration == 1
+                or iteration == opt.iterations
+            ):
+                ply_output_dir = os.path.join(args.model_path, "ply_sequence")
+                prefix = (
+                    args.ply_output_prefix
+                    if hasattr(args, "ply_output_prefix")
+                    else "gaussians"
+                )
+                ply_output_path = gaussians.save_ply_sequence(
+                    ply_output_dir, iteration, prefix
+                )
+
+                # Log PLY saving every 100 iterations to avoid console spam
+                if (
+                    iteration % 100 == 0
+                    or iteration == 1
+                    or iteration == opt.iterations
+                ):
+                    print(f"\n[ITER {iteration}] Saved model as PLY: {ply_output_path}")
+
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
-            # Densification
-            if iteration < opt.densify_until_iter:
-                # Keep track of max radii in image-space for pruning
-                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-
-                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii)
-                
-                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                    gaussians.reset_opacity()
-
-            # Optimizer step
-            if iteration < opt.iterations:
-                gaussians.exposure_optimizer.step()
-                gaussians.exposure_optimizer.zero_grad(set_to_none = True)
-                if use_sparse_adam:
-                    visible = radii > 0
-                    gaussians.optimizer.step(visible, radii.shape[0])
-                    gaussians.optimizer.zero_grad(set_to_none = True)
-                else:
-                    gaussians.optimizer.step()
-                    gaussians.optimizer.zero_grad(set_to_none = True)
+            # Reset opacity only when learnable opacities are active
+            reset_interval = getattr(opt, "opacity_reset_interval", 0)
+            _maybe_reset_opacity(gaussians, iteration, reset_interval)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+
+            # Generate parameter report on last iteration
+            if (
+                diagnostics_enabled
+                and parameter_monitor is not None
+                and iteration == opt.iterations
+            ):
+                parameter_monitor.update(
+                    iteration,
+                    gaussians._xyz,
+                    gaussians.get_scaling,
+                    gaussians.get_rotation,
+                    force=True,
+                    loss=loss.item(),
+                    volume_loss=vol_loss.item() if vol_loss is not None else None,
+                    reg_loss=None,
+                )
+                parameter_monitor.final_report()
+                print(
+                    "\nParameter monitoring report saved to:",
+                    os.path.join(args.model_path, "parameter_stats"),
+                )
+
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -196,7 +989,7 @@ def prepare_output_and_logger(args):
         else:
             unique_str = str(uuid.uuid4())
         args.model_path = os.path.join("./output/", unique_str[0:10])
-        
+
     # Set up output folder
     print("Output folder: {}".format(args.model_path))
     os.makedirs(args.model_path, exist_ok = True)
@@ -211,75 +1004,56 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, train_test_exp):
+
+def training_report(tb_writer, iteration, loss, elapsed):
+    """Simple training report for volume-based training"""
     if tb_writer:
-        tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
-        tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
-        tb_writer.add_scalar('iter_time', elapsed, iteration)
+        tb_writer.add_scalar("train/loss", loss.item(), iteration)
+        tb_writer.add_scalar("train/iter_time_ms", elapsed, iteration)
 
-    # Report test and samples of training set
-    if iteration in testing_iterations:
-        torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
-
-        for config in validation_configs:
-            if config['cameras'] and len(config['cameras']) > 0:
-                l1_test = 0.0
-                psnr_test = 0.0
-                for idx, viewpoint in enumerate(config['cameras']):
-                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
-                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    if train_test_exp:
-                        image = image[..., image.shape[-1] // 2:]
-                        gt_image = gt_image[..., gt_image.shape[-1] // 2:]
-                    if tb_writer and (idx < 5):
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
-                        if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    psnr_test += psnr(image, gt_image).mean().double()
-                psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])          
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                if tb_writer:
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
-
-        if tb_writer:
-            tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
-            tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
-        torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
+
+    # Core parameter groups
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-    parser.add_argument('--ip', type=str, default="127.0.0.1")
-    parser.add_argument('--port', type=int, default=6009)
-    parser.add_argument('--debug_from', type=int, default=-1)
-    parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--quiet", action="store_true")
-    parser.add_argument('--disable_viewer', action='store_true', default=False)
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--start_checkpoint", type=str, default = None)
+    xp = ExportParams(parser)
+    tsp = TrainingScriptParams(parser)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
-    
+
     print("Optimizing " + args.model_path)
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    # Start GUI server, configure and run training
-    if not args.disable_viewer:
-        network_gui.init(args.ip, args.port)
+    class VolumeDataset:
+        def __init__(self, model_path: str):
+            self.cameras_extent = 1.0
+            self.white_background = False
+            self.model_path = model_path
+            self.source_path = ""
+            self.sh_degree = 0
+
+    dataset = VolumeDataset(args.model_path)
+
+    # Start training
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+
+    training(
+        dataset,
+        op.extract(args),
+        pp.extract(args),
+        args.test_iterations,
+        args.save_iterations,
+        args.checkpoint_iterations,
+        args.start_checkpoint,
+        args.debug_from,
+        args,  # Pass the full arguments
+    )
 
     # All done
     print("\nTraining complete.")
