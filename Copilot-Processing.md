@@ -1,9 +1,54 @@
 
+## User Request Details (2026-01-26, Learnable Opacity Modes)
+- Implement learnable opacity handling analogous to intensity handling.
+- Add an opacity mode flag (e.g., `--opacity_mode {sampled,learned,sampled_mean_covered}`) or similar.
+- Desired behavior:
+	- `sampled`: sample the input mask volume to initialize per-Gaussian opacities (as done today).
+	- `learned`: use learnable opacity parameters (optimize during training).
+	- `sampled_mean_covered`: use the same mean-covered strategy concept used for intensities, but for opacity.
+- Wire the chosen mode into initialization + training.
+
+## Action Plan (2026-01-26)
+1. Add CLI surface for opacity mode selection.
+2. Implement opacity mode behavior in initialization.
+3. Implement opacity mode behavior during training updates.
+4. Add minimal tests/smoke validation hooks.
+
+## Task Tracker (2026-01-26)
+### 1) CLI
+- [x] Add `--opacity_mode {sampled,learned,sampled_mean_covered}` to `arguments.py` under intensity/appearance controls.
+- [x] Decide default (`sampled` for parity with current behavior).
+- [x] Update help text to clarify interaction with `--supervision_target mask` and `--opacity_gamma`.
+- [x] Add `--opacity_update_interval` for sampled refresh cadence.
+
+### 2) Initialization
+- [x] Locate current mask-based opacity sampling path.
+- [x] Route initialization based on `opacity_mode`:
+	- [x] `sampled`: sample mask at seed positions and populate a non-learnable `opacities` buffer (respecting gamma mapping).
+	- [x] `learned`: initialize `_opacity` logits (seeded from mask when available) and keep it trainable.
+	- [x] `sampled_mean_covered`: share the mean-covered machinery with intensity (uses existing large-splat thresholds/interval).
+- [x] Ensure `_opacity` is an `nn.Parameter` and participates in optimizer when learnable.
+
+### 3) Training Behavior
+- [x] `sampled`: refresh opacities from mask regularly via `--opacity_update_interval` and dirty-index checks.
+- [x] `learned`: leave opacity learnable and do not overwrite during training.
+- [x] `sampled_mean_covered`: refresh large-splat opacities via the same mean-covered knobs used for intensity.
+
+### 4) Validation
+- [x] Add/extend a small unit test to ensure learned `opacity_mode` ignores the mask-buffer override.
+- [ ] Add a short-run smoke command to confirm the log prints the chosen mode and training runs without CLI errors.
+
+
 ## Summary / Current State
 Implemented Option B: New splats are now enforced to spawn inside the mask (mask value >= 0.5).
 	- Init-time: `initialize_from_volume()` now resamples any jittered seeds that fall below the mask threshold.
 	- CLI/training: `--init_mask_threshold` default is now 0.5 and values < 0.5 are treated as 0.5 when `--mask_path` is provided.
 	- Densification: `densification_postfix()` now resamples any newly created points that land outside the reference mask.
+
+## Update (2026-01-19)
+- Re-enabled densification/pruning by default via CLI (`--enable_densification` now defaults to true; `--disable_densification` remains the explicit override).
+- Medical preset (`medical_mode=organ`) no longer hard-disables densification; it now uses the same gentle schedule as vessel mode when enabled.
+- Added [tests/conftest.py](tests/conftest.py) so tests can import top-level modules like `train.py` reliably under pytest.
 ---
 post_title: Copilot Processing Log
 author1: GitHub Copilot

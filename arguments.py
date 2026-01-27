@@ -813,6 +813,20 @@ class OptimizationParams(ParamGroup):
         )
         self._register("intensity_mode")
 
+        intensity.add_argument(
+            "--opacity_mode",
+            type=str,
+            default="sampled",
+            choices=["sampled", "learned", "sampled_mean_covered"],
+            help=(
+                "Strategy for assigning per-Gaussian opacity values. "
+                "'sampled' samples the input mask and stores a non-learnable buffer; "
+                "'learned' optimizes opacity logits; "
+                "'sampled_mean_covered' applies mean-covered sampling for large splats."
+            ),
+        )
+        self._register("opacity_mode")
+
         # Interval between intensity statistic updates.
         intensity.add_argument(
             "--intensity_update_interval",
@@ -821,6 +835,17 @@ class OptimizationParams(ParamGroup):
             help="Iterations between intensity statistic updates (less frequent to reduce jitter).",
         )
         self._register("intensity_update_interval")
+
+        intensity.add_argument(
+            "--opacity_update_interval",
+            type=int,
+            default=20,
+            help=(
+                "Iterations between sampled-opacity refreshes when opacity_mode is 'sampled'. "
+                "Ignored for 'learned'."
+            ),
+        )
+        self._register("opacity_update_interval")
 
         # Brightness divisor for intensity-to-color mapping.
         intensity.add_argument(

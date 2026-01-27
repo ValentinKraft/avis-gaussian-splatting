@@ -20,6 +20,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from utils.general_utils import inverse_sigmoid
+
 from scene.gaussian_model import GaussianModel
 from gaussian_splatting.data.volume_loader import VolumeLoader
 from gaussian_splatting.utils.intensity_sampler import (
@@ -466,21 +468,21 @@ def _setup_model_parameters(
         torch.log(scales).clone().detach()
     )  # Store initial scales for max size constraint
 
-    # Initialize opacity based on whether we're using volume-based opacity or not
+    # Initialize opacity based on whether we're using mask-buffered opacity or not.
+    # Note: model stores opacity logits; convert probabilities -> logits via inverse_sigmoid.
+    safe_prob = opacities.clamp(1e-6, 1.0 - 1e-6)
+    opacity_logits = inverse_sigmoid(safe_prob)
+
     if opacity_values is not None:
-        # Store non-learnable opacity values from the mask
+        # Store non-learnable opacity values from the mask.
         model.opacities = opacity_values.detach().contiguous()
         model.opacities.requires_grad = False
-        # Also keep the _opacity parameter but without gradients (for backward compatibility)
-        model._opacity = nn.Parameter(
-            torch.log(opacities).detach().contiguous().requires_grad_(False)
-        )
+        # Keep a non-trainable opacity parameter for compatibility with legacy code.
+        model._opacity = nn.Parameter(opacity_logits.detach().contiguous().requires_grad_(False))
         print("Using non-learnable opacities from mask")
     else:
-        # Use traditional learnable opacity parameters
-        model._opacity = nn.Parameter(
-            torch.log(opacities).contiguous().requires_grad_(True)
-        )
+        # Use learnable opacity parameters.
+        model._opacity = nn.Parameter(opacity_logits.contiguous().requires_grad_(True))
 
     # Initialize rotation quaternions
     if initial_rotations is not None and initial_rotations.numel() != 0:
@@ -685,6 +687,10 @@ def initialize_gaussians(
     border_grad_sigma = float(kwargs.pop("border_grad_sigma", 1.5))
     volume_downscale_factor = kwargs.pop("volume_downscale_factor", None)
     opacity_gamma = float(kwargs.pop("opacity_gamma", 1.0))
+    opacity_mode = str(
+        kwargs.pop("opacity_mode", getattr(model, "opacity_mode", "sampled"))
+    )
+    model.set_opacity_mode(opacity_mode)
 
     # Sample initial point locations from the full-resolution mask by default.
     # This avoids seeding points on ambiguous downscaled boundary voxels.
@@ -787,9 +793,18 @@ def initialize_gaussians(
 
         # Sample opacity values from the mask
         print("Sampling opacity values from mask...")
-        opacity_values, mask_min, mask_max = update_opacities(
-            points, mask_volume, scales
+        opacity_values, _, _ = sample_intensities_from_volume(
+            points,
+            mask_volume,
+            scale=scales,
+            normalize=False,
+            min_val=0.0,
+            max_val=1.0,
+            padding_mode="border",
         )
+
+        mask_min = float(mask_volume.min().item())
+        mask_max = float(mask_volume.max().item())
 
         if opacity_gamma != 1.0 and opacity_values is not None:
             opacity_values = opacity_values.clamp(0.0, 1.0).pow(opacity_gamma)
@@ -798,6 +813,13 @@ def initialize_gaussians(
             f"Opacity range: [{opacity_values.min().item():.4f}, {opacity_values.max().item():.4f}]"
         )
         print(f"Mask global range: [{mask_min:.4f}, {mask_max:.4f}]")
+
+    # Decide how opacities are represented on the model.
+    opacity_values_for_model = (
+        opacity_values
+        if opacity_mode in {"sampled", "sampled_mean_covered"}
+        else None
+    )
 
     # Transform to world space
     points = transform_points_to_world(points, volume_transform, scene_bounds)
@@ -931,12 +953,13 @@ def initialize_gaussians(
                     )
 
     # Set up model parameters and feature tensors
+    opacity_param_init = opacity_values if opacity_values is not None else opacities
     _setup_model_parameters(
         model,
         points,
         scales,
-        opacities,
-        opacity_values,
+        opacity_param_init,
+        opacity_values_for_model,
         initial_rotations,
     )
     _setup_feature_tensors(model, intensities, volume_min, volume_max)

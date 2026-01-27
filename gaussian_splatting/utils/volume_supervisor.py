@@ -21,6 +21,7 @@ from gaussian_splatting.utils.splat_to_volume import splat_to_volume
 from gaussian_splatting.data.volume_loader import VolumeLoader
 from gaussian_splatting.utils.intensity_sampler import (
     sample_mean_covered_voxel_intensities,
+    update_intensities,
     update_intensities_and_opacities,
     update_opacities,
 )
@@ -58,6 +59,7 @@ class VolumeSupervisor:
         outside_mask_weight: float = 0.1,
         device: torch.device = torch.device("cuda"),
         intensity_update_interval: int = 10,
+        opacity_update_interval: Optional[int] = None,
         dirty_threshold_xyz: float = 1e-3,
         dirty_threshold_scale: float = 5e-3,
         dirty_threshold_rot: float = 8.726646e-3,
@@ -230,6 +232,9 @@ class VolumeSupervisor:
         self._step = 0
         self.last_intensity_update_count = 0
         self.intensity_update_interval = max(1, int(intensity_update_interval))
+        if opacity_update_interval is None:
+            opacity_update_interval = self.intensity_update_interval
+        self.opacity_update_interval = max(1, int(opacity_update_interval))
         self.dirty_threshold_xyz = float(dirty_threshold_xyz)
         self.dirty_threshold_scale = float(dirty_threshold_scale)
         self.dirty_threshold_rot = float(dirty_threshold_rot)
@@ -241,8 +246,8 @@ class VolumeSupervisor:
         # than binary/float masks which are mostly uniform
         return self.volume_color
 
-    def _volume_sampler(self, gaussians, indices: Optional[Tensor]) -> Tensor:
-        """Sample mean intensities (and optional opacities) for selected indices."""
+    def _intensity_sampler(self, gaussians, indices: Optional[Tensor]) -> Tensor:
+        """Sample mean intensities for selected indices."""
         xyz = gaussians.get_xyz
         scaling_full = gaussians.get_scaling
         if indices is None:
@@ -265,13 +270,9 @@ class VolumeSupervisor:
                 scales = None
             idx_tensor = idx
 
-        intensity_mode = getattr(gaussians, "intensity_mode", "learned")
-        coverage_mask: Optional[Tensor] = None
-
-        intensities, opacities, v_min, v_max = update_intensities_and_opacities(
+        intensities, v_min, v_max = update_intensities(
             pts,
             self.volume_color,
-            mask=self.mask_volume,
             scale=scales,
             normalize=True,
             min_val=self.global_intensity_min,
@@ -279,20 +280,60 @@ class VolumeSupervisor:
             padding_mode=self.sampling_padding_mode,
         )
 
+        if indices is None:
+            gaussians.volume_min = v_min
+            gaussians.volume_max = v_max
+        return intensities
+
+    def _opacity_sampler(self, gaussians, indices: Optional[Tensor]) -> Tensor:
+        """Sample mask-derived opacities for selected indices."""
+        if self.mask_volume is None:
+            return torch.empty(0, 1, device=self.device)
+
+        xyz = gaussians.get_xyz
+        scaling_full = gaussians.get_scaling
+        if indices is None:
+            pts = xyz
+            scales = scaling_full if scaling_full.numel() > 0 else None
+            idx_tensor = None
+        else:
+            idx = indices.long()
+            pts = xyz[:, idx] if xyz.shape[0] == 3 else xyz[idx]
+            if scaling_full.numel() > 0:
+                if (
+                    scaling_full.dim() == 2
+                    and scaling_full.shape[0] == 3
+                    and scaling_full.shape[1] != 3
+                ):
+                    scales = scaling_full[:, idx]
+                else:
+                    scales = scaling_full[idx]
+            else:
+                scales = None
+            idx_tensor = idx
+
+        from gaussian_splatting.utils.intensity_sampler import sample_intensities_from_volume
+
+        opacities, _, _ = sample_intensities_from_volume(
+            pts,
+            self.mask_volume,
+            scale=scales,
+            normalize=False,
+            min_val=0.0,
+            max_val=1.0,
+            padding_mode=self.sampling_padding_mode,
+        )
+
+        opacity_mode = getattr(gaussians, "opacity_mode", "sampled")
         if (
-            self.mask_volume is not None
-            and opacities is not None
+            opacity_mode == "sampled_mean_covered"
             and scales is not None
             and scales.numel() > 0
         ):
             large_mask_global = gaussians.large_splat_mask(
                 getattr(gaussians, "intensity_large_splat_threshold", 0.0)
-            ).to(device=pts.device)
-            if indices is None:
-                coverage_mask = large_mask_global
-            else:
-                coverage_mask = large_mask_global[indices.long()]
-
+            ).to(device=opacities.device)
+            coverage_mask = large_mask_global if idx_tensor is None else large_mask_global[idx_tensor]
             if coverage_mask is not None and coverage_mask.any():
                 refined, _, _ = sample_mean_covered_voxel_intensities(
                     pts,
@@ -310,35 +351,10 @@ class VolumeSupervisor:
                 opacities = opacities.clone()
                 opacities[coverage_mask] = refined[coverage_mask]
 
-        if indices is None:
-            gaussians.volume_min = v_min
-            gaussians.volume_max = v_max
+        if self.opacity_gamma != 1.0:
+            opacities = opacities.clamp(0.0, 1.0).pow(self.opacity_gamma)
 
-        if opacities is not None:
-            if self.opacity_gamma != 1.0:
-                opacities = opacities.clamp(0.0, 1.0).pow(self.opacity_gamma)
-
-            if xyz.dim() == 2 and xyz.shape[0] == 3:
-                total = xyz.shape[1]
-            else:
-                total = xyz.shape[0]
-            cols = opacities.shape[1] if opacities.dim() == 2 else 1
-            target_device = opacities.device
-            opacity_buf = gaussians.ensure_opacity_buffer(
-                total,
-                cols,
-                device=target_device,
-                dtype=opacities.dtype,
-            )
-            gaussians.opacities = opacity_buf
-
-            if idx_tensor is None:
-                opacity_buf.copy_(opacities)
-            else:
-                opacity_buf[idx_tensor] = opacities
-            opacity_buf.requires_grad = False
-
-        return intensities
+        return opacities
 
     def _ensure_orientation_field(self) -> None:
         """Compute and cache gradient field if needed."""
@@ -474,16 +490,18 @@ class VolumeSupervisor:
             gaussians._xyz.requires_grad_(True)
             xyz = gaussians._xyz
 
-        # Get scaling, rotation, and opacity values
+        # Get scaling and rotation values
         scaling = gaussians.get_scaling
         rotation = gaussians.get_rotation
-        opacity = gaussians.get_opacity
 
         self._step += 1
         self.iteration = getattr(self, "iteration", 0) + 1
 
         n_points = xyz.shape[1] if xyz.shape[0] == 3 else xyz.shape[0]
         intensity_mode = getattr(gaussians, "intensity_mode", "learned")
+
+        if self.mask_volume is not None:
+            gaussians.reference_mask = self.mask_volume
 
         use_intensities: Tensor
         if intensity_mode in {"sampled", "sampled_mean_covered"}:
@@ -559,7 +577,7 @@ class VolumeSupervisor:
 
             if indices_for_update is not None or needs_resize:
                 updated = gaussians.update_sampled_intensities(
-                    sampler=self._volume_sampler,
+                    sampler=self._intensity_sampler,
                     indices=indices_for_update,
                 )
                 self.last_intensity_update_count = updated
@@ -625,11 +643,81 @@ class VolumeSupervisor:
                 gaussians.intensities.requires_grad = False
                 use_intensities = gaussians.intensities
 
+        # --- Opacity refresh (independent of intensity mode) ---
+        opacity_mode = getattr(gaussians, "opacity_mode", "sampled")
+        if (
+            opacity_mode in {"sampled", "sampled_mean_covered"}
+            and self.mask_volume is not None
+        ):
+            gaussians.opacity_gamma = float(getattr(self, "opacity_gamma", 1.0))
+
+            needs_resize = (
+                not hasattr(gaussians, "opacities")
+                or gaussians.opacities is None
+                or gaussians.opacities.numel() == 0
+                or gaussians.opacities.shape[0] != n_points
+            )
+
+            is_mean_mode = opacity_mode == "sampled_mean_covered"
+            interval = (
+                getattr(gaussians, "mean_covered_interval", 1)
+                if is_mean_mode
+                else self.opacity_update_interval
+            )
+            interval = max(int(interval), 1)
+            update_due = ((self._step - 1) % interval) == 0
+
+            dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
+            if active_idx is not None and active_idx.numel() > 0:
+                dirty_subset = gaussians.dirty_indices(
+                    active_idx,
+                    self.dirty_threshold_xyz,
+                    self.dirty_threshold_scale,
+                    self.dirty_threshold_rot,
+                )
+
+            indices_for_update: Optional[Tensor]
+            if needs_resize:
+                indices_for_update = None
+            else:
+                if is_mean_mode:
+                    large_mask = gaussians.large_splat_mask(
+                        getattr(gaussians, "intensity_large_splat_threshold", 0.0)
+                    ).to(device=xyz.device)
+                    if active_idx is not None and active_idx.numel() > 0:
+                        active_idx_long = active_idx.long().to(device=xyz.device)
+                        subset_mask = large_mask[active_idx_long]
+                        candidate = active_idx_long[subset_mask]
+                        if candidate.numel() == 0:
+                            candidate = torch.nonzero(large_mask, as_tuple=False).view(-1)
+                    else:
+                        candidate = torch.nonzero(large_mask, as_tuple=False).view(-1)
+
+                    if dirty_subset.numel() > 0:
+                        indices_for_update = dirty_subset
+                    elif update_due and candidate.numel() > 0:
+                        indices_for_update = candidate
+                    elif update_due:
+                        indices_for_update = active_idx
+                    else:
+                        indices_for_update = None
+                else:
+                    if dirty_subset.numel() > 0:
+                        indices_for_update = dirty_subset
+                    elif update_due:
+                        indices_for_update = active_idx
+                    else:
+                        indices_for_update = None
+
+            if indices_for_update is not None or needs_resize:
+                gaussians.update_sampled_opacities(
+                    sampler=self._opacity_sampler,
+                    indices=indices_for_update,
+                )
+
         # Convert gaussians to volume using intensity values (or density for mask supervision)
-        # Use non-learnable opacities if they exist, otherwise use the opacity parameter
-        use_opacity = opacity
-        if hasattr(gaussians, 'opacities') and gaussians.opacities.numel() > 0:
-            use_opacity = gaussians.opacities
+        # Opacity is provided via gaussians.get_opacity, which is mode-aware.
+        use_opacity = gaussians.get_opacity
 
         # FIX: Ensure opacity and intensity tensors have correct shape to match number of points
         # Get the number of points from xyz (whether [3, N] or [N, 3])

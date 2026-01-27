@@ -162,6 +162,9 @@ def _maybe_reset_opacity(
     if interval <= 0 or iteration % interval != 0:
         return False
 
+    if getattr(gaussians, "opacity_mode", "learned") != "learned":
+        return False
+
     mask_check = getattr(gaussians, "_mask_opacity_active", None)
     if callable(mask_check) and mask_check():
         return False
@@ -290,6 +293,7 @@ def training(
         0, opt.optimizer_type
     )  # Use degree 0 for volume-only training
     gaussians.set_intensity_mode(getattr(opt, "intensity_mode", "learned"))
+    gaussians.set_opacity_mode(getattr(opt, "opacity_mode", "sampled"))
     gaussians.configure_mean_covered_sampling(
         large_splat_threshold=getattr(opt, "intensity_large_splat_threshold", 0.03),
         radius_scale=getattr(opt, "intensity_mean_cover_radius", 2.5),
@@ -371,6 +375,11 @@ def training(
         opacity_gamma=getattr(args, "opacity_gamma", 1.0),
         outside_mask_weight=getattr(args, "outside_mask_weight", 0.1),
         intensity_update_interval=getattr(opt, "intensity_update_interval", 10),
+        opacity_update_interval=getattr(
+            opt,
+            "opacity_update_interval",
+            getattr(opt, "intensity_update_interval", 10),
+        ),
         sampling_padding_mode=getattr(opt, "sampling_padding_mode", "border"),
     )
 
@@ -421,6 +430,7 @@ def training(
         init_scale_min_vox=getattr(args, "init_scale_min_vox", 1.0),
         init_scale_max_vox=getattr(args, "init_scale_max_vox", 3.0),
         opacity_gamma=getattr(args, "opacity_gamma", 1.0),
+        opacity_mode=getattr(opt, "opacity_mode", "sampled"),
         noise_std=(
             args.position_noise
             if hasattr(args, "position_noise")

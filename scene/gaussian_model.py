@@ -100,6 +100,11 @@ class GaussianModel:
         # Intensity handling mode and cached parameter snapshots
         # Default to volume-sampled intensities for volume-only training.
         self.intensity_mode = "sampled"
+        # Opacity handling mode for volume/mask supervision.
+        # Default to sampled (non-learnable) opacities for parity with mask-driven initialization.
+        self.opacity_mode = "sampled"
+        # Gamma applied to mask-sampled opacities (probability space).
+        self.opacity_gamma = 1.0
         self._prev_xyz = None
         self._prev_scaling = None
         self._prev_rotation = None
@@ -353,6 +358,10 @@ class GaussianModel:
         """Record which intensity mode is currently active."""
         self.intensity_mode = mode
 
+    def set_opacity_mode(self, mode: str) -> None:
+        """Record which opacity mode is currently active."""
+        self.opacity_mode = mode
+
     def set_intensity_color_divisor(self, divisor: float) -> None:
         """Configure manual brightness divisor for intensity-derived colors."""
         safe_divisor = max(float(divisor), 1e-8)
@@ -362,13 +371,81 @@ class GaussianModel:
             )
         self.intensity_color_divisor = safe_divisor
 
+    def _uses_sampled_opacity(self) -> bool:
+        """Return True when opacities are sourced from a sampled (non-learnable) buffer."""
+        return getattr(self, "opacity_mode", "sampled") in {
+            "sampled",
+            "sampled_mean_covered",
+        }
+
     def _mask_opacity_active(self) -> bool:
-        """Return True when a mask-derived opacity buffer is populated."""
+        """Return True when a mask-derived opacity buffer is populated and active."""
         return (
-            hasattr(self, "opacities")
+            self._uses_sampled_opacity()
+            and hasattr(self, "opacities")
             and self.opacities is not None
+            and isinstance(self.opacities, torch.Tensor)
             and self.opacities.numel() > 0
         )
+
+    @torch.no_grad()
+    def update_sampled_opacities(
+        self,
+        sampler,
+        indices: Optional[torch.Tensor] = None,
+    ) -> int:
+        """Refresh cached opacities for the requested subset of splats."""
+        if not self._uses_sampled_opacity():
+            return 0
+
+        if self._xyz.numel() == 0:
+            return 0
+
+        device = self._xyz.device
+        if indices is None:
+            idx = torch.arange(self._xyz.shape[1], device=device)
+        else:
+            idx = indices.long().unique()
+
+        if idx.numel() == 0:
+            return 0
+
+        sampled = sampler(self, idx if indices is not None else None)
+        if sampled is None or sampled.numel() == 0:
+            return 0
+
+        sampled = sampled.detach()
+        if sampled.dim() != 2:
+            raise ValueError("Sampler must return [N, C] opacity values.")
+
+        total_points = self._xyz.shape[1]
+        channels = sampled.shape[1]
+        needs_realloc = (
+            not hasattr(self, "opacities")
+            or self.opacities is None
+            or self.opacities.numel() == 0
+            or self.opacities.shape[0] != total_points
+            or self.opacities.shape[1] != channels
+            or self.opacities.device != device
+            or self.opacities.dtype != sampled.dtype
+        )
+
+        if needs_realloc:
+            self.ensure_opacity_buffer(
+                total_points,
+                channels,
+                device=device,
+                dtype=sampled.dtype,
+            )
+
+        if indices is None:
+            self.opacities.copy_(sampled)
+            self.snapshot_params_for_dirty_check(None)
+            return int(total_points)
+
+        self.opacities[idx] = sampled
+        self.snapshot_params_for_dirty_check(idx)
+        return int(idx.numel())
 
     def _optimizer_has_group(self, name: str) -> bool:
         """Return True when the optimizer tracks a parameter group with the given name."""
@@ -2376,19 +2453,44 @@ class GaussianModel:
             else:
                 # If intensities is empty, create it to match the current point count
                 current_point_count = self.get_xyz.shape[1]
-                self.intensities = torch.zeros((current_point_count, 1), device=device)
-
-        if hasattr(self, "opacities") and self.opacities is not None:
-            if self.opacities.numel() > 0:
-                # new_xyz has shape [3, M], so shape[1] gives number of new points
-                new_opacities_vol = torch.zeros(
-                    (new_xyz.shape[1], 1), device=self.opacities.device
+                self.intensities = torch.zeros(
+                    (current_point_count, 1), device=self._tensor_device()
                 )
-                self.opacities = torch.cat([self.opacities, new_opacities_vol], dim=0)
+
+        if self._uses_sampled_opacity():
+            # Only maintain the sampled opacity buffer when the mode requests it.
+            # This avoids accidentally activating mask-buffer overrides in learned mode.
+            new_opacity_buf = self._sample_opacities_for_xyz(new_xyz)
+            if new_opacity_buf is None:
+                # Fall back to sigmoid(logits) if reference mask is unavailable.
+                new_opacity_buf = self.opacity_activation(new_opacities.detach())
+
+            if hasattr(self, "opacities") and isinstance(self.opacities, torch.Tensor):
+                if self.opacities.numel() > 0:
+                    self.opacities = torch.cat(
+                        [self.opacities, new_opacity_buf.to(self.opacities.device)],
+                        dim=0,
+                    )
+                else:
+                    current_point_count = self.get_xyz.shape[1]
+                    self.opacities = torch.zeros(
+                        (current_point_count, 1),
+                        device=new_opacity_buf.device,
+                        dtype=new_opacity_buf.dtype,
+                    )
+                    if new_opacity_buf.numel() > 0:
+                        self.opacities[-new_opacity_buf.shape[0] :] = new_opacity_buf
+                    self.opacities.requires_grad = False
             else:
-                # If opacities is empty, create it to match the current point count
                 current_point_count = self.get_xyz.shape[1]
-                self.opacities = torch.zeros((current_point_count, 1), device=device)
+                self.opacities = torch.zeros(
+                    (current_point_count, 1),
+                    device=new_opacity_buf.device,
+                    dtype=new_opacity_buf.dtype,
+                )
+                if new_opacity_buf.numel() > 0:
+                    self.opacities[-new_opacity_buf.shape[0] :] = new_opacity_buf
+                self.opacities.requires_grad = False
 
         # Update initial scaling for new points (for max scaling constraint)
         if hasattr(self, "_initial_scaling") and self._initial_scaling.numel() > 0:
@@ -2404,6 +2506,34 @@ class GaussianModel:
         else:
             self._initial_xyz = self._xyz.detach().clone()
         self._reset_prev_buffers()
+
+    @torch.no_grad()
+    def _sample_opacities_for_xyz(self, xyz: torch.Tensor) -> Optional[torch.Tensor]:
+        """Sample mask-derived opacities for xyz using the cached reference mask."""
+        mask = getattr(self, "reference_mask", None)
+        if mask is None or not isinstance(mask, torch.Tensor) or mask.numel() == 0:
+            return None
+        if xyz is None or not isinstance(xyz, torch.Tensor) or xyz.numel() == 0:
+            return None
+
+        pts_n3 = xyz.transpose(0, 1) if xyz.dim() == 2 and xyz.shape[0] == 3 else xyz
+        if pts_n3.dim() != 2 or pts_n3.shape[1] != 3:
+            pts_n3 = pts_n3.reshape(-1, 3)
+
+        from gaussian_splatting.utils.intensity_sampler import sample_intensities_from_volume
+
+        sampled, _, _ = sample_intensities_from_volume(
+            pts_n3,
+            mask,
+            scale=None,
+            normalize=False,
+            padding_mode="border",
+        )
+        sampled = sampled.clamp(0.0, 1.0)
+        gamma = float(getattr(self, "opacity_gamma", 1.0))
+        if gamma != 1.0:
+            sampled = sampled.pow(gamma)
+        return sampled.view(-1, 1)
 
     def _current_parameter_bytes(self) -> float:
         """Estimate current parameter memory footprint in bytes."""

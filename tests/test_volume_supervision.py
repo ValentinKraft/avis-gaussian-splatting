@@ -207,6 +207,7 @@ def test_volume_supervisor_populates_mask_opacity(tmp_path):
     )
 
     gaussians = _seed_gaussian_model(8, device)
+    gaussians.set_opacity_mode("sampled")
     loss, metrics, _ = supervisor.compute_loss(gaussians)
     assert torch.isfinite(loss)
     assert metrics
@@ -221,6 +222,7 @@ class _DummyGaussians:
         self._mask_active = mask_active
         self.reset_calls = 0
         self.opacities = torch.empty(0)
+        self.opacity_mode = "learned"
 
     def _mask_opacity_active(self):
         return self._mask_active
@@ -238,6 +240,7 @@ def test_maybe_reset_opacity_skips_mask_buffer():
 
 def test_maybe_reset_opacity_triggers_for_learned():
     dummy = _DummyGaussians(mask_active=False)
+    dummy.opacity_mode = "learned"
     triggered = _maybe_reset_opacity(dummy, iteration=10, interval=5)
     assert triggered
     assert dummy.reset_calls == 1
@@ -245,6 +248,7 @@ def test_maybe_reset_opacity_triggers_for_learned():
 
 def test_maybe_reset_opacity_respects_interval():
     dummy = _DummyGaussians(mask_active=False)
+    dummy.opacity_mode = "learned"
     triggered = _maybe_reset_opacity(dummy, iteration=9, interval=5)
     assert not triggered
     assert dummy.reset_calls == 0
@@ -252,6 +256,16 @@ def test_maybe_reset_opacity_respects_interval():
     triggered = _maybe_reset_opacity(dummy, iteration=10, interval=0)
     assert not triggered
     assert dummy.reset_calls == 0
+
+
+def test_learned_opacity_mode_ignores_mask_buffer():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    gaussians = _seed_gaussian_model(4, device)
+    gaussians.set_opacity_mode("learned")
+
+    gaussians.opacities = torch.ones(4, 1, device=device)
+    assert gaussians.get_opacity.shape == (4, 1)
+    assert not torch.allclose(gaussians.get_opacity, gaussians.opacities)
 
 
 if __name__ == '__main__':

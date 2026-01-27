@@ -14,7 +14,10 @@ import numpy as np
 from torch import Tensor
 from typing import Tuple, Optional, Union
 from pathlib import Path
-import nibabel as nib
+try:
+    import nibabel as nib
+except ModuleNotFoundError:  # pragma: no cover
+    nib = None
 # import SimpleITK as sitk
 import torch.nn.functional as F
 
@@ -44,6 +47,10 @@ class VolumeLoader:
 
     def load_nifti(self, path: Union[str, Path]) -> Tensor:
         """Load a NIfTI volume file."""
+        if nib is None:
+            raise ModuleNotFoundError(
+                "nibabel is required to load NIfTI volumes. Install it or use a .npy input."
+            )
         nii = nib.load(str(path))
         volume = torch.from_numpy(nii.get_fdata()).float()
         # nibabel returns arrays in voxel index order (i, j, k) which typically
