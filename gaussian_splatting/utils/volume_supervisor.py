@@ -239,6 +239,7 @@ class VolumeSupervisor:
         self.dirty_threshold_scale = float(dirty_threshold_scale)
         self.dirty_threshold_rot = float(dirty_threshold_rot)
         self.sampling_padding_mode = str(sampling_padding_mode)
+        self.enable_render_checkpoint = True
 
     def _orientation_source(self) -> Tensor:
         """Return the tensor used to derive orientations."""
@@ -471,6 +472,9 @@ class VolumeSupervisor:
         gaussians,
         active_idx: Optional[Tensor] = None,
         total_points: Optional[int] = None,
+        *,
+        compute_volume_gradients: bool = False,
+        volume_gradient_interval: int = 10,
     ) -> Tuple[Tensor, Dict[str, float], Tensor]:
         """
         Compute volume supervision loss for current gaussians.
@@ -804,7 +808,8 @@ class VolumeSupervisor:
             )
 
         render_inputs = (xyz, scaling, rotation, use_opacity, use_intensities)
-        if any(t.requires_grad for t in render_inputs):
+        checkpoint_ok = bool(getattr(self, "enable_render_checkpoint", True))
+        if checkpoint_ok and any(t.requires_grad for t in render_inputs):
             volume_pred_roi = checkpoint(_render, *render_inputs, use_reentrant=False)
         else:
             volume_pred_roi = _render(*render_inputs)
@@ -871,14 +876,16 @@ class VolumeSupervisor:
 
         # Optionally compute gradients of loss w.r.t. xyz periodically (for analysis/alignment)
         volume_grads = None
-        if hasattr(self, "iteration") and self.iteration % 10 == 0:
-            grad_list = torch.autograd.grad(
-                loss, xyz, retain_graph=True, allow_unused=True
-            )
-            volume_grads = grad_list[0]
-            self.volume_gradients = volume_grads
-        else:
-            volume_grads = getattr(self, "volume_gradients", None)
+        if compute_volume_gradients:
+            interval = max(int(volume_gradient_interval), 1)
+            if hasattr(self, "iteration") and (self.iteration % interval) == 0:
+                grad_list = torch.autograd.grad(
+                    loss, xyz, retain_graph=True, allow_unused=True
+                )
+                volume_grads = grad_list[0]
+                self.volume_gradients = volume_grads
+            else:
+                volume_grads = getattr(self, "volume_gradients", None)
 
         # Update metrics
         with torch.no_grad():

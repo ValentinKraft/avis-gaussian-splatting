@@ -533,6 +533,38 @@ class TrainingScriptParams(ParamGroup):
         )
         self._register("enable_diagnostics")
 
+        group.add_argument(
+            "--tb_log_interval",
+            type=int,
+            default=10,
+            help=(
+                "Write TensorBoard scalars every N iterations (reduces CPU/disk overhead). "
+                "Set to 1 for per-iteration logging."
+            ),
+        )
+        self._register("tb_log_interval")
+
+        group.add_argument(
+            "--progress_postfix_interval",
+            type=int,
+            default=10,
+            help=(
+                "Update the tqdm progress postfix every N iterations (reduces GPU->CPU sync). "
+                "Set to 1 for per-iteration postfix updates."
+            ),
+        )
+        self._register("progress_postfix_interval")
+
+        group.add_argument(
+            "--disable_render_checkpoint",
+            action="store_true",
+            help=(
+                "Disable torch.utils.checkpoint for volume rendering. Can improve throughput "
+                "but increases VRAM usage."
+            ),
+        )
+        self._register("disable_render_checkpoint")
+
 
 class OptimizationParams(ParamGroup):
     """Learning schedules, densification knobs, and regularization weights."""

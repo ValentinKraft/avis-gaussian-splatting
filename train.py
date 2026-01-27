@@ -382,6 +382,12 @@ def training(
         ),
         sampling_padding_mode=getattr(opt, "sampling_padding_mode", "border"),
     )
+    volume_supervisor.enable_render_checkpoint = not bool(
+        getattr(args, "disable_render_checkpoint", False)
+    )
+
+    tb_log_interval = max(1, int(getattr(args, "tb_log_interval", 10)))
+    postfix_interval = max(1, int(getattr(args, "progress_postfix_interval", 10)))
 
     # Provide voxel spacing to the Gaussian model so voxel-unit clamps work.
     gaussians.voxel_size = volume_supervisor.voxel_size
@@ -581,6 +587,7 @@ def training(
                 gaussians,
                 active_idx=active_idx,
                 total_points=total_points,
+                compute_volume_gradients=bool(warmup_active),
             )
 
             # CRITICAL: Don't call item() on the loss until after backward() is called!
@@ -626,8 +633,8 @@ def training(
         if log_mem and total_points > 0:
             _log_gpu_memory("after_forward", iteration, total_points, active_points)
 
-        # Store value for logging only
-        volume_loss = vol_loss.detach().item()
+        # Store value for logging only (avoid per-iteration GPU->CPU sync; updated later).
+        volume_loss_tensor = vol_loss.detach()
 
         # Apply diversity warmup regularization when requested
         if warmup_active:
@@ -865,49 +872,59 @@ def training(
         iter_end.record()
 
         with torch.no_grad():
-            # Progress bar
-            # Update EMA loss values
-            ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
-            ema_vol_loss_for_log = 0.4 * volume_loss + 0.6 * ema_vol_loss_for_log
+            progress_bar.update(1)  # Update by 1 each iteration
 
-            # Get scaling and rotation stats for logging
-            with torch.no_grad():
+            should_postfix = (
+                iteration == 1
+                or iteration == opt.iterations
+                or (iteration % postfix_interval) == 0
+            )
+            if should_postfix:
+                loss_scalar = float(loss.detach().item())
+                volume_loss = float(volume_loss_tensor.item())
+
+                ema_loss_for_log = 0.4 * loss_scalar + 0.6 * ema_loss_for_log
+                ema_vol_loss_for_log = 0.4 * volume_loss + 0.6 * ema_vol_loss_for_log
+
                 scaling = gaussians.get_scaling
-                scaling_mean = scaling.mean().item()
-                scaling_std = scaling.std().item()
+                scaling_mean = float(scaling.mean().item())
+                scaling_std = float(scaling.std().item())
 
                 rotation = gaussians.get_rotation
-                # Simple approximation of rotation "magnitude"
-                rotation_magnitude = torch.norm(rotation[:, 1:], dim=1).mean().item()
+                rotation_magnitude = float(
+                    torch.norm(rotation[:, 1:], dim=1).mean().item()
+                )
 
-                # Calculate changes from previous iterations
                 scale_change = param_stats.get("scale_change_rate", 0.0)
                 rot_change = param_stats.get("rot_change_rate", 0.0)
 
-            # Update progress bar every iteration
-            postfix = {
-                "Loss": f"{ema_loss_for_log:.{5}f}",
-                "Vol": f"{ema_vol_loss_for_log:.{5}f}",
-                "Scale": f"{scaling_mean:.{3}f}±{scaling_std:.{3}f}",
-                "Rot": f"{rotation_magnitude:.{3}f}",
-                "Δs": f"{scale_change:.{3}f}",
-                "Δr": f"{rot_change:.{3}f}",
-            }
-            progress_bar.set_postfix(postfix)
-            progress_bar.update(1)  # Update by 1 each iteration
+                postfix = {
+                    "Loss": f"{ema_loss_for_log:.{5}f}",
+                    "Vol": f"{ema_vol_loss_for_log:.{5}f}",
+                    "Scale": f"{scaling_mean:.{3}f}±{scaling_std:.{3}f}",
+                    "Rot": f"{rotation_magnitude:.{3}f}",
+                    "Δs": f"{scale_change:.{3}f}",
+                    "Δr": f"{rot_change:.{3}f}",
+                }
+                progress_bar.set_postfix(postfix)
+
             if iteration == opt.iterations:
                 progress_bar.close()
 
-            # Log and save
-            if tb_writer is not None:
-                tb_writer.add_scalar("loss/total", loss.item(), iteration)
-                tb_writer.add_scalar("loss/volume", volume_loss, iteration)
+            should_tb = tb_writer is not None and (
+                iteration == 1
+                or iteration == opt.iterations
+                or (iteration % tb_log_interval) == 0
+            )
+            if should_tb and tb_writer is not None:
+                tb_writer.add_scalar("loss/total", float(loss.detach().item()), iteration)
+                tb_writer.add_scalar("loss/volume", float(volume_loss_tensor.item()), iteration)
                 tb_writer.add_scalar(
                     "timing/iter_ms", iter_start.elapsed_time(iter_end), iteration
                 )
                 tb_writer.add_scalar("model/points", gaussians._xyz.shape[1], iteration)
 
-                if diagnostics_enabled:
+                if diagnostics_enabled and should_postfix:
                     tb_writer.add_scalar(
                         "parameters/scaling_mean", scaling_mean, iteration
                     )
@@ -934,9 +951,7 @@ def training(
                     if update_tracker is not None:
                         update_metrics = update_tracker.update(gaussians)
                         for name, value in update_metrics.items():
-                            tb_writer.add_scalar(
-                                f"updates/{name}", value, iteration
-                            )
+                            tb_writer.add_scalar(f"updates/{name}", value, iteration)
 
                         if iteration % 100 == 0:
                             xyz_delta = update_metrics.get("xyz_delta_avg", 0)
