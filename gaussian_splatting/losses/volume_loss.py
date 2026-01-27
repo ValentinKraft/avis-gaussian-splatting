@@ -14,6 +14,10 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from typing import Optional, Literal
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 class DiceLoss(nn.Module):
     """
@@ -132,8 +136,12 @@ class VolumeLoss(nn.Module):
         Returns:
             Weighted loss value
         """
-        # Print gradient information for debugging
-        print(f"VolumeLoss input - pred requires_grad: {pred.requires_grad}, target requires_grad: {target.requires_grad}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "VolumeLoss input - pred requires_grad=%s, target requires_grad=%s",
+                pred.requires_grad,
+                target.requires_grad,
+            )
         
         if self.loss_type == 'kl':
             # KL divergence expects log probabilities for pred - preserve gradients
@@ -145,6 +153,11 @@ class VolumeLoss(nn.Module):
             loss = self.criterion(pred, target)
         
         weighted_loss = self.weight * loss
-        print(f"VolumeLoss output - loss: {loss.item()}, requires_grad: {weighted_loss.requires_grad}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "VolumeLoss output - loss=%s, requires_grad=%s",
+                float(loss.detach().cpu().item()),
+                weighted_loss.requires_grad,
+            )
             
         return weighted_loss

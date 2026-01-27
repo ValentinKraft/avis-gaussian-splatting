@@ -525,7 +525,10 @@ def training(
         iter_end = _NoopCudaEvent()
 
     progress_bar = tqdm(
-        range(first_iter, opt.iterations), desc="#### Training progress ####"
+        range(first_iter, opt.iterations),
+        desc="#### Training progress ####",
+        dynamic_ncols=True,
+        leave=True,
     )
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
