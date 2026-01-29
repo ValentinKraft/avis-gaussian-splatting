@@ -1,4 +1,24 @@
 
+## User Request Details (2026-01-28, Densification Stats Under Subsampling)
+- Fix densification/pruning behavior when training uses active-point subsampling (`MAX_POINTS_PER_ITER`).
+- Option A: accumulate densification stats only for points that are both active and visible.
+  - Volume-only mode does not have a screen-space visibility concept; treat "visible" as "active" (participated in forward/backward) in that path.
+- No hard point-count cap.
+
+## Action Plan (2026-01-28)
+1. Ensure densification stats accumulation (`xyz_gradient_accum`/`denom`) updates only active points during subsampled volume training.
+2. Harden `densify_and_prune` against `denom==0` causing `Inf` gradients, and compute adaptive thresholds using only valid (updated) points.
+3. Run a quick static validation pass (syntax / type checks available via editor tooling).
+
+## Task Tracker (2026-01-28)
+- [x] Update volume-mode densification accumulation in `train.py` to increment `xyz_gradient_accum`/`denom` only at `active_idx` (or all points when `active_idx is None`).
+- [x] Update `GaussianModel.densify_and_prune` to clamp `denom`, sanitize `Inf`/`NaN`, and compute adaptive threshold on points with `denom>0`.
+- [x] Validate there are no new syntax errors in the touched files.
+
+## Summary / Current State (2026-01-28)
+- Volume-mode densification accumulation no longer adds `+1` to `denom` for inactive points, preventing gradient dilution under subsampling.
+- `densify_and_prune` now ignores never-updated points (`denom==0`) when computing quantile thresholds and avoids `Inf`/`NaN` gradients from divide-by-zero.
+
 ## User Request Details (2026-01-26, Learnable Opacity Modes)
 - Implement learnable opacity handling analogous to intensity handling.
 - Add an opacity mode flag (e.g., `--opacity_mode {sampled,learned,sampled_mean_covered}`) or similar.
@@ -7,6 +27,11 @@
 	- `learned`: use learnable opacity parameters (optimize during training).
 	- `sampled_mean_covered`: use the same mean-covered strategy concept used for intensities, but for opacity.
 - Wire the chosen mode into initialization + training.
+
+## User Request Details (2026-01-27, Performance / CPU Overhead)
+- Reduce CPU bottlenecks during training (GPU utilization currently shows small spikes).
+- Implement practical throttles for progress/TensorBoard logging and avoid unnecessary extra gradient computations.
+- Keep behavior the same by default where possible; add opt-in switches when VRAM tradeoffs exist.
 
 ## Action Plan (2026-01-26)
 1. Add CLI surface for opacity mode selection.

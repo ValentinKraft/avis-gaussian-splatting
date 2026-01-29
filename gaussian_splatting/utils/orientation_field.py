@@ -507,7 +507,7 @@ def gather_rotation_from_gradient(
     # Debug logging - show actual magnitude statistics
     fallback_count = fallback.sum().item()
     total_count = len(fallback)
-    if fallback_count > 0 or _DEBUG_ORIENTATION:
+    if _DEBUG_ORIENTATION:
         mag_min = mag.min().item()
         mag_max = mag.max().item()
         mag_mean = mag.mean().item()

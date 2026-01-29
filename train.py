@@ -814,11 +814,20 @@ def training(
                         )
                         # Reshape to [N, 1] to match xyz_gradient_accum shape
                         xyz_grad_per_point = xyz_grad_per_point.unsqueeze(1)
-                        gaussians.xyz_gradient_accum += xyz_grad_per_point
-                        gaussians.denom += 1
+                        if active_idx is None:
+                            gaussians.xyz_gradient_accum += xyz_grad_per_point
+                            gaussians.denom += 1
+                        else:
+                            gaussians.xyz_gradient_accum[active_idx] += (
+                                xyz_grad_per_point[active_idx]
+                            )
+                            gaussians.denom[active_idx] += 1
 
                     # Perform densification and pruning at intervals
-                    if iteration % opt.densification_interval == 0:
+                    if (
+                        iteration < opt.iterations
+                        and iteration % opt.densification_interval == 0
+                    ):
                         # Volume-only training uses normalized [0,1]^3 coordinates.
                         # Keep densification heuristics in the same normalized scale.
                         extent = 1.0
@@ -855,8 +864,6 @@ def training(
                                 )
                             )
 
-            if diagnostics_enabled:
-                _log_gradient_snapshot(gaussians, iteration, interval=50)
 
             gaussians.optimizer.zero_grad(set_to_none=True)
 

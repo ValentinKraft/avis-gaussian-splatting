@@ -42,6 +42,7 @@ except:
 # Define constants at the module level for better maintainability
 SH_C0 = 0.28209479177387814  # Value of Y_0^0 (first spherical harmonic)
 SH_SCALE = 1.77  # Approximate 1/(2*SH_C0)
+_DEBUG_PLY_EXPORT = os.environ.get("GS_PLY_DEBUG", "0") == "1"
 
 
 class GaussianModel:
@@ -1875,7 +1876,8 @@ class GaussianModel:
             and self._features_dc.numel() > 0
             and torch.sum(torch.abs(self._features_dc)) > 0
         ):
-            print("Using provided features for volume rendering.")
+            if _DEBUG_PLY_EXPORT:
+                print("Using provided features for volume rendering.")
             features_tensor = self._features_dc.detach()
             # print(
             #     f"Features DC shape before transpose: {features_tensor.shape}, "
@@ -1891,9 +1893,10 @@ class GaussianModel:
 
             # Check for zero values in f_dc, which indicates an issue
             if np.allclose(f_dc, 0.0):
-                print(
-                    "Warning: f_dc values are all zeros! Using intensity values instead."
-                )
+                if _DEBUG_PLY_EXPORT:
+                    print(
+                        "Warning: f_dc values are all zeros! Using intensity values instead."
+                    )
                 f_dc = self._create_colors_from_intensities(num_points)
         else:
             # Create colors from intensity values
@@ -1902,7 +1905,8 @@ class GaussianModel:
         # print(
         #     f"Final f_dc shape: {f_dc.shape}, range: [{f_dc.min():.4f}, {f_dc.max():.4f}]"
         # )
-        print(f"RGB value examples (from features): {f_dc[:5]}")
+        if _DEBUG_PLY_EXPORT:
+            print(f"RGB value examples (from features): {f_dc[:5]}")
 
         return f_dc
 
@@ -1917,13 +1921,15 @@ class GaussianModel:
             Array of color values derived from intensities
         """
         if hasattr(self, "intensities") and self.intensities.numel() > 0:
-            print("Creating colors from intensities.")
+            if _DEBUG_PLY_EXPORT:
+                print("Creating colors from intensities.")
             raw_tensor = self.intensities.detach().cpu()
             intensity_values = raw_tensor.view(-1).numpy()
-            print(
-                f"Raw intensity shape: {tuple(raw_tensor.shape)}, "
-                f"range: [{intensity_values.min():.4f}, {intensity_values.max():.4f}]"
-            )
+            if _DEBUG_PLY_EXPORT:
+                print(
+                    f"Raw intensity shape: {tuple(raw_tensor.shape)}, "
+                    f"range: [{intensity_values.min():.4f}, {intensity_values.max():.4f}]"
+                )
 
             # Intensities produced by volume sampling are typically already normalized to [0,1].
             # Avoid re-normalizing against CT HU min/max (which collapses contrast).
@@ -1944,9 +1950,10 @@ class GaussianModel:
                 normalized = ((intensity_values - self.volume_min) / denom).astype(
                     np.float32
                 )
-                print(
-                    f"Applying cached global min/max [{self.volume_min:.4f}, {self.volume_max:.4f}]"
-                )
+                if _DEBUG_PLY_EXPORT:
+                    print(
+                        f"Applying cached global min/max [{self.volume_min:.4f}, {self.volume_max:.4f}]"
+                    )
             else:
                 local_min = float(intensity_values.min())
                 local_max = float(intensity_values.max())
@@ -1956,7 +1963,10 @@ class GaussianModel:
                     )
                 else:
                     normalized = np.full_like(intensity_values, 0.5, dtype=np.float32)
-                print(f"Fallback normalization range [{local_min:.4f}, {local_max:.4f}]")
+                if _DEBUG_PLY_EXPORT:
+                    print(
+                        f"Fallback normalization range [{local_min:.4f}, {local_max:.4f}]"
+                    )
 
             normalized = np.clip(normalized, 0.0, 1.0)
             divisor = float(getattr(self, "intensity_color_divisor", 1.0))
@@ -1969,7 +1979,8 @@ class GaussianModel:
             f_dc = np.repeat(gray_dc[:, None], 3, axis=1)
         else:
             # Default to mid-gray if no intensities available
-            print("Could not find intensity values, using default mid-gray.")
+            if _DEBUG_PLY_EXPORT:
+                print("Could not find intensity values, using default mid-gray.")
             f_dc = np.zeros((num_points, 3), dtype=np.float32)
 
         return f_dc
@@ -2030,11 +2041,12 @@ class GaussianModel:
         normals = np.zeros_like(xyz)
 
         # Prepare color values using our helper method
-        print(
-            f"Feature tensors: _features_dc shape: "
-            f"{self._features_dc.shape if self._features_dc is not None else 'None'}, "
-            f"numel: {self._features_dc.numel() if self._features_dc is not None else 0}"
-        )
+        if _DEBUG_PLY_EXPORT:
+            print(
+                f"Feature tensors: _features_dc shape: "
+                f"{self._features_dc.shape if self._features_dc is not None else 'None'}, "
+                f"numel: {self._features_dc.numel() if self._features_dc is not None else 0}"
+            )
 
         # Use the refactored helper method to get colors
         f_dc = self._prepare_colors_for_ply(num_points)
@@ -2129,7 +2141,8 @@ class GaussianModel:
         path = os.path.join(ply_dir, f"{prefix}_{iteration:06d}.ply")
         self.save_ply(path)
 
-        print(f"[ITER {iteration}] Saved model as PLY: {path}")
+        if _DEBUG_PLY_EXPORT:
+            print(f"[ITER {iteration}] Saved model as PLY: {path}")
         return path
 
     # ===== Optimization and densification methods =====
@@ -3047,11 +3060,20 @@ class GaussianModel:
                 )
 
         # Calculate normalized gradients
-        grads = self.xyz_gradient_accum / self.denom
-        grads[grads.isnan()] = 0.0
+        denom = self.denom
+        if denom is None or not isinstance(denom, torch.Tensor) or denom.numel() == 0:
+            return
+
+        valid_mask = (denom > 0).squeeze(-1)
+        safe_denom = denom.clamp_min(1.0)
+        grads = self.xyz_gradient_accum / safe_denom
+        grads = torch.nan_to_num(grads, nan=0.0, posinf=0.0, neginf=0.0)
 
         grad_norm = torch.norm(grads, dim=-1, keepdim=False)
-        valid_grad = grad_norm[torch.isfinite(grad_norm)]
+        finite_mask = torch.isfinite(grad_norm)
+        if valid_mask.numel() == finite_mask.numel():
+            finite_mask = torch.logical_and(finite_mask, valid_mask)
+        valid_grad = grad_norm[finite_mask]
         if valid_grad.numel() > 0:
             adaptive_threshold = torch.quantile(
                 valid_grad, min(max(self.densify_grad_percentile, 0.0), 1.0)
