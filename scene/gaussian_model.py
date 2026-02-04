@@ -99,11 +99,9 @@ class GaussianModel:
         self.orientation_fallback_stats = {"clone": 0, "split": 0, "hole_fill": 0}
 
         # Intensity handling mode and cached parameter snapshots
-        # Default to volume-sampled intensities for volume-only training.
-        self.intensity_mode = "sampled"
+        self.intensity_mode = "learned"
         # Opacity handling mode for volume/mask supervision.
-        # Default to sampled (non-learnable) opacities for parity with mask-driven initialization.
-        self.opacity_mode = "sampled"
+        self.opacity_mode = "learned"
         # Gamma applied to mask-sampled opacities (probability space).
         self.opacity_gamma = 1.0
         self._prev_xyz = None

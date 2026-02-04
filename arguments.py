@@ -839,7 +839,7 @@ class OptimizationParams(ParamGroup):
         intensity.add_argument(
             "--intensity_mode",
             type=str,
-            default="sampled_mean_covered",
+            default="learned",
             choices=["sampled", "learned", "sampled_mean_covered"],
             help="Strategy for assigning per-Gaussian intensity values.",
         )
@@ -848,7 +848,7 @@ class OptimizationParams(ParamGroup):
         intensity.add_argument(
             "--opacity_mode",
             type=str,
-            default="sampled",
+            default="learned",
             choices=["sampled", "learned", "sampled_mean_covered"],
             help=(
                 "Strategy for assigning per-Gaussian opacity values. "
