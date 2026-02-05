@@ -692,9 +692,9 @@ def initialize_gaussians(
     )
     model.set_opacity_mode(opacity_mode)
 
-    # Sample initial point locations from the full-resolution mask by default.
-    # This avoids seeding points on ambiguous downscaled boundary voxels.
-    init_sampling_downscale = 1 if mask_path else volume_downscale_factor
+    # Keep initialization sampling space consistent with the configured loader downscale.
+    # This ensures the mask volume is downscaled the same way as the main input volume.
+    init_sampling_downscale = volume_downscale_factor
 
     # Get points in volume space
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -728,10 +728,11 @@ def initialize_gaussians(
     volume_min = 0.0
     volume_max = 1.0
     downscale = int(volume_downscale_factor) if volume_downscale_factor is not None else 1
-    # Keep mask/opacity sampling aligned with the (possibly downscaled) init sampling space,
-    # but always sample CT intensities/colors from the full-resolution input volume.
+    # Keep mask/opacity sampling aligned with the init sampling space.
+    # Also load the intensity volume with the same downscale factor so voxel-count
+    # safeguards are evaluated against the requested (downscaled) resolution.
     loader_mask = VolumeLoader(target_shape=None, device=device, downscale_factor=downscale)
-    loader_intensity = VolumeLoader(target_shape=None, device=device, downscale_factor=1)
+    loader_intensity = VolumeLoader(target_shape=None, device=device, downscale_factor=downscale)
 
     # Load and sample intensities from volume if provided
     if volume_path:

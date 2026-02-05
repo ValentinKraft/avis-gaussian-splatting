@@ -117,18 +117,11 @@ class VolumeSupervisor:
         # Apply loss_weight once in compute_loss for clarity.
         self.criterion = VolumeLoss(loss_type, 1.0)
 
-        # Load ground truth volume used for supervision/rendering (may be downscaled).
+        # Load ground truth volume used for supervision/rendering.
+        # The same downscale factor is also used for sampling per-splat intensities/colors so
+        # the overflow guard is evaluated against the requested downscaled resolution.
         self.volume_gt = self.loader.load_volume(volume_path)
-        # Also keep a full-resolution volume for sampling per-splat intensities/colors.
-        # This ensures color is not taken from the downscaled supervision volume.
         self.volume_color = self.volume_gt
-        if downscale_factor != 1:
-            color_loader = VolumeLoader(
-                target_shape=None,
-                device=device,
-                downscale_factor=1,
-            )
-            self.volume_color = color_loader.load_volume(volume_path)
 
         # Always trust the loaded tensor shape for supervision/rendering.
         self.volume_shape = tuple(int(v) for v in self.volume_gt.shape)

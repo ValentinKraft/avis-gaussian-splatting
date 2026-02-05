@@ -105,37 +105,57 @@ class VolumeLoader:
         # Normalize
         volume = (volume - volume.min()) / (volume.max() - volume.min() + 1e-8)
 
-        effective_target_shape = self.target_shape
+        requested_target_shape = self.target_shape
 
         # Optional downscale relative to the input volume shape.
-        if effective_target_shape is None and self.downscale_factor is not None:
+        if requested_target_shape is None and self.downscale_factor is not None:
             factor = int(self.downscale_factor)
             if factor > 1:
                 D, H, W = volume.shape
-                effective_target_shape = (
+                requested_target_shape = (
                     max(1, D // factor),
                     max(1, H // factor),
                     max(1, W // factor),
                 )
 
-        # Automatically determine target shape to prevent multinomial overflow
-        if effective_target_shape is None:
-            # Keep aspect ratio while ensuring total voxels < 2^24
-            max_voxels = 2**24 - 1  # Maximum safe number for multinomial
-            current_voxels = volume.numel()
+        effective_target_shape = requested_target_shape
 
-            if current_voxels > max_voxels:
-                # Calculate scale factor to reduce voxels below threshold
-                scale = (max_voxels / current_voxels) ** (1 / 3)
-                D, H, W = volume.shape
-                effective_target_shape = (
-                    max(32, int(D * scale)),
-                    max(32, int(H * scale)),
-                    max(32, int(W * scale)),
+        # Automatically determine (or adjust) target shape to prevent multinomial overflow.
+        # Important: consider the voxel count *after* requested downscaling/target_shape.
+        max_voxels = 2**24 - 1  # Maximum safe number for multinomial
+        if effective_target_shape is None:
+            candidate_shape = tuple(int(v) for v in volume.shape)
+        else:
+            candidate_shape = tuple(int(v) for v in effective_target_shape)
+
+        candidate_voxels = int(candidate_shape[0]) * int(candidate_shape[1]) * int(candidate_shape[2])
+        if candidate_voxels > max_voxels:
+            # Keep aspect ratio while ensuring total voxels < 2^24.
+            scale = (max_voxels / float(candidate_voxels)) ** (1.0 / 3.0)
+            D0, H0, W0 = candidate_shape
+            adjusted = (
+                max(32, int(D0 * scale)),
+                max(32, int(H0 * scale)),
+                max(32, int(W0 * scale)),
+            )
+            # Ensure we actually reduce the voxel count.
+            adjusted_voxels = int(adjusted[0]) * int(adjusted[1]) * int(adjusted[2])
+            if adjusted_voxels >= candidate_voxels:
+                adjusted = (
+                    max(32, D0 - 1),
+                    max(32, H0 - 1),
+                    max(32, W0 - 1),
                 )
+
+            if effective_target_shape is None:
                 print(
-                    f"Auto-resizing volume from {(D,H,W)} to {effective_target_shape} to prevent overflow"
+                    f"Auto-resizing volume from {tuple(int(v) for v in volume.shape)} to {adjusted} to prevent overflow"
                 )
+            else:
+                print(
+                    f"Auto-resizing requested volume shape {candidate_shape} to {adjusted} to prevent overflow"
+                )
+            effective_target_shape = adjusted
 
         # Resample if a target shape is specified
         if effective_target_shape is not None:
