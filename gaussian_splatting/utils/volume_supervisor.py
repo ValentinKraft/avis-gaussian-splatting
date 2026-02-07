@@ -32,6 +32,7 @@ from gaussian_splatting.utils.orientation_field import (
     gather_rotation_from_gradient,
     random_quat_perturb,
     rotmat_to_quat,
+    structure_from_mask_at_ijk,
     sample_structure_field,
     world_to_voxel,
 )
@@ -49,6 +50,8 @@ class VolumeSupervisor:
         volume_path: str,
         volume_shape: Tuple[int, int, int] = (64, 64, 64),
         volume_downscale_factor: Optional[int] = None,
+        volume_render_downscale_factor: int = 2,
+        disable_volume_overflow_guard: bool = False,
         mask_path: Optional[str] = None,
         loss_type: str = "dice",
         loss_weight: float = 1.0,
@@ -91,6 +94,10 @@ class VolumeSupervisor:
         self.density_scale = float(density_scale)
         self.mask_loss_threshold_rel = float(mask_loss_threshold_rel)
         self.outside_mask_weight = float(outside_mask_weight)
+        self.volume_render_downscale_factor = max(
+            1, int(volume_render_downscale_factor)
+        )
+        self.disable_volume_overflow_guard = bool(disable_volume_overflow_guard)
 
         # Training is defined to be mask-driven; without a mask the objective is
         # ill-posed for the intended medical workflows.
@@ -113,6 +120,7 @@ class VolumeSupervisor:
             target_shape=None,
             device=device,
             downscale_factor=downscale_factor,
+            enable_overflow_guard=not self.disable_volume_overflow_guard,
         )
         # Apply loss_weight once in compute_loss for clarity.
         self.criterion = VolumeLoss(loss_type, 1.0)
@@ -426,7 +434,6 @@ class VolumeSupervisor:
     def export_orientation_field(self) -> Dict[str, Tensor]:
         """Expose cached orientation data for reuse by the Gaussian model."""
         self._ensure_orientation_field()
-        self._ensure_structure_field()
         payload = {
             "gradient": self._orientation_grad,
             "magnitude": self._orientation_mag,
@@ -437,28 +444,38 @@ class VolumeSupervisor:
             ),
         }
 
+        # Structure fields are intentionally NOT forced here: dense [D,H,W] structure
+        # grids can be extremely memory-heavy at native CT resolution. If structure
+        # was computed elsewhere, include it; otherwise keep export lightweight.
         if self._structure_quat is not None and self._structure_vesselness is not None:
             payload["structure_quat"] = self._structure_quat
             payload["structure_vesselness"] = self._structure_vesselness
         return payload
 
     def get_structure_for_points(self, xyz_world: Tensor) -> Tuple[Tensor, Tensor]:
-        """Sample Hessian-based orientation quaternions and vesselness values at points."""
+        """Sample Hessian-based orientation quaternions and vesselness values at points.
+
+        Uses a lightweight pointwise Hessian estimate to avoid building a dense
+        structure field for the entire volume.
+        """
         if xyz_world.numel() == 0:
             empty = torch.empty(0, 1, device=self.device)
             return torch.empty(0, 4, device=self.device), empty
 
-        self._ensure_structure_field()
-        if self._structure_quat is None or self._structure_vesselness is None:
+        if self.mask_volume is None or self.mask_volume.numel() == 0:
             empty = torch.zeros(xyz_world.shape[0], 1, device=self.device)
             identity = torch.zeros(xyz_world.shape[0], 4, device=self.device)
             identity[:, 0] = 1.0
             return identity, empty
 
         ijk = world_to_voxel(xyz_world, self.volume_origin, self.voxel_size)
-        return sample_structure_field(
-            self._structure_quat, self._structure_vesselness, ijk
+        quats, vessel = structure_from_mask_at_ijk(
+            self.mask_volume,
+            ijk,
+            mask_threshold=float(self.structure_mask_threshold),
+            sigma_pre=float(self.structure_sigma),
         )
+        return quats, vessel
 
     def compute_loss(
         self,
@@ -798,6 +815,7 @@ class VolumeSupervisor:
                 grid_bounds=(bounds_min, bounds_max),
                 render_mode=render_mode,
                 density_scale=float(getattr(self, "density_scale", 1.0)),
+                working_grid_downscale_factor=self.volume_render_downscale_factor,
             )
 
         render_inputs = (xyz, scaling, rotation, use_opacity, use_intensities)

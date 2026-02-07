@@ -366,6 +366,10 @@ def training(
         volume_path=args.volume_path,
         volume_shape=volume_shape,
         volume_downscale_factor=volume_downscale_factor,
+        volume_render_downscale_factor=getattr(args, "volume_render_downscale_factor", 2),
+        disable_volume_overflow_guard=bool(
+            getattr(args, "disable_volume_overflow_guard", False)
+        ),
         mask_path=args.mask_path if hasattr(args, "mask_path") else None,
         loss_type=loss_type,
         loss_weight=loss_weight,
@@ -433,6 +437,9 @@ def training(
         volume_transform=volume_transform,
         scene_bounds=scene_bounds,
         volume_downscale_factor=volume_downscale_factor,
+        disable_volume_overflow_guard=bool(
+            getattr(args, "disable_volume_overflow_guard", False)
+        ),
         init_scale_min_vox=getattr(args, "init_scale_min_vox", 1.0),
         init_scale_max_vox=getattr(args, "init_scale_max_vox", 3.0),
         opacity_gamma=getattr(args, "opacity_gamma", 1.0),

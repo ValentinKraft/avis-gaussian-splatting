@@ -1,4 +1,25 @@
 
+## User Request Details (2026-02-07, Full-Resolution Volume Training)
+- User wants volume-supervision training to operate at native resolution (no load-time downsampling and no render-time half-resolution working grid), to improve surface sharpness and retain fine detail.
+- Current command used `--volume_downscale_factor 2`; user wants a full-resolution option.
+
+## Action Plan (2026-02-07)
+1. Identify all implicit downsampling points: (A) load-time resampling in `VolumeLoader`, (B) render-time working-grid downscale in `splat_to_volume`.
+2. Expose explicit CLI controls for both, keeping defaults backward-compatible.
+3. Ensure the new flags are threaded through `train.py` into `VolumeSupervisor` and initialization paths.
+4. Validate no new syntax/editor errors in touched files.
+
+## Task Tracker (2026-02-07)
+- [x] Add CLI flags: `--volume_render_downscale_factor` and `--disable_volume_overflow_guard`.
+- [x] Add `enable_overflow_guard` toggle to `VolumeLoader`.
+- [x] Parameterize render-time working-grid downscale in `splat_to_volume`.
+- [x] Thread new flags through `train.py` → `VolumeSupervisor` and initialization.
+- [x] Validate touched files have no new editor-reported errors.
+
+## Summary / Current State (2026-02-07)
+- Full-resolution volume loading is now possible by using `--volume_downscale_factor 1` and `--disable_volume_overflow_guard` (disables the loader's auto-resize safety).
+- Full-resolution supervision rasterization is now possible by using `--volume_render_downscale_factor 1` (disables the half-resolution working grid used when point count is large).
+
 ## User Request Details (2026-01-28, Densification Stats Under Subsampling)
 - Fix densification/pruning behavior when training uses active-point subsampling (`MAX_POINTS_PER_ITER`).
 - Option A: accumulate densification stats only for points that are both active and visible.

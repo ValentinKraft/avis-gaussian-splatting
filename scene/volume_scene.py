@@ -37,11 +37,23 @@ class VolumeScene:
                 args.volume_shape if hasattr(args, "volume_shape") else [64, 64, 64]
             )
             downscale_factor = getattr(args, "volume_downscale_factor", None)
+            disable_overflow_guard = bool(
+                getattr(args, "disable_volume_overflow_guard", False)
+            )
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             if downscale_factor is None:
-                loader = VolumeLoader(volume_shape, device)
+                loader = VolumeLoader(
+                    volume_shape,
+                    device,
+                    enable_overflow_guard=not disable_overflow_guard,
+                )
             else:
-                loader = VolumeLoader(target_shape=None, device=device, downscale_factor=downscale_factor)
+                loader = VolumeLoader(
+                    target_shape=None,
+                    device=device,
+                    downscale_factor=downscale_factor,
+                    enable_overflow_guard=not disable_overflow_guard,
+                )
             self.reference_volume = loader.load_volume(args.volume_path)
 
             # Store in gaussians for intensity updates

@@ -141,6 +141,28 @@ class ModelParams(ParamGroup):
         )
         self._register("volume_downscale_factor")
 
+        core.add_argument(
+            "--volume_render_downscale_factor",
+            type=int,
+            default=2,
+            help=(
+                "Internal working-grid downscale used when rasterizing many Gaussians into the supervision volume. "
+                "Defaults to 2 (compute on half resolution and upsample). Set to 1 for full-resolution supervision. "
+                "Note: full-resolution rasterization can be significantly slower and use more VRAM."
+            ),
+        )
+        self._register("volume_render_downscale_factor")
+
+        core.add_argument(
+            "--disable_volume_overflow_guard",
+            action="store_true",
+            help=(
+                "Disable the loader's automatic safety resampling for very large volumes. "
+                "Use this only if you have enough memory and you want to force native resolution loading."
+            ),
+        )
+        self._register("disable_volume_overflow_guard")
+
         # Optional 4x4 transform to align volume/mask with world coordinates.
         core.add_argument(
             "--volume_transform",

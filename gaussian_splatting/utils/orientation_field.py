@@ -134,6 +134,152 @@ def _frames_from_directions(direction: Tensor, fallback: Tensor) -> Tensor:
     return q
 
 
+def structure_from_mask_at_ijk(
+    mask_volume: Tensor,
+    ijk: Tensor,
+    *,
+    mask_threshold: float = 0.1,
+    sigma_pre: float = 0.0,
+    vesselness_eps: float = 1e-4,
+) -> Tuple[Tensor, Tensor]:
+    """Compute Hessian-based quaternions/vesselness for a set of voxel indices.
+
+    This is a lightweight alternative to building a dense [D,H,W] structure field.
+    It estimates the Hessian at each query location using local finite differences
+    (optionally on a globally smoothed copy of the mask).
+
+    Args:
+        mask_volume: Mask tensor with shape [D, H, W].
+        ijk: Query voxel coordinates (z, y, x) with shape [N, 3]. Values may be
+            fractional; sampling uses nearest-voxel indices.
+
+    Returns:
+        (quats, vesselness) where:
+          - quats has shape [N, 4] (w, x, y, z)
+          - vesselness has shape [N, 1]
+    """
+    if mask_volume is None or mask_volume.numel() == 0:
+        empty_v = torch.zeros(0, 1, device=ijk.device)
+        empty_q = torch.zeros(0, 4, device=ijk.device)
+        return empty_q, empty_v
+
+    if mask_volume.dim() != 3:
+        raise ValueError("mask_volume must be [D, H, W].")
+    if ijk.dim() != 2 or ijk.shape[1] != 3:
+        raise ValueError("ijk must be shaped [N, 3].")
+
+    device = mask_volume.device
+    dtype = mask_volume.dtype
+
+    n = int(ijk.shape[0])
+    if n == 0:
+        return (
+            torch.empty(0, 4, device=device, dtype=dtype),
+            torch.empty(0, 1, device=device, dtype=dtype),
+        )
+
+    vol = mask_volume
+    if sigma_pre > _DEFAULT_SIGMA_EPS:
+        vol5 = vol.to(dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        vol5 = _separable_gaussian_blur3d(vol5, float(sigma_pre))
+        vol = vol5.squeeze(0).squeeze(0).to(dtype=dtype)
+
+    D, H, W = vol.shape
+    centers = ijk.round().to(device=device, dtype=torch.long)
+    z = centers[:, 0].clamp(1, max(D - 2, 1))
+    y = centers[:, 1].clamp(1, max(H - 2, 1))
+    x = centers[:, 2].clamp(1, max(W - 2, 1))
+
+    f = vol[z, y, x]
+    in_mask = f >= float(mask_threshold)
+
+    # Default outputs.
+    vesselness = torch.zeros(n, device=device, dtype=torch.float32)
+    direction = torch.zeros(n, 3, device=device, dtype=torch.float32)
+    direction[:, 2] = 1.0
+    fallback = ~in_mask
+
+    if in_mask.any():
+        zi = z[in_mask]
+        yi = y[in_mask]
+        xi = x[in_mask]
+
+        f0 = vol[zi, yi, xi].to(torch.float32)
+
+        fx1 = vol[zi, yi, xi + 1].to(torch.float32)
+        fxm1 = vol[zi, yi, xi - 1].to(torch.float32)
+        fy1 = vol[zi, yi + 1, xi].to(torch.float32)
+        fym1 = vol[zi, yi - 1, xi].to(torch.float32)
+        fz1 = vol[zi + 1, yi, xi].to(torch.float32)
+        fzm1 = vol[zi - 1, yi, xi].to(torch.float32)
+
+        fxx = fx1 - 2.0 * f0 + fxm1
+        fyy = fy1 - 2.0 * f0 + fym1
+        fzz = fz1 - 2.0 * f0 + fzm1
+
+        fxy = (
+            vol[zi, yi + 1, xi + 1].to(torch.float32)
+            - vol[zi, yi + 1, xi - 1].to(torch.float32)
+            - vol[zi, yi - 1, xi + 1].to(torch.float32)
+            + vol[zi, yi - 1, xi - 1].to(torch.float32)
+        ) * 0.25
+        fxz = (
+            vol[zi + 1, yi, xi + 1].to(torch.float32)
+            - vol[zi + 1, yi, xi - 1].to(torch.float32)
+            - vol[zi - 1, yi, xi + 1].to(torch.float32)
+            + vol[zi - 1, yi, xi - 1].to(torch.float32)
+        ) * 0.25
+        fyz = (
+            vol[zi + 1, yi + 1, xi].to(torch.float32)
+            - vol[zi + 1, yi - 1, xi].to(torch.float32)
+            - vol[zi - 1, yi + 1, xi].to(torch.float32)
+            + vol[zi - 1, yi - 1, xi].to(torch.float32)
+        ) * 0.25
+
+        hess = torch.stack(
+            [
+                torch.stack([fxx, fxy, fxz], dim=-1),
+                torch.stack([fxy, fyy, fyz], dim=-1),
+                torch.stack([fxz, fyz, fzz], dim=-1),
+            ],
+            dim=-2,
+        )
+        hess = torch.nan_to_num(hess, nan=0.0, posinf=0.0, neginf=0.0)
+
+        evals, evecs = torch.linalg.eigh(hess)
+        abs_vals = evals.abs()
+        order = torch.argsort(abs_vals, dim=-1)
+        order_expand = order.unsqueeze(1).expand(-1, 3, -1)
+        sorted_evals = torch.gather(evals, 1, order)
+        sorted_evecs = torch.gather(evecs, 2, order_expand)
+
+        dir_i = sorted_evecs[:, :, 0]
+        dir_i = torch.nan_to_num(dir_i, nan=0.0, posinf=0.0, neginf=0.0)
+        dir_i = dir_i / dir_i.norm(dim=1, keepdim=True).clamp_min(_GRAD_EPS)
+
+        lambda1 = sorted_evals[:, 0]
+        lambda2 = sorted_evals[:, 1]
+        lambda3 = sorted_evals[:, 2]
+        denom = lambda2.abs() + lambda3.abs() + 1e-6
+        vessel_i = (1.0 - (lambda1.abs() / denom)).clamp(0.0, 1.0)
+
+        masked_fallback = vessel_i < float(vesselness_eps)
+        if masked_fallback.any():
+            dir_i = dir_i.clone()
+            dir_i[masked_fallback] = torch.tensor(
+                [0.0, 0.0, 1.0], device=dir_i.device, dtype=dir_i.dtype
+            )
+
+        direction[in_mask] = dir_i
+        vesselness[in_mask] = vessel_i
+        fallback[in_mask] = masked_fallback
+
+    rot = _frames_from_directions(direction.to(dtype=dtype), fallback)
+    quats = rotmat_to_quat(rot)
+    vesselness_out = vesselness.to(device=device, dtype=dtype).view(-1, 1)
+    return quats.contiguous(), vesselness_out.contiguous()
+
+
 def compute_gradient_field(
     volume: Tensor,
     sigma_pre: float = 1.5,

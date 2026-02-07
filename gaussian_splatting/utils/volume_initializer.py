@@ -37,6 +37,7 @@ from gaussian_splatting.utils.orientation_field import (
     gather_rotation_from_gradient,
     quat_from_directions,
     random_quat_perturb,
+    structure_from_mask_at_ijk,
     sample_structure_field,
     world_to_voxel,
 )
@@ -190,6 +191,7 @@ def initialize_from_volume(
     device: torch.device = torch.device("cuda"),
     mask_threshold: float = 0.01,
     volume_downscale_factor: Optional[int] = None,
+    disable_volume_overflow_guard: bool = False,
     voxel_size_override: Optional[Tensor] = None,
     init_scale_min_vox: float = 1.0,
     init_scale_max_vox: float = 3.0,
@@ -201,7 +203,12 @@ def initialize_from_volume(
     """Sample Gaussian seeds uniformly from mask voxels above a threshold."""
 
     downscale = int(volume_downscale_factor) if volume_downscale_factor is not None else 1
-    loader = VolumeLoader(target_shape=None, device=device, downscale_factor=downscale)
+    loader = VolumeLoader(
+        target_shape=None,
+        device=device,
+        downscale_factor=downscale,
+        enable_overflow_guard=not bool(disable_volume_overflow_guard),
+    )
     sampling_volume = loader.load_volume(mask_path)
     sampling_volume = sampling_volume.to(device=device, dtype=torch.float32)
 
@@ -384,16 +391,16 @@ def _sample_structure_from_mask(
         identity[:, 0] = 1.0
         return identity, empty
 
-    quat_field, vessel_field = build_structure_field(
-        mask_volume,
-        mask_threshold=mask_threshold,
-        sigma_pre=sigma_pre,
-    )
     origin, spacing = default_origin_and_spacing(
         mask_volume.shape, points_normalized.device
     )
     ijk = world_to_voxel(points_normalized, origin, spacing)
-    return sample_structure_field(quat_field, vessel_field, ijk)
+    return structure_from_mask_at_ijk(
+        mask_volume,
+        ijk,
+        mask_threshold=float(mask_threshold),
+        sigma_pre=float(sigma_pre),
+    )
 
 
 def transform_points_to_world(
@@ -686,6 +693,9 @@ def initialize_gaussians(
     border_flatten_ratio = float(kwargs.pop("border_flatten_ratio", 1.0))
     border_grad_sigma = float(kwargs.pop("border_grad_sigma", 1.5))
     volume_downscale_factor = kwargs.pop("volume_downscale_factor", None)
+    disable_volume_overflow_guard = bool(
+        kwargs.pop("disable_volume_overflow_guard", False)
+    )
     opacity_gamma = float(kwargs.pop("opacity_gamma", 1.0))
     opacity_mode = str(
         kwargs.pop("opacity_mode", getattr(model, "opacity_mode", "sampled"))
@@ -703,6 +713,7 @@ def initialize_gaussians(
         n_points,
         device=device,
         volume_downscale_factor=init_sampling_downscale,
+        disable_volume_overflow_guard=disable_volume_overflow_guard,
         voxel_size_override=(
             getattr(orientation_helper, "voxel_size", None)
             if orientation_helper is not None
@@ -731,8 +742,18 @@ def initialize_gaussians(
     # Keep mask/opacity sampling aligned with the init sampling space.
     # Also load the intensity volume with the same downscale factor so voxel-count
     # safeguards are evaluated against the requested (downscaled) resolution.
-    loader_mask = VolumeLoader(target_shape=None, device=device, downscale_factor=downscale)
-    loader_intensity = VolumeLoader(target_shape=None, device=device, downscale_factor=downscale)
+    loader_mask = VolumeLoader(
+        target_shape=None,
+        device=device,
+        downscale_factor=downscale,
+        enable_overflow_guard=not disable_volume_overflow_guard,
+    )
+    loader_intensity = VolumeLoader(
+        target_shape=None,
+        device=device,
+        downscale_factor=downscale,
+        enable_overflow_guard=not disable_volume_overflow_guard,
+    )
 
     # Load and sample intensities from volume if provided
     if volume_path:

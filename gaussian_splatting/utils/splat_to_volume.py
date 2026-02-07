@@ -179,6 +179,7 @@ def splat_to_volume(
     grid_bounds: Optional[Tuple[Tensor, Tensor]] = None,
     render_mode: str = "intensity",
     density_scale: float = 1.0,
+    working_grid_downscale_factor: int = 2,
 ) -> Tensor:
     """
     Convert 3D Gaussian splats to a volumetric representation.
@@ -272,18 +273,18 @@ def splat_to_volume(
     batch_size = min(batch_size, 100)  # Increased batch size for better performance
     num_batches = (total_points + batch_size - 1) // batch_size
 
-    # Use smaller grid resolution for memory efficiency if we have many points
-    if total_points > 1000:
-        # Create a smaller working grid for initial calculations
-        small_shape = tuple(max(16, d // 2) for d in volume_shape)
-        # Only create the grid once and reuse it
+    working_factor = max(1, int(working_grid_downscale_factor))
+
+    # Optionally use a smaller working grid for memory efficiency when we have many points.
+    # Set working_factor=1 to force full-resolution rasterization.
+    if total_points > 1000 and working_factor > 1:
+        small_shape = tuple(max(16, d // working_factor) for d in volume_shape)
         small_grid_points = create_grid_points(
             small_shape,
             device,
             grid_bounds=grid_bounds,
             dtype=compute_dtype,
         )
-        # We'll upsample back to full resolution at the end
     else:
         small_shape = volume_shape
         small_grid_points = grid_points
