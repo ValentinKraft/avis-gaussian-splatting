@@ -53,6 +53,7 @@ def sample_intensities_from_volume(
     volume: Tensor,
     scale: Optional[Tensor] = None,
     radius_scale: float = 2.0,
+    enable_footprint_pooling: bool = False,
     normalize: bool = False,
     min_val: Optional[float] = None,
     max_val: Optional[float] = None,
@@ -141,9 +142,14 @@ def sample_intensities_from_volume(
     )
     intensities = samples.view(-1, 1)
 
-    # If a splat is larger than about one voxel, approximate the mean intensity within
-    # its footprint by sampling a small grid of offsets and Gaussian-weight averaging.
-    if scale is not None and scale.numel() > 0 and radius_scale > 0.0:
+    # By default, intensity sampling is defined as the trilinearly-sampled center voxel.
+    # Footprint pooling is an explicit opt-in used by mean-covered modes.
+    if (
+        enable_footprint_pooling
+        and scale is not None
+        and scale.numel() > 0
+        and radius_scale > 0.0
+    ):
         scales_n3 = _ensure_n3(scale).to(device=device, dtype=torch.float32)
         # Voxel size in normalized [0,1]^3 coordinates.
         D, H, W = volume.shape
@@ -227,7 +233,11 @@ def sample_opacities_from_mask(
     """
     # Use the same sampling approach as intensity but with opacity range constraints
     raw_opacities, mask_min, mask_max = sample_intensities_from_volume(
-        points, mask, scale, radius_scale
+        points,
+        mask,
+        scale,
+        radius_scale,
+        enable_footprint_pooling=True,
     )
 
     # Map mask values to opacity. Defaults preserve the raw [0,1] mask range.
@@ -396,6 +406,7 @@ def update_intensities(
         points_n3,
         volume,
         scale,
+        enable_footprint_pooling=False,
         normalize=normalize,
         min_val=min_val,
         max_val=max_val,

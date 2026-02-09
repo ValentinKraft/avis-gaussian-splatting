@@ -738,8 +738,6 @@ def initialize_gaussians(
     mask_volume = None
     volume_min = 0.0
     volume_max = 1.0
-    mask_intensity_min = None
-    mask_intensity_max = None
     downscale = int(volume_downscale_factor) if volume_downscale_factor is not None else 1
     # Keep mask/opacity sampling aligned with the init sampling space.
     # Also load the intensity volume with the same downscale factor so voxel-count
@@ -757,7 +755,7 @@ def initialize_gaussians(
         enable_overflow_guard=not disable_volume_overflow_guard,
     )
 
-    # Load mask early so we can derive mask-bounded intensity normalization.
+    # Load mask early for opacity sampling / structural initialization.
     if mask_path:
         mask_volume = loader_mask.load_volume(mask_path)
 
@@ -768,19 +766,6 @@ def initialize_gaussians(
         volume = loader_intensity.load_volume(volume_path)
         global_min = float(volume.min().item())
         global_max = float(volume.max().item())
-        if mask_volume is not None and mask_volume.numel() > 0:
-            mask_threshold = float(kwargs.get("mask_threshold", 0.01))
-            mask_bool = mask_volume >= max(mask_threshold, 1e-4)
-            if not bool(mask_bool.any().item()):
-                mask_bool = mask_volume > 0
-            if bool(mask_bool.any().item()):
-                masked_vals = volume[mask_bool]
-                mask_intensity_min = float(masked_vals.min().item())
-                mask_intensity_max = float(masked_vals.max().item())
-                print(
-                    "Mask-bounded intensity range: "
-                    f"[{mask_intensity_min:.4f}, {mask_intensity_max:.4f}]"
-                )
         normalize_samples = getattr(model, "intensity_mode", "learned") in {
             "sampled",
             "sampled_mean_covered",
@@ -793,8 +778,8 @@ def initialize_gaussians(
             volume,
             scales,
             normalize=normalize_samples,
-            min_val=mask_intensity_min if normalize_samples else None,
-            max_val=mask_intensity_max if normalize_samples else None,
+            min_val=global_min if normalize_samples else None,
+            max_val=global_max if normalize_samples else None,
         )
 
         # Check if sampling was successful
@@ -809,8 +794,8 @@ def initialize_gaussians(
             )
 
             if normalize_samples:
-                min_ref = global_min if mask_intensity_min is None else mask_intensity_min
-                max_ref = global_max if mask_intensity_max is None else mask_intensity_max
+                min_ref = global_min
+                max_ref = global_max
                 denom = max(max_ref - min_ref, 1e-8)
                 if denom <= 1e-8:
                     intensities = torch.full_like(intensities, 0.5)
@@ -820,12 +805,8 @@ def initialize_gaussians(
                 volume_min = min_ref
                 volume_max = max_ref
         elif normalize_samples:
-            volume_min = global_min if mask_intensity_min is None else mask_intensity_min
-            volume_max = global_max if mask_intensity_max is None else mask_intensity_max
-
-        if mask_intensity_min is not None and mask_intensity_max is not None:
-            volume_min = mask_intensity_min
-            volume_max = mask_intensity_max
+            volume_min = global_min
+            volume_max = global_max
         print(f"Final volume global range: [{volume_min:.4f}, {volume_max:.4f}]")
     else:
         # Default mid-gray if no volume is provided
