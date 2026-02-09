@@ -186,6 +186,22 @@ class VolumeSupervisor:
                 f"mask_max={self.mask_max:.6f}, rel_thr={self.mask_loss_threshold_rel:.6f}"
             )
 
+        # Derive intensity normalization range from the intensity volume, but only
+        # at voxels where the mask is non-zero.
+        masked_vals = self.volume_color[self.mask_bool]
+        if masked_vals.numel() > 0:
+            self.global_intensity_min = float(masked_vals.min().item())
+            self.global_intensity_max = float(masked_vals.max().item())
+            if self.verbose:
+                print(
+                    "Using mask-bounded intensity range: "
+                    f"[{self.global_intensity_min:.4f}, {self.global_intensity_max:.4f}]"
+                )
+            if abs(self.global_intensity_max - self.global_intensity_min) <= 1e-8:
+                print(
+                    "Warning: Mask-bounded intensity range is nearly zero; outputs will default to mid-gray."
+                )
+
         nz = torch.nonzero(self.mask_bool, as_tuple=False)
         z0 = int(nz[:, 0].min().item())
         z1 = int(nz[:, 0].max().item())
