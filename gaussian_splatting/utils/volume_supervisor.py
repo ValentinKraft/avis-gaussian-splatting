@@ -54,8 +54,11 @@ class VolumeSupervisor:
         disable_volume_overflow_guard: bool = False,
         mask_path: Optional[str] = None,
         loss_type: str = "dice",
+        ct_loss_type: str = "mse",
         loss_weight: float = 1.0,
         supervision_target: str = "mask",
+        mask_loss_weight: float = 1.0,
+        ct_loss_weight: float = 1.0,
         mask_loss_threshold_rel: float = 0.01,
         opacity_gamma: float = 1.0,
         density_scale: float = 1.0,
@@ -84,12 +87,14 @@ class VolumeSupervisor:
         self.loss_weight = loss_weight
         self.verbose = bool(verbose)
 
-        if supervision_target not in {"mask", "ct"}:
+        if supervision_target not in {"mask", "ct", "joint"}:
             raise ValueError(
-                "supervision_target must be one of {'mask','ct'}, got "
+                "supervision_target must be one of {'mask','ct','joint'}, got "
                 f"{supervision_target!r}."
             )
         self.supervision_target = str(supervision_target)
+        self.mask_loss_weight = float(mask_loss_weight)
+        self.ct_loss_weight = float(ct_loss_weight)
         self.opacity_gamma = float(opacity_gamma)
         self.density_scale = float(density_scale)
         self.mask_loss_threshold_rel = float(mask_loss_threshold_rel)
@@ -123,7 +128,10 @@ class VolumeSupervisor:
             enable_overflow_guard=not self.disable_volume_overflow_guard,
         )
         # Apply loss_weight once in compute_loss for clarity.
-        self.criterion = VolumeLoss(loss_type, 1.0)
+        self.mask_criterion = VolumeLoss(loss_type, 1.0)
+        self.ct_criterion = VolumeLoss(ct_loss_type, 1.0)
+        # Back-compat: keep a "primary" criterion.
+        self.criterion = self.ct_criterion if self.supervision_target == "ct" else self.mask_criterion
 
         # Load ground truth volume used for supervision/rendering.
         # The same downscale factor is also used for sampling per-splat intensities/colors so
@@ -242,9 +250,12 @@ class VolumeSupervisor:
 
         # Initialize metrics tracking
         self.metrics = {
-            'volume_loss': 0.0,
-            'dice_score': 0.0,
-            'outside_mask_loss': 0.0,
+            "volume_loss": 0.0,
+            "volume_loss_unweighted": 0.0,
+            "mask_loss": 0.0,
+            "ct_loss": 0.0,
+            "dice_score": 0.0,
+            "outside_mask_loss": 0.0,
         }
         self._step = 0
         self.last_intensity_update_count = 0
@@ -816,83 +827,138 @@ class VolumeSupervisor:
         bounds_min = self.bounds_min.to(xyz.device)
         bounds_max = self.bounds_max.to(xyz.device)
 
-        render_mode = "density" if self.supervision_target == "mask" else "intensity"
+        checkpoint_ok = bool(getattr(self, "enable_render_checkpoint", True))
 
-        # Convert gaussians to volume ROI (directly uses parameter tensors for gradient flow)
-        def _render(points, scales, rotations, opacities, intensities):
+        def _render_density(points, scales, rotations, opacities):
             return splat_to_volume(
                 points=points,
                 point_scales=scales,
                 point_rotations=rotations,
                 point_opacities=opacities,
-                point_intensities=(intensities if render_mode == "intensity" else None),
+                point_intensities=None,
                 volume_shape=roi_shape,
                 device=xyz.device,
                 active_idx=active_idx,
                 grid_bounds=(bounds_min, bounds_max),
-                render_mode=render_mode,
+                render_mode="density",
                 density_scale=float(getattr(self, "density_scale", 1.0)),
                 working_grid_downscale_factor=self.volume_render_downscale_factor,
             )
 
-        render_inputs = (xyz, scaling, rotation, use_opacity, use_intensities)
-        checkpoint_ok = bool(getattr(self, "enable_render_checkpoint", True))
-        if checkpoint_ok and any(t.requires_grad for t in render_inputs):
-            volume_pred_roi = checkpoint(_render, *render_inputs, use_reentrant=False)
-        else:
-            volume_pred_roi = _render(*render_inputs)
+        def _render_intensity(points, scales, rotations, opacities, intensities):
+            return splat_to_volume(
+                points=points,
+                point_scales=scales,
+                point_rotations=rotations,
+                point_opacities=opacities,
+                point_intensities=intensities,
+                volume_shape=roi_shape,
+                device=xyz.device,
+                active_idx=active_idx,
+                grid_bounds=(bounds_min, bounds_max),
+                render_mode="intensity",
+                density_scale=float(getattr(self, "density_scale", 1.0)),
+                working_grid_downscale_factor=self.volume_render_downscale_factor,
+            )
+
+        volume_pred_mask_roi: Optional[Tensor] = None
+        volume_pred_ct_roi: Optional[Tensor] = None
+
+        if self.supervision_target in {"mask", "joint"}:
+            density_inputs = (xyz, scaling, rotation, use_opacity)
+            if checkpoint_ok and any(t.requires_grad for t in density_inputs):
+                volume_pred_mask_roi = checkpoint(
+                    _render_density, *density_inputs, use_reentrant=False
+                )
+            else:
+                volume_pred_mask_roi = _render_density(*density_inputs)
+
+        if self.supervision_target in {"ct", "joint"}:
+            intensity_inputs = (xyz, scaling, rotation, use_opacity, use_intensities)
+            if checkpoint_ok and any(t.requires_grad for t in intensity_inputs):
+                volume_pred_ct_roi = checkpoint(
+                    _render_intensity, *intensity_inputs, use_reentrant=False
+                )
+            else:
+                volume_pred_ct_roi = _render_intensity(*intensity_inputs)
 
         # Optionally retain grad for debugging
         if getattr(self, "debug", False):
             xyz.retain_grad()
 
         # Debug if needed
-        if hasattr(self, "verbose") and self.verbose:
-            print(f"volume_pred requires_grad: {volume_pred_roi.requires_grad}")
-
         # Slice targets/mask to ROI for loss.
-        mask_roi = self.mask_bool_roi.to(device=volume_pred_roi.device)
-        if self.supervision_target == "mask":
-            target_roi = self.mask_volume_roi.to(device=volume_pred_roi.device)
-        else:
-            target_roi = self.volume_gt_roi.to(device=volume_pred_roi.device)
+        # Use whichever prediction exists for device/dtype alignment.
+        ref_pred = volume_pred_mask_roi if volume_pred_mask_roi is not None else volume_pred_ct_roi
+        assert ref_pred is not None
+        mask_roi = self.mask_bool_roi.to(device=ref_pred.device)
 
         # Store predicted volume for visualization only when needed.
-        # (Loss is still computed on the cropped ROI for speed.)
+        # For joint mode, we store the mask/density branch for compatibility.
         if getattr(self, "iteration", 0) % 1000 == 0:
             z0, z1, y0, y1, x0, x1 = self.mask_bounds
             full_pred = torch.zeros(
                 self.volume_shape,
-                device=volume_pred_roi.device,
-                dtype=volume_pred_roi.dtype,
+                device=ref_pred.device,
+                dtype=ref_pred.dtype,
             )
-            full_pred[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1] = volume_pred_roi
+            insert = (
+                volume_pred_mask_roi
+                if volume_pred_mask_roi is not None
+                else volume_pred_ct_roi
+            )
+            assert insert is not None
+            full_pred[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1] = insert
             self.volume_pred = full_pred.detach().clone()
 
-        main_loss = None
-        if self.criterion.loss_type == "mse":
-            pred_vals = volume_pred_roi[mask_roi]
-            tgt_vals = target_roi[mask_roi]
-            diff = pred_vals - tgt_vals
-            main_loss = (diff * diff).mean()
-        else:
-            # For non-MSE objectives, masking by zeroing outside-mask voxels
-            # restricts the loss support to the ROI.
-            masked_pred = volume_pred_roi * mask_roi.to(dtype=volume_pred_roi.dtype)
-            masked_tgt = target_roi * mask_roi.to(dtype=target_roi.dtype)
-            main_loss = self.criterion(masked_pred, masked_tgt)
+        mask_loss = None
+        ct_loss = None
 
-        loss = main_loss
+        if self.supervision_target in {"mask", "joint"}:
+            assert volume_pred_mask_roi is not None
+            target_mask_roi = self.mask_volume_roi.to(device=volume_pred_mask_roi.device)
+            if self.mask_criterion.loss_type == "mse":
+                pred_vals = volume_pred_mask_roi[mask_roi]
+                tgt_vals = target_mask_roi[mask_roi]
+                diff = pred_vals - tgt_vals
+                mask_loss = (diff * diff).mean()
+            else:
+                masked_pred = volume_pred_mask_roi * mask_roi.to(dtype=volume_pred_mask_roi.dtype)
+                masked_tgt = target_mask_roi * mask_roi.to(dtype=target_mask_roi.dtype)
+                mask_loss = self.mask_criterion(masked_pred, masked_tgt)
+
+        if self.supervision_target in {"ct", "joint"}:
+            assert volume_pred_ct_roi is not None
+            target_ct_roi = self.volume_gt_roi.to(device=volume_pred_ct_roi.device)
+            denom = max(self.global_intensity_max - self.global_intensity_min, 1e-8)
+            if denom <= 1e-8:
+                target_ct_norm = torch.full_like(target_ct_roi, 0.5)
+            else:
+                target_ct_norm = (target_ct_roi - float(self.global_intensity_min)) / float(denom)
+                target_ct_norm = target_ct_norm.clamp_(0.0, 1.0)
+
+            if self.ct_criterion.loss_type == "mse":
+                pred_vals = volume_pred_ct_roi[mask_roi]
+                tgt_vals = target_ct_norm[mask_roi]
+                diff = pred_vals - tgt_vals
+                ct_loss = (diff * diff).mean()
+            else:
+                masked_pred = volume_pred_ct_roi * mask_roi.to(dtype=volume_pred_ct_roi.dtype)
+                masked_tgt = target_ct_norm * mask_roi.to(dtype=target_ct_norm.dtype)
+                ct_loss = self.ct_criterion(masked_pred, masked_tgt)
+
+        loss = torch.zeros((), device=ref_pred.device, dtype=ref_pred.dtype)
+        if mask_loss is not None:
+            loss = loss + float(self.mask_loss_weight) * mask_loss
+        if ct_loss is not None:
+            loss = loss + float(self.ct_loss_weight) * ct_loss
 
         outside_loss = None
         outside_weight = float(getattr(self, "outside_mask_weight", 0.0))
-        if (
-            outside_weight > 0.0
-            and self.supervision_target == "mask"
-        ):
+        if outside_weight > 0.0 and self.supervision_target in {"mask", "joint"}:
             outside_roi = ~mask_roi
-            if outside_roi.any():
-                outside_vals = volume_pred_roi[outside_roi]
+            if outside_roi.any() and volume_pred_mask_roi is not None:
+                outside_vals = volume_pred_mask_roi[outside_roi]
                 outside_loss = (outside_vals * outside_vals).mean()
                 loss = loss + outside_weight * outside_loss
 
@@ -919,13 +985,16 @@ class VolumeSupervisor:
         with torch.no_grad():
             self.metrics["volume_loss"] = float(loss.item())
             self.metrics["volume_loss_unweighted"] = float(unweighted_loss.item())
+            self.metrics["mask_loss"] = float(mask_loss.item()) if mask_loss is not None else 0.0
+            self.metrics["ct_loss"] = float(ct_loss.item()) if ct_loss is not None else 0.0
             if outside_loss is not None:
                 self.metrics["outside_mask_loss"] = float(outside_loss.item())
             else:
                 self.metrics["outside_mask_loss"] = 0.0
-            if self.criterion.loss_type == 'dice':
-                dice_score = 1.0 - float(main_loss.item())
-                self.metrics["dice_score"] = float(dice_score)
+            if mask_loss is not None and self.mask_criterion.loss_type == "dice":
+                self.metrics["dice_score"] = 1.0 - float(mask_loss.item())
+            else:
+                self.metrics["dice_score"] = 0.0
 
         # Return both loss and volume gradients for parameter diversity losses
         return loss, self.metrics.copy(), volume_grads

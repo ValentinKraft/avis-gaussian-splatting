@@ -1,4 +1,27 @@
 
+## User Request Details (2026-02-09, Joint Loss / Dual Render)
+- User wants a single training run to optimize both a clean mask-derived shape and faithful CT intensities/high detail.
+- Implement a joint objective that renders both density (mask supervision) and intensity (CT supervision) and combines losses with configurable weights.
+
+## Action Plan (2026-02-09)
+1. Extend CLI and supervisor configuration to support `--supervision_target joint` plus CT-loss type and per-branch weights.
+2. Implement dual rendering in `VolumeSupervisor.compute_loss`: density branch for mask loss + intensity branch for CT loss.
+3. Normalize CT targets consistently with the intensity normalization range used for per-splat intensities.
+4. Add a minimal unit test covering joint supervision.
+
+## Task Tracker (2026-02-09)
+- [x] Add CLI args: `--supervision_target joint`, `--ct_loss_type`, `--mask_loss_weight`, `--ct_loss_weight`.
+- [x] Thread args through `train.py` into `VolumeSupervisor`.
+- [x] Implement dual render + weighted joint loss in `VolumeSupervisor.compute_loss`.
+- [x] Add a unit test ensuring joint supervision runs and backpropagates.
+
+## Summary / Current State (2026-02-09)
+- Joint supervision is available via `--supervision_target joint`.
+- Mask branch uses density rendering and `--volume_loss_type`.
+- CT branch uses intensity rendering and `--ct_loss_type`.
+- Total loss is `mask_loss_weight * mask_loss + ct_loss_weight * ct_loss` (then scaled by `--volume_loss_weight`).
+- CT targets are normalized to the same (mask-bounded) intensity range used when sampling per-splat intensities.
+
 ## User Request Details (2026-02-07, Full-Resolution Volume Training)
 - User wants volume-supervision training to operate at native resolution (no load-time downsampling and no render-time half-resolution working grid), to improve surface sharpness and retain fine detail.
 - Current command used `--volume_downscale_factor 2`; user wants a full-resolution option.

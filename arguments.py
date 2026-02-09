@@ -195,13 +195,48 @@ class ModelParams(ParamGroup):
             "--supervision_target",
             type=str,
             default="mask",
-            choices=["mask", "ct"],
+            choices=["mask", "ct", "joint"],
             help=(
                 "Supervision target volume: 'mask' optimizes a probability/density field; "
-                "'ct' optimizes the CT/MR intensity volume."
+                "'ct' optimizes the CT/MR intensity volume; "
+                "'joint' optimizes both (dual render) with configurable weights."
             ),
         )
         self._register("supervision_target")
+
+        core.add_argument(
+            "--mask_loss_weight",
+            type=float,
+            default=1.0,
+            help=(
+                "Weight applied to the mask/density loss when supervision_target='joint'. "
+                "Ignored for supervision_target='ct'."
+            ),
+        )
+        self._register("mask_loss_weight")
+
+        core.add_argument(
+            "--ct_loss_type",
+            type=str,
+            default="mse",
+            choices=["mse", "dice", "tversky", "kl"],
+            help=(
+                "Loss family for CT/intensity supervision when supervision_target is 'ct' or 'joint'. "
+                "In joint mode, this is the CT branch; the mask branch uses --volume_loss_type."
+            ),
+        )
+        self._register("ct_loss_type")
+
+        core.add_argument(
+            "--ct_loss_weight",
+            type=float,
+            default=1.0,
+            help=(
+                "Weight applied to the CT/intensity loss when supervision_target='joint'. "
+                "Ignored for supervision_target='mask'."
+            ),
+        )
+        self._register("ct_loss_weight")
 
         core.add_argument(
             "--density_scale",
@@ -242,7 +277,7 @@ class ModelParams(ParamGroup):
             default=0.1,
             help=(
                 "Soft penalty applied to predictions outside the mask within the ROI. "
-                "Adds outside_mask_weight * mean(pred[outside]^2) to the loss when supervision_target='mask'."
+                "Adds outside_mask_weight * mean(pred[outside]^2) to the loss when supervision_target is 'mask' or 'joint'."
             ),
         )
         self._register("outside_mask_weight")

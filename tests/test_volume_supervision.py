@@ -217,6 +217,45 @@ def test_volume_supervisor_populates_mask_opacity(tmp_path):
     assert gaussians.opacities.max() <= 1.0
 
 
+def test_joint_supervision_computes_both_losses(tmp_path):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    shape = (16, 16, 16)
+
+    volume = create_synthetic_volume(shape)
+    mask = (volume > 0.5).float()
+
+    volume_path = tmp_path / "vol.npy"
+    mask_path = tmp_path / "mask.npy"
+    np.save(volume_path, volume.numpy())
+    np.save(mask_path, mask.numpy())
+
+    supervisor = VolumeSupervisor(
+        volume_path=str(volume_path),
+        volume_shape=shape,
+        mask_path=str(mask_path),
+        supervision_target="joint",
+        loss_type="dice",
+        ct_loss_type="mse",
+        mask_loss_weight=1.0,
+        ct_loss_weight=1.0,
+        intensity_update_interval=1,
+    )
+
+    gaussians = _seed_gaussian_model(64, device)
+    gaussians.set_intensity_mode("sampled")
+
+    loss, metrics, _ = supervisor.compute_loss(gaussians)
+    assert torch.isfinite(loss)
+    assert "mask_loss" in metrics
+    assert "ct_loss" in metrics
+    assert metrics["mask_loss"] >= 0.0
+    assert metrics["ct_loss"] >= 0.0
+
+    loss.backward()
+    assert gaussians._xyz.grad is not None
+    assert not torch.isnan(gaussians._xyz.grad).any()
+
+
 class _DummyGaussians:
     def __init__(self, mask_active: bool):
         self._mask_active = mask_active

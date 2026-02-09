@@ -362,6 +362,9 @@ def training(
         if hasattr(args, "volume_loss_weight")
         else opt.volume_loss_weight
     )
+    ct_loss_type = getattr(args, "ct_loss_type", "mse")
+    mask_loss_weight = float(getattr(args, "mask_loss_weight", 1.0))
+    ct_loss_weight = float(getattr(args, "ct_loss_weight", 1.0))
     volume_supervisor = VolumeSupervisor(
         volume_path=args.volume_path,
         volume_shape=volume_shape,
@@ -372,8 +375,11 @@ def training(
         ),
         mask_path=args.mask_path if hasattr(args, "mask_path") else None,
         loss_type=loss_type,
+        ct_loss_type=ct_loss_type,
         loss_weight=loss_weight,
         supervision_target=getattr(args, "supervision_target", "mask"),
+        mask_loss_weight=mask_loss_weight,
+        ct_loss_weight=ct_loss_weight,
         density_scale=getattr(args, "density_scale", 1.0),
         mask_loss_threshold_rel=getattr(args, "mask_loss_threshold_rel", 0.01),
         opacity_gamma=getattr(args, "opacity_gamma", 1.0),
