@@ -476,6 +476,7 @@ class ExportParams(ParamGroup):
     def __init__(self, parser: ArgumentParser) -> None:
         super().__init__()
         group = parser.add_argument_group("PLY Export Options")
+
         group.add_argument(
             "--save_ply_every",
             type=int,
@@ -491,6 +492,46 @@ class ExportParams(ParamGroup):
             help="Filename prefix used for exported PLY files.",
         )
         self._register("ply_output_prefix")
+
+        group.add_argument(
+            "--export_ao",
+            action="store_true",
+            help="Bake fast ambient occlusion from the mask volume into exported PLY colors and add an 'ao' attribute.",
+        )
+        self._register("export_ao")
+
+        group.add_argument(
+            "--export_ao_radius_vox",
+            type=int,
+            default=2,
+            help="AO neighborhood radius in voxels (used when --export_ao is set).",
+        )
+        self._register("export_ao_radius_vox")
+
+        group.add_argument(
+            "--export_ao_n_samples",
+            type=int,
+            default=12,
+            help="Reserved for future ray-sampled AO (currently unused by the fast precompute).",
+        )
+        self._register("export_ao_n_samples")
+
+        group.add_argument(
+            "--export_ao_method",
+            type=str,
+            default="isotropic",
+            choices=["isotropic", "normal"],
+            help="AO precompute method: 'isotropic' uses local occupancy; 'normal' refines surface voxels using hemisphere occupancy oriented by mask-gradient normals.",
+        )
+        self._register("export_ao_method")
+
+        group.add_argument(
+            "--export_ao_strength",
+            type=float,
+            default=1.0,
+            help="Strength of AO applied to exported PLY colors (0 = off, 1 = full).",
+        )
+        self._register("export_ao_strength")
 
 
 class TrainingScriptParams(ParamGroup):

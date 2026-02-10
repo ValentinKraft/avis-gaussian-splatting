@@ -291,3 +291,31 @@ categories: []
 - [x] Updated default `--position_lr_delay_mult` to 1.0 so xyz starts moving immediately (avoids near-zero early LR).
 - [x] Fixed sparse splatting kernel to depend on continuous center positions (restore xyz gradients/motion).
 
+
+## User Request Details (2026-02-10, Mask-Based Ambient Occlusion Bake)
+- Before training, generate an occlusion/AO volume from the input mask volume.
+- Compute AO once at startup (not per-iteration) and store it (memory is OK).
+- AO should be defined for every non-zero (inside-mask) voxel; if possible, only compute the expensive part on the mask surface.
+- AO should be based on a hemisphere neighborhood oriented by the local surface normal (e.g., 3-voxel radius neighborhood).
+- For every PLY export, sample AO per Gaussian and multiply it into the exported splat color (baked soft AO look).
+- Prefer a fast approximation if it produces good-looking soft AO.
+
+## Action Plan (2026-02-10)
+1. Implement fast AO precompute from the loaded mask (`mask_bool`) with radius in voxels and optional surface-only hemisphere refinement.
+2. Compute the AO volume once at training startup (after `VolumeSupervisor` loads mask) and keep it in memory.
+3. Fix periodic PLY export callsite in `train.py` and sample AO values at Gaussian positions only when exporting.
+4. Extend PLY export in `GaussianModel` to accept AO and multiply it into exported SH-DC colors; optionally add an `ao` vertex attribute.
+5. Add minimal unit tests for AO volume computation and AO-multiplied export.
+6. Run a short smoke train command with `--export_ao` to confirm no runtime errors.
+
+## Task Tracker (2026-02-10)
+- [ ] Add `gaussian_splatting/utils/ambient_occlusion.py` with `compute_isotropic_ao_from_mask(...)` (conv3d occupancy-based AO).
+- [ ] Add optional surface extraction + gradient-normal hemisphere refinement (surface-only) behind an AO method flag.
+- [ ] Add/extend CLI flags for AO method and strength (keep defaults safe and backward-compatible).
+- [ ] In `train.py`, compute `ao_volume` once when `--export_ao` is set (after `VolumeSupervisor` init).
+- [ ] In `train.py`, repair broken `save_ply_sequence` call and compute `ao_values` only on export iterations.
+- [ ] In `scene/gaussian_model.py`, update `save_ply(...)` / `save_ply_sequence(...)` to accept `ao` + `ao_strength` and apply it to `f_dc`.
+- [ ] (Optional) Add `ao` to the PLY attributes when provided.
+- [ ] Add tests: `tests/test_ambient_occlusion.py` (AO volume shape/range) and `tests/test_ply_export_ao.py` (color multiplied).
+- [ ] Run `pytest` for the new tests and run a short training smoke command.
+

@@ -1983,7 +1983,7 @@ class GaussianModel:
 
         return f_dc
 
-    def construct_list_of_attributes(self) -> List[str]:
+    def construct_list_of_attributes(self, *, include_ao: bool = False) -> List[str]:
         """
         Construct list of attribute names for PLY export.
 
@@ -2005,20 +2005,35 @@ class GaussianModel:
             for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):
                 attributes.append(f"f_rest_{i}")
 
+        if include_ao:
+            attributes.append("ao")
+
         # Add remaining attributes
         attributes.append("opacity")
 
         if self._scaling.numel() > 0:
             for i in range(self._scaling.shape[1]):
                 attributes.append(f"scale_{i}")
+        else:
+            for i in range(3):
+                attributes.append(f"scale_{i}")
 
         if self._rotation.numel() > 0:
             for i in range(self._rotation.shape[1]):
                 attributes.append(f"rot_{i}")
+        else:
+            for i in range(4):
+                attributes.append(f"rot_{i}")
 
         return attributes
 
-    def save_ply(self, path: str):
+    def save_ply(
+        self,
+        path: str,
+        *,
+        ao: Optional[Union[torch.Tensor, np.ndarray]] = None,
+        ao_strength: float = 1.0,
+    ):
         """
         Save the Gaussian model to a PLY file.
 
@@ -2049,6 +2064,23 @@ class GaussianModel:
         # Use the refactored helper method to get colors
         f_dc = self._prepare_colors_for_ply(num_points)
 
+        ao_np: Optional[np.ndarray] = None
+        if ao is not None:
+            if isinstance(ao, torch.Tensor):
+                ao_np = ao.detach().float().view(-1, 1).cpu().numpy()
+            else:
+                ao_np = np.asarray(ao, dtype=np.float32).reshape(-1, 1)
+
+            if ao_np.shape[0] != num_points:
+                raise ValueError(
+                    f"AO length mismatch: expected {num_points}, got {ao_np.shape[0]}"
+                )
+
+            strength = float(ao_strength)
+            strength = max(0.0, min(1.0, strength))
+            ao_applied = (1.0 - strength) + strength * np.clip(ao_np, 0.0, 1.0)
+            f_dc = f_dc * ao_applied
+
         # Get rest features if available
         if self._features_rest is not None and self._features_rest.numel() > 0:
             f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
@@ -2078,7 +2110,15 @@ class GaussianModel:
 
         # Create PLY file
         self._create_ply_file(
-            path, xyz, normals, f_dc, f_rest, opacities, scale, rotation
+            path,
+            xyz,
+            normals,
+            f_dc,
+            f_rest,
+            opacities,
+            scale,
+            rotation,
+            ao=ao_np,
         )
 
     def _create_ply_file(
@@ -2091,6 +2131,7 @@ class GaussianModel:
         opacities: np.ndarray,
         scale: np.ndarray,
         rotation: np.ndarray,
+        ao: Optional[np.ndarray] = None,
     ):
         """
         Create a PLY file with the given attributes.
@@ -2106,7 +2147,7 @@ class GaussianModel:
             rotation: Rotation quaternions
         """
         num_points = xyz.shape[0]
-        attributes_list = self.construct_list_of_attributes()
+        attributes_list = self.construct_list_of_attributes(include_ao=ao is not None)
         dtype_full = [(attribute, 'f4') for attribute in attributes_list]
 
         # Create combined attributes array
@@ -2119,6 +2160,8 @@ class GaussianModel:
         all_attributes.append(f_dc)         # [N, 3]
         if f_rest.shape[1] > 0:
             all_attributes.append(f_rest)  # [N, F-3]
+        if ao is not None:
+            all_attributes.append(ao)       # [N, 1]
         all_attributes.append(opacities)    # [N, 1]
         all_attributes.append(scale)        # [N, 3]
         all_attributes.append(rotation)     # [N, 4]
@@ -2130,14 +2173,20 @@ class GaussianModel:
         PlyData([el]).write(path)
 
     def save_ply_sequence(
-        self, output_dir: str, iteration: int, prefix: str = "gaussians"
+        self,
+        output_dir: str,
+        iteration: int,
+        prefix: str = "gaussians",
+        *,
+        ao: Optional[Union[torch.Tensor, np.ndarray]] = None,
+        ao_strength: float = 1.0,
     ) -> str:
         """Write the current Gaussian set to a numbered PLY inside `ply_sequence`."""
         ply_dir = os.path.join(output_dir, "ply_sequence")
         mkdir_p(ply_dir)
 
         path = os.path.join(ply_dir, f"{prefix}_{iteration:06d}.ply")
-        self.save_ply(path)
+        self.save_ply(path, ao=ao, ao_strength=ao_strength)
 
         if _DEBUG_PLY_EXPORT:
             print(f"[ITER {iteration}] Saved model as PLY: {path}")

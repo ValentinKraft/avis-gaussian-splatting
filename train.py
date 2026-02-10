@@ -33,6 +33,8 @@ from gaussian_splatting.utils.parameter_monitor import (
     add_parameter_regularization_loss,
 )
 from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
+from gaussian_splatting.utils.ambient_occlusion import compute_ao_volume_from_mask
+from gaussian_splatting.utils.intensity_sampler import sample_intensities_from_volume
 from torch.cuda.amp import autocast, GradScaler
 
 
@@ -395,6 +397,20 @@ def training(
     volume_supervisor.enable_render_checkpoint = not bool(
         getattr(args, "disable_render_checkpoint", False)
     )
+
+    ao_volume = None
+    ao_strength = float(getattr(args, "export_ao_strength", 1.0))
+    if bool(getattr(args, "export_ao", False)):
+        ao_radius = int(getattr(args, "export_ao_radius_vox", 2))
+        ao_method = str(getattr(args, "export_ao_method", "isotropic"))
+        ao_result = compute_ao_volume_from_mask(
+            volume_supervisor.mask_volume,
+            volume_supervisor.mask_bool,
+            radius_vox=ao_radius,
+            method=ao_method,  # type: ignore[arg-type]
+        )
+        ao_volume = ao_result.ao_volume
+        volume_supervisor.ao_volume = ao_volume
 
     tb_log_interval = max(1, int(getattr(args, "tb_log_interval", 10)))
     postfix_interval = max(1, int(getattr(args, "progress_postfix_interval", 10)))
@@ -996,8 +1012,21 @@ def training(
                     if hasattr(args, "ply_output_prefix")
                     else "gaussians"
                 )
+                ao_values = None
+                if ao_volume is not None:
+                    ao_values, _, _ = sample_intensities_from_volume(
+                        gaussians.get_xyz,
+                        ao_volume,
+                        normalize=False,
+                    )
+                    ao_values = ao_values.clamp(0.0, 1.0)
+
                 ply_output_path = gaussians.save_ply_sequence(
-                    ply_output_dir, iteration, prefix
+                    ply_output_dir,
+                    iteration,
+                    prefix,
+                    ao=ao_values,
+                    ao_strength=ao_strength,
                 )
 
                 # Log PLY saving every 100 iterations to avoid console spam
