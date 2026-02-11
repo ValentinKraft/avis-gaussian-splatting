@@ -198,6 +198,12 @@ categories: []
 ## Action Plan (2026-01-04)
 1. Add CLI flags to switch supervision target and configure mask/opacity mapping.
 2. Add `render_mode='density'` path in `splat_to_volume` for mask supervision.
+
+## User Request Details (2026-02-11, Copilot Instructions)
+- Analyze the repo and generate/update `.github/copilot-instructions.md` to guide AI coding agents.
+- Capture the project-specific architecture, workflows, and conventions (esp. volume supervision + Gaussian splatting training flow).
+- Merge with any existing agent instruction files if present.
+- Keep the instructions concise and actionable (~20-50 lines) and include concrete file references.
 3. Wire mask supervision through `VolumeSupervisor` and initialization.
 4. Update tests for API changes and do a quick smoke run.
 
