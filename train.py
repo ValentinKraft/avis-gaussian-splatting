@@ -290,10 +290,13 @@ def training(
     first_iter = 0
     tb_writer = prepare_output_and_logger(args)
 
-    # Set default SH degree and create gaussians
+    # SH degree for volume-only training.
+    # Historically this code used degree 0; allow overriding via --sh_degree.
+    sh_degree = int(getattr(args, "sh_degree", 0))
+
     gaussians = GaussianModel(
-        0, opt.optimizer_type
-    )  # Use degree 0 for volume-only training
+        sh_degree, opt.optimizer_type
+    )
     gaussians.set_intensity_mode(getattr(opt, "intensity_mode", "learned"))
     gaussians.set_opacity_mode(getattr(opt, "opacity_mode", "sampled"))
     gaussians.configure_mean_covered_sampling(
@@ -1126,7 +1129,7 @@ if __name__ == "__main__":
             self.white_background = False
             self.model_path = model_path
             self.source_path = ""
-            self.sh_degree = 0
+            self.sh_degree = int(getattr(args, "sh_degree", 0))
 
     dataset = VolumeDataset(args.model_path)
 

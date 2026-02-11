@@ -551,16 +551,19 @@ def _setup_feature_tensors(
         )
 
     if model.max_sh_degree > 0:
-        model.num_sh_channels = (model.max_sh_degree + 1) ** 2 * 3
-        model._features_dc = nn.Parameter(
-            torch.cat([normalized_intensities] * 3, dim=1)
-            .contiguous()
-            .requires_grad_(True)
+        # Renderer expects SH features in [N, K, 3] split into dc/rest:
+        # - _features_dc:   [N, 1, 3]
+        # - _features_rest: [N, K-1, 3]
+        sh_coeff_count = (model.max_sh_degree + 1) ** 2
+        features_dc = normalized_intensities.expand(-1, 3).unsqueeze(1)
+        features_rest = torch.zeros(
+            (num_points, sh_coeff_count - 1, 3),
+            device=device,
+            dtype=features_dc.dtype,
         )
+        model._features_dc = nn.Parameter(features_dc.contiguous().requires_grad_(True))
         model._features_rest = nn.Parameter(
-            torch.zeros(num_points, model.num_sh_channels - 3, device=device)
-            .contiguous()
-            .requires_grad_(True)
+            features_rest.contiguous().requires_grad_(True)
         )
     else:
         intensity_tensor = normalized_intensities.expand(-1, 3).unsqueeze(1)

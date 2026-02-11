@@ -1019,7 +1019,7 @@ class OptimizationParams(ParamGroup):
         constraint.add_argument(
             "--scale_l2_weight",
             type=float,
-            default=0.03,
+            default=0.01,
             help="Weight for the L2 penalty applied to physical Gaussian scales.",
         )
         self._register("scale_l2_weight")
@@ -1036,7 +1036,7 @@ class OptimizationParams(ParamGroup):
         constraint.add_argument(
             "--min_scale_vox",
             type=float,
-            default=1.0,
+            default=1.5,
             help="Absolute minimum Gaussian scale in voxel units (applied per-axis).",
         )
         self._register("min_scale_vox")
@@ -1053,7 +1053,7 @@ class OptimizationParams(ParamGroup):
         constraint.add_argument(
             "--init_scale_min_vox",
             type=float,
-            default=1.0,
+            default=1.5,
             help="Minimum initial Gaussian scale in voxel units (used during volume initialization).",
         )
         self._register("init_scale_min_vox")
@@ -1061,7 +1061,7 @@ class OptimizationParams(ParamGroup):
         constraint.add_argument(
             "--init_scale_max_vox",
             type=float,
-            default=3.0,
+            default=4.0,
             help="Maximum initial Gaussian scale in voxel units (used during volume initialization).",
         )
         self._register("init_scale_max_vox")
