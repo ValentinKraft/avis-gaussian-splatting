@@ -380,9 +380,14 @@ def splat_to_volume(
                 )
             return None, torch.zeros(G, device=device, dtype=accum_dtype)
 
-        # Keep sparse mode bounded; fall back to dense for large splats.
+        # Keep sparse mode bounded.
+        # IMPORTANT: Falling back to the dense path can build a massive autograd graph
+        # (grid_chunk loops over the entire ROI grid), which can OOM during backward/
+        # checkpoint recompute even for small volumes.
+        # Instead, cap the neighborhood radius and effectively truncate large splats.
         if R > max_radius_vox:
-            raise RuntimeError("sparse_radius_too_large")
+            radii = radii.clamp_max(max_radius_vox)
+            R = max_radius_vox
 
         offset_vals = torch.arange(-R, R + 1, device=device, dtype=torch.long)
         offsets = torch.stack(
@@ -592,8 +597,9 @@ def splat_to_volume(
         else:
             value_scale = torch.ones(Bcur, device=device, dtype=bp.dtype)
 
-        # Heuristic: use sparse splatting when splats are reasonably small in voxel units.
-        # Defaults are fully automatic; env overrides are only intended for tests/debug.
+        # Prefer sparse splatting.
+        # The dense fallback can be prohibitively expensive in memory during backward.
+        # Env overrides are only intended for tests/debug.
         force_sparse = os.environ.get("GS_FORCE_SPARSE", "0") == "1"
         disable_sparse = os.environ.get("GS_DISABLE_SPARSE", "0") == "1"
         use_sparse = True
@@ -601,11 +607,7 @@ def splat_to_volume(
             use_sparse = False
         elif force_sparse:
             use_sparse = True
-        if scales_batch.numel() > 0:
-            sigma_vox = scales_batch / sparse_voxel_spacing.unsqueeze(0).clamp_min(1e-8)
-            # If splats get too large, sparse neighborhoods explode.
-            if float(sigma_vox.max().item()) > 4.0:
-                use_sparse = False
+        # Note: Large splats are handled by radius capping inside _splat_sparse_batch.
 
         if use_sparse:
             try:
@@ -623,6 +625,7 @@ def splat_to_volume(
                     density_scale_local=density_scale,
                 )
             except RuntimeError as exc:
+                # Unexpected sparse failure; fall back to dense.
                 if str(exc) != "sparse_radius_too_large":
                     raise
                 use_sparse = False

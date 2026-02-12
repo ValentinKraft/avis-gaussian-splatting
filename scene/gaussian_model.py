@@ -2079,7 +2079,15 @@ class GaussianModel:
             strength = float(ao_strength)
             strength = max(0.0, min(1.0, strength))
             ao_applied = (1.0 - strength) + strength * np.clip(ao_np, 0.0, 1.0)
-            f_dc = f_dc * ao_applied
+            # NOTE: f_dc stores SH DC coefficients, where RGB is decoded as:
+            #   rgb = f_dc * SH_C0 + 0.5
+            # Multiplying f_dc directly drives colors towards 0.5 (mid-grey).
+            # To darken like ambient occlusion, apply AO in RGB space and then
+            # convert back to SH DC coefficients.
+            rgb = f_dc * float(SH_C0) + 0.5
+            rgb = rgb * ao_applied
+            rgb = np.clip(rgb, 0.0, 1.0)
+            f_dc = (rgb - 0.5) / float(SH_C0)
 
         # Get rest features if available
         if self._features_rest is not None and self._features_rest.numel() > 0:

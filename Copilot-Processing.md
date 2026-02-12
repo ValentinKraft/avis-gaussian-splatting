@@ -204,6 +204,23 @@ categories: []
 - Capture the project-specific architecture, workflows, and conventions (esp. volume supervision + Gaussian splatting training flow).
 - Merge with any existing agent instruction files if present.
 - Keep the instructions concise and actionable (~20-50 lines) and include concrete file references.
+
+## Action Plan (2026-02-11)
+1. Discover existing agent rules and current `.github` guidance (if any) and extract repo-specific workflows from README and training scripts.
+2. Identify the core architecture paths relevant to daily work (training loop, rendering, volume supervision, AO/intensity/opacity sampling).
+3. Write or update `.github/copilot-instructions.md` with concise, codebase-specific instructions (include file references and example commands).
+4. Run a quick static check: ensure the new markdown follows repo markdown rules and that referenced paths exist.
+
+## Task Tracker (2026-02-11)
+- [x] Locate any existing agent instruction files and collect authoritative workflow commands.
+- [x] Summarize big-picture architecture + key data flow for training/rendering.
+- [x] Document project-specific conventions (coords/order, tensor shapes, volume vs camera space, CLI flags).
+- [x] Create/update `.github/copilot-instructions.md` (20-50 lines, actionable).
+- [x] Validate formatting and paths; keep content minimal and factual.
+
+## Summary / Current State (2026-02-11)
+- Added `.github/copilot-instructions.md` capturing the volume-supervised training architecture, core data conventions, and the key files to edit for CLI/supervision/sampling/export changes.
+- Included concrete workflow commands (conda setup on Windows, training entrypoints via `README.md`, focused `pytest` targets), plus repo-specific gotchas (volume normalization to [0,1], export-only AO, SH-DC grayscale mapping) and a debug hook (`GS_VALIDATE_SAMPLING=1`).
 3. Wire mask supervision through `VolumeSupervisor` and initialization.
 4. Update tests for API changes and do a quick smoke run.
 

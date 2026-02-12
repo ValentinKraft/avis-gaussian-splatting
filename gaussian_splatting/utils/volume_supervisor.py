@@ -829,37 +829,51 @@ class VolumeSupervisor:
 
         checkpoint_ok = bool(getattr(self, "enable_render_checkpoint", True))
 
+        render_use_amp = bool(getattr(self, "render_use_amp", False))
+        render_amp_dtype = getattr(self, "render_amp_dtype", torch.float16)
+
         def _render_density(points, scales, rotations, opacities):
-            return splat_to_volume(
-                points=points,
-                point_scales=scales,
-                point_rotations=rotations,
-                point_opacities=opacities,
-                point_intensities=None,
-                volume_shape=roi_shape,
-                device=xyz.device,
-                active_idx=active_idx,
-                grid_bounds=(bounds_min, bounds_max),
-                render_mode="density",
-                density_scale=float(getattr(self, "density_scale", 1.0)),
-                working_grid_downscale_factor=self.volume_render_downscale_factor,
-            )
+            # IMPORTANT: checkpoint recompute happens during backward, outside the
+            # training-loop autocast context. Re-enable autocast here so recompute
+            # uses the same dtype and avoids unnecessary peak memory.
+            with torch.cuda.amp.autocast(
+                enabled=render_use_amp,
+                dtype=render_amp_dtype if render_use_amp else None,
+            ):
+                return splat_to_volume(
+                    points=points,
+                    point_scales=scales,
+                    point_rotations=rotations,
+                    point_opacities=opacities,
+                    point_intensities=None,
+                    volume_shape=roi_shape,
+                    device=xyz.device,
+                    active_idx=active_idx,
+                    grid_bounds=(bounds_min, bounds_max),
+                    render_mode="density",
+                    density_scale=float(getattr(self, "density_scale", 1.0)),
+                    working_grid_downscale_factor=self.volume_render_downscale_factor,
+                )
 
         def _render_intensity(points, scales, rotations, opacities, intensities):
-            return splat_to_volume(
-                points=points,
-                point_scales=scales,
-                point_rotations=rotations,
-                point_opacities=opacities,
-                point_intensities=intensities,
-                volume_shape=roi_shape,
-                device=xyz.device,
-                active_idx=active_idx,
-                grid_bounds=(bounds_min, bounds_max),
-                render_mode="intensity",
-                density_scale=float(getattr(self, "density_scale", 1.0)),
-                working_grid_downscale_factor=self.volume_render_downscale_factor,
-            )
+            with torch.cuda.amp.autocast(
+                enabled=render_use_amp,
+                dtype=render_amp_dtype if render_use_amp else None,
+            ):
+                return splat_to_volume(
+                    points=points,
+                    point_scales=scales,
+                    point_rotations=rotations,
+                    point_opacities=opacities,
+                    point_intensities=intensities,
+                    volume_shape=roi_shape,
+                    device=xyz.device,
+                    active_idx=active_idx,
+                    grid_bounds=(bounds_min, bounds_max),
+                    render_mode="intensity",
+                    density_scale=float(getattr(self, "density_scale", 1.0)),
+                    working_grid_downscale_factor=self.volume_render_downscale_factor,
+                )
 
         volume_pred_mask_roi: Optional[Tensor] = None
         volume_pred_ct_roi: Optional[Tensor] = None

@@ -520,6 +520,10 @@ def training(
         print("Mixed precision training disabled")
         amp_dtype = torch.float32
 
+    # Ensure checkpoint recompute in VolumeSupervisor uses the same autocast settings.
+    volume_supervisor.render_use_amp = bool(use_amp)
+    volume_supervisor.render_amp_dtype = amp_dtype
+
     # Initialize tracking variables
     ema_loss_for_log = 0.0
     ema_vol_loss_for_log = 0.0
