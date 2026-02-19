@@ -19,8 +19,8 @@ module SoPerspectiveCamera {
   fields {
     instanceName = SoPerspectiveCamera
     viewportMapping = ADJUST_CAMERA
-    position = "-37.7439651489258 -38.5191230773926 -44.6281356811523"
-    orientation = "0 0 1 0"
+    position = "2.0746476650238 -145.822357177734 -582.006469726563"
+    orientation = "0.999974310398102 0.00711307115852833 0.00087761739268899 2.89607787132263"
     aspectRatio = 1
     nearDistance = 0.53953755
     farDistance = 3000
@@ -99,7 +99,7 @@ module RotateAtTarget {
   }
   fields {
     instanceName = RotateAtTarget
-    inPosition = "-37.7439657273952 -38.5191212889968 -44.6281340220804"
+    inPosition = "2.07464760408927 -145.822361019676 -582.006473214831"
     inTarget = "0 0 0"
     inUpVector = "0 0 1"
     onInputChangeBehavior = Clear
@@ -184,7 +184,7 @@ module SoAxis {
   fields {
     instanceName = SoAxis
     autoAdjustSettings = TRUE
-    axisVolumeSize = "512 512 286"
+    axisVolumeSize = "512 512 266"
     axisOn = FALSE
     axisFontSize = 12
     axis1Visibility = TRUE
@@ -215,20 +215,20 @@ module SoAxis {
     axisNumber3AlignMode = Axis::AXIS_TEXT_ALIGN_LEFT
     axisNumBias = "0 0 0"
     axisNumScale = "1 1 1"
-    axisStepSizes = "51.2000007629395 51.2000007629395 28.6000003814697"
+    axisStepSizes = "51.2000007629395 51.2000007629395 26.6000003814697"
     axisOrigin = "0 0 0"
     axisMinEnds = "0 0 0"
-    axisMaxEnds = "512 512 286"
-    axisMarkerLength = "25.6000003814697 25.6000003814697 14.3000001907349"
+    axisMaxEnds = "512 512 266"
+    axisMarkerLength = "25.6000003814697 25.6000003814697 13.3000001907349"
     axisTicksMin = "0 0 0"
-    axisTicksMax = "512 512 286"
+    axisTicksMax = "512 512 266"
     axis1Color = "1 1 1"
     axis1Transparency = 1
     axis2Color = "1 1 1"
     axis2Transparency = 1
     axis3Color = "1 1 1"
     axis3Transparency = 1
-    axisWingLength = "17.0666675567627 17.0666675567627 9.53333377838135"
+    axisWingLength = "17.0666675567627 17.0666675567627 8.86666679382324"
     axisOverScale = "1.10000002384186 1.10000002384186 1.10000002384186"
     axisSubTickSteps = "0.200000002980232 0.200000002980232 0.200000002980232"
     axisSubTickScales = "0.25 0.25 0.25"
@@ -243,8 +243,8 @@ module SoTransform {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1095 175 440 173"
-        relativePosition = "0.1849 -0.3472"
+        geometry = "2135 211 440 173"
+        relativePosition = "0.1846 -0.3477"
         sizeHint = "440 173"
         wasOpen = no
       }
@@ -254,7 +254,7 @@ module SoTransform {
     instanceName = SoTransform
     translation = "0 0 0"
     rotation = "0 0 1 0"
-    scaleFactor = "0.100000001490116 0.100000001490116 0.100000001490116"
+    scaleFactor = "1 1 1"
     scaleOrientation = "0 0 1 0"
     center = "0 0 0"
   }
@@ -276,7 +276,7 @@ module ImageSave {
   fields {
     instanceName = ImageSave
     taskVerboseLogging = FALSE
-    filename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_scene_/images/99.png
+    filename = "C:\\DEV\\TESTS\\gs\\_SCENES_\\_scene_/images/499.png"
     addFileExtension = TRUE
     format = PNG
     comment = MeVisLab
@@ -322,29 +322,29 @@ module SoCameraAccess {
   }
   fields {
     instanceName = SoCameraAccess
-    transformDeltaOut = "-0.988067626953125 0.0702368840575218 0.137076303362846 0
--0.0981966182589531 0.398385584354401 -0.911946594715118 0
--0.118661515414715 -0.914524972438812 -0.386735081672668 0
+    transformDeltaOut = "0.191224873065948 0.791513442993164 -0.580465078353882 0
+0.952110648155212 -0.005837082862854 0.305698454380035 0
+0.238576263189316 -0.611124038696289 -0.754724502563477 0
 0 0 0 1"
-    viewingMatrix = "0.714257299900055 -0.446207076311111 -0.539199352264404 0
--0.699883282184601 -0.455370843410492 -0.550272881984711 0
--1.49011569305912e-07 0.770413279533386 -0.637544572353363 0
-4.79817390441895e-06 -3.814697265625e-06 -69.9999771118164 1"
-    projectionMatrix = "2.41421318054199 0 0 0
-0 2.41421294212341 0 0
--1.00015043358326e-07 -1.00015029147471e-07 -1.00199806690216 -1
-0 0 -1.08015310764313 0"
-    cameraSpaceMatrix = "0.197870492935181 -0.818603277206421 -0.539199471473694 0
--0.818603277206421 0.164584577083588 -0.550273299217224 0
-0.539199471473694 0.550273299217224 -0.637544870376587 0
-1.9073486328125e-06 -9.5367431640625e-06 -70.0000076293945 1"
-    camPosition = "-37.7439651489258 -38.5191230773926 -44.6281356811523"
-    lookAtPosition = "1.49011611938477e-07 -0.770413339138031 0.637544870376587"
-    upVector = "-0.446207076311111 -0.455370843410492 0.770413279533386"
-    viewVector = "0.539198935031891 0.550273001194 0.637545466423035"
+    viewingMatrix = "0.999898850917816 0.0137991243973374 0.00345773296430707 0
+0.0142257632687688 -0.969912707805634 -0.243037089705467 0
+6.28642737865448e-09 0.243061751127243 -0.970010757446289 0
+8.94069671630859e-08 -6.103515625e-05 -600 1"
+    projectionMatrix = "2.41421365737915 0 0 0
+0 2.41421318054199 0 0
+-3.33383525230602e-08 0 -1.00035977363586 -1
+0 0 -1.07926917076111 0"
+    cameraSpaceMatrix = "0.999601304531097 0.0280221253633499 0.00345774157904088 0
+0.0280221253633499 -0.969612598419189 -0.243036940693855 0
+-0.00345774157904088 0.243036940693855 -0.970011234283447 0
+3.57627868652344e-06 -0.0002593994140625 -600.000183105469 1"
+    camPosition = "2.0746476650238 -145.822357177734 -582.006469726563"
+    lookAtPosition = "-8.14907252788544e-10 -0.243061736226082 0.970010876655579"
+    upVector = "0.0137991243973374 -0.969912707805634 0.243061751127243"
+    viewVector = "-0.00345771037973464 0.243036776781082 0.970010936260223"
     viewportSizeOut = "1024 1024"
     nearDistance = 0.53953755
-    farDistance = 540.61768
+    farDistance = 3000
     NewViewingMatrix = "1 0 0 0
 0 1 0 0
 0 0 1 0

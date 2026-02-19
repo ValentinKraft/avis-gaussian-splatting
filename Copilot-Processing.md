@@ -342,3 +342,72 @@ categories: []
 - [ ] Add tests: `tests/test_ambient_occlusion.py` (AO volume shape/range) and `tests/test_ply_export_ao.py` (color multiplied).
 - [ ] Run `pytest` for the new tests and run a short training smoke command.
 
+
+## User Request Details (2026-02-12, Standalone Gaussian Viewer)
+- Build a separate Gaussian splatting viewer application in a new subfolder at the repository root, not dependent on the current training/rendering implementation.
+- Load and render Gaussian splatting models from PLY files exported by this repo.
+- Provide interactive 3D engine-style camera controls (Unity-like orbit/pan/zoom).
+- Provide a medical volume-rendering-like Transfer Function / LUT that maps a per-splat scalar to color + transparency.
+- Minimum viable viewer focused on inspection of medical Gaussian models (similar spirit to MeVisLab).
+
+## Action Plan (2026-02-12, Standalone Gaussian Viewer)
+1. Create a new isolated application folder `gs_viewer/` with its own Python package/entrypoint and dependency list.
+2. Implement a robust PLY loader for the repo's `GaussianModel.save_ply()` schema:
+	- Required: `x,y,z`, `f_dc_0..2`, `opacity`, `scale_0..2`, `rot_0..3`.
+	- Optional: `ao`, `f_rest_*` (ignore for MVP).
+	- Detect and reject unsupported PLY schemas (e.g. `red/green/blue` point clouds).
+3. Implement camera controls (Unity-style orbit/pan/zoom) and auto-frame on load.
+4. Implement GPU rendering of splats:
+	- Instanced billboards + fragment Gaussian falloff.
+	- Use `sigma = exp(scale_*)` and normalized quaternion (MVP can start isotropic).
+	- Use weighted blended OIT for stable transparency without sorting.
+5. Implement transfer function / LUT:
+	- Decode base RGB from SH-DC: `rgb = f_dc * SH_C0 + 0.5` (clamp [0,1]).
+	- Scalar for TF: luminance of decoded RGB.
+	- UI editor for a small set of control points; bake to 1D LUT texture.
+	- Apply TF to output color + alpha: `finalAlpha = opacity * LUT.a`, `finalRGB = LUT.rgb` (or modulation, if chosen).
+6. Add minimal UI/UX:
+	- Open PLY, reset camera, TF editor panel, stats (count/FPS).
+7. Add docs + a minimal smoke test procedure on Windows.
+
+## Task Tracker (2026-02-12, Standalone Gaussian Viewer)
+### 1) Project scaffold
+- [x] Create `gs_viewer/` folder structure.
+- [x] Add `gs_viewer/README.txt` with install/run steps.
+- [x] Add `gs_viewer/pyproject.toml` + `requirements.txt` with pinned deps.
+
+### 2) PLY I/O
+- [x] Implement `gs_viewer/src/gs_viewer/ply_loader.py`:
+	- [x] Load GaussianModel PLY schema (floats, SH DC, opacity, log-scale, quat).
+	- [x] Infer presence of optional `ao`.
+	- [x] Validate required fields and give clear errors.
+- [x] Add a tiny loader self-check (load and print basic stats, no rendering).
+
+### 3) Rendering core
+- [x] Implement window + GL init (GLFW).
+- [x] Implement shader pipeline for point-sprite splats (GL_POINTS).
+- [x] Upload per-splat attributes to GPU buffers.
+- [x] Implement weighted blended OIT framebuffer path.
+
+### 4) Camera
+- [x] Implement orbit/pan/zoom camera controls.
+- [x] Implement frame-to-bounds on model load.
+
+### 5) Transfer function
+- [x] Implement TF control points + LUT baking.
+- [x] Upload 1D LUT to GPU and apply in fragment shader.
+- [x] Ensure TF affects both color and transparency.
+
+### 6) UI
+- [x] Add minimal UI (ImGui): open PLY, reset camera, TF editor, stats.
+
+### 7) Validation
+- [ ] Smoke test with a real model from `_output_/.../*.ply`.
+- [ ] Confirm intensity decode matches exporter convention (SH DC mapping).
+- [ ] Confirm interactive camera + TF updates at runtime.
+
+Validation note (2026-02-12)
+- Generated `gs_viewer/_sample/minimal_gaussian.ply` and verified the loader self-check works.
+- No `.ply` files were found under `_output_/` in the current workspace snapshot, so a real-model smoke test is pending.
+
+
