@@ -20,6 +20,29 @@ python train.py --model_path _output_/liver-float-test --mask_path _input_/liver
 python train.py --model_path _output_/synthetic-float-test --mask_path _input_/synthetic-mask-float.nii.gz --volume_path _input_/synthetic-gradient.nii.gz --iterations 500 --volume_loss_type mse --init_n_points 10000 --save_ply_every 100 --enable_diagnostics
 ```
 
+### GS Viewer (standalone PLY viewer)
+
+- Main command from repo root:
+
+```shell
+gs-viewer --ply path\\to\\model.ply
+```
+
+- Install (if not already installed):
+
+```shell
+uv pip install -r gs_viewer/requirements.txt
+uv pip install -e gs_viewer
+```
+
+- Direct script alternative:
+
+```shell
+python gs_viewer\\run_viewer.py --ply path\\to\\model.ply
+```
+
+- More details: `gs_viewer/README.md`
+
 ### Intensity Sampling Modes
 
 - `--intensity_mode sampled_mean_covered`
