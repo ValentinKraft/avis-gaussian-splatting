@@ -28,6 +28,7 @@ from gs_viewer.transfer_function import TransferFunction
 class _UiState:
     ply_path: str = ""
     error_text: str = ""
+    splat_scale: float = 1.0
 
 
 class Viewer:
@@ -79,6 +80,7 @@ class Viewer:
                         view,
                         proj,
                         self._tf.lut_texture_id,
+                        self._ui.splat_scale,
                     )
             self._renderer.composite_to_screen(width, height)
 
@@ -205,6 +207,12 @@ class Viewer:
             imgui.separator()
             imgui.text(f"Splats: {self._model.count}")
             imgui.text(f"Bounds radius: {self._model.bounds_radius:.4f}")
+            _, self._ui.splat_scale = imgui.slider_float(
+                "Splat scale",
+                self._ui.splat_scale,
+                0.1,
+                50.0,
+            )
 
         imgui.separator()
         imgui.text("Transfer Function")

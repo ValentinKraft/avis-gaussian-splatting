@@ -54,6 +54,7 @@ uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform float u_focal_px;
 uniform float u_max_point_size;
+uniform float u_splat_scale;
 
 out float v_opacity;
 out float v_intensity;
@@ -65,7 +66,7 @@ void main() {
     float z = max(-viewPos.z, 1e-3);
 
     // Approximate: point size covers ~3 sigma radius.
-    float sigma_px = (a_sigma * u_focal_px) / z;
+    float sigma_px = (a_sigma * u_focal_px * u_splat_scale) / z;
     float pointSize = clamp(6.0 * sigma_px, 1.0, u_max_point_size);
 
     gl_Position = u_proj * viewPos;
@@ -195,6 +196,7 @@ class OitRenderer:
         self._create_or_resize_targets(width, height)
 
     def begin_frame(self) -> None:
+        GL.glEnable(GL.GL_PROGRAM_POINT_SIZE)
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._fbo)
         GL.glViewport(0, 0, self._width, self._height)
 
@@ -203,7 +205,14 @@ class OitRenderer:
         GL.glClearBufferfv(GL.GL_COLOR, 0, np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32))
         GL.glClearBufferfv(GL.GL_COLOR, 1, np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32))
 
-    def render_splats(self, model: GaussianModelPly, view: np.ndarray, proj: np.ndarray, lut_tex_id: int) -> None:
+    def render_splats(
+        self,
+        model: GaussianModelPly,
+        view: np.ndarray,
+        proj: np.ndarray,
+        lut_tex_id: int,
+        splat_scale: float = 1.0,
+    ) -> None:
         self._ensure_model_uploaded(model)
         assert self._gpu is not None
 
@@ -211,6 +220,7 @@ class OitRenderer:
         GL.glDrawBuffers(2, [GL.GL_COLOR_ATTACHMENT0, GL.GL_COLOR_ATTACHMENT1])
 
         GL.glUseProgram(self._splat_prog)
+        GL.glEnable(GL.GL_PROGRAM_POINT_SIZE)
 
         loc_view = GL.glGetUniformLocation(self._splat_prog, "u_view")
         loc_proj = GL.glGetUniformLocation(self._splat_prog, "u_proj")
@@ -221,6 +231,10 @@ class OitRenderer:
         focal_px = 0.5 * float(self._height) / float(np.tan(np.deg2rad(45.0) / 2.0))
         GL.glUniform1f(GL.glGetUniformLocation(self._splat_prog, "u_focal_px"), focal_px)
         GL.glUniform1f(GL.glGetUniformLocation(self._splat_prog, "u_max_point_size"), 256.0)
+        GL.glUniform1f(
+            GL.glGetUniformLocation(self._splat_prog, "u_splat_scale"),
+            max(0.001, float(splat_scale)),
+        )
 
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_1D, lut_tex_id)
