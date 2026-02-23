@@ -191,6 +191,7 @@ def initialize_from_volume(
     device: torch.device = torch.device("cuda"),
     mask_threshold: float = 0.01,
     volume_downscale_factor: Optional[int] = None,
+    volume_storage_dtype: str = "fp32",
     disable_volume_overflow_guard: bool = False,
     voxel_size_override: Optional[Tensor] = None,
     init_scale_min_vox: float = 1.0,
@@ -207,6 +208,7 @@ def initialize_from_volume(
         target_shape=None,
         device=device,
         downscale_factor=downscale,
+        storage_dtype=str(volume_storage_dtype),
         enable_overflow_guard=not bool(disable_volume_overflow_guard),
     )
     sampling_volume = loader.load_volume(mask_path)
@@ -699,6 +701,7 @@ def initialize_gaussians(
     disable_volume_overflow_guard = bool(
         kwargs.pop("disable_volume_overflow_guard", False)
     )
+    volume_storage_dtype = str(kwargs.pop("volume_storage_dtype", "fp32"))
     opacity_gamma = float(kwargs.pop("opacity_gamma", 1.0))
     opacity_mode = str(
         kwargs.pop("opacity_mode", getattr(model, "opacity_mode", "sampled"))
@@ -716,6 +719,7 @@ def initialize_gaussians(
         n_points,
         device=device,
         volume_downscale_factor=init_sampling_downscale,
+        volume_storage_dtype=volume_storage_dtype,
         disable_volume_overflow_guard=disable_volume_overflow_guard,
         voxel_size_override=(
             getattr(orientation_helper, "voxel_size", None)
@@ -749,12 +753,14 @@ def initialize_gaussians(
         target_shape=None,
         device=device,
         downscale_factor=downscale,
+        storage_dtype=volume_storage_dtype,
         enable_overflow_guard=not disable_volume_overflow_guard,
     )
     loader_intensity = VolumeLoader(
         target_shape=None,
         device=device,
         downscale_factor=downscale,
+        storage_dtype=volume_storage_dtype,
         enable_overflow_guard=not disable_volume_overflow_guard,
     )
 

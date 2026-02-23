@@ -51,6 +51,7 @@ class VolumeSupervisor:
         volume_shape: Tuple[int, int, int] = (64, 64, 64),
         volume_downscale_factor: Optional[int] = None,
         volume_render_downscale_factor: int = 2,
+        volume_storage_dtype: str = "fp32",
         disable_volume_overflow_guard: bool = False,
         mask_path: Optional[str] = None,
         loss_type: str = "dice",
@@ -102,6 +103,12 @@ class VolumeSupervisor:
         self.volume_render_downscale_factor = max(
             1, int(volume_render_downscale_factor)
         )
+        self.volume_storage_dtype = str(volume_storage_dtype).lower()
+        if self.volume_storage_dtype not in {"fp32", "fp16", "bf16"}:
+            raise ValueError(
+                "volume_storage_dtype must be one of {'fp32','fp16','bf16'}, "
+                f"got {volume_storage_dtype!r}."
+            )
         self.disable_volume_overflow_guard = bool(disable_volume_overflow_guard)
 
         # Training is defined to be mask-driven; without a mask the objective is
@@ -125,6 +132,7 @@ class VolumeSupervisor:
             target_shape=None,
             device=device,
             downscale_factor=downscale_factor,
+            storage_dtype=self.volume_storage_dtype,
             enable_overflow_guard=not self.disable_volume_overflow_guard,
         )
         # Apply loss_weight once in compute_loss for clarity.

@@ -38,7 +38,7 @@ from gaussian_splatting.utils.intensity_sampler import sample_intensities_from_v
 from torch.cuda.amp import autocast, GradScaler
 
 
-MAX_POINTS_PER_ITER = 20000  # Upper bound of splats per forward pass to limit memory
+DEFAULT_MAX_POINTS_PER_ITER = 10000  # Upper bound of splats per forward pass to limit memory
 
 
 @dataclass
@@ -122,8 +122,11 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
 
     return state
 
-def _select_active_indices(xyz: torch.Tensor) -> tuple[Optional[torch.Tensor], int]:
-    """Return a random subset of point indices capped at MAX_POINTS_PER_ITER."""
+def _select_active_indices(
+    xyz: torch.Tensor,
+    max_points_per_iter: int,
+) -> tuple[Optional[torch.Tensor], int]:
+    """Return a random subset of point indices capped at max_points_per_iter."""
     if xyz.dim() != 2:
         total = xyz.shape[0]
         return None, total
@@ -133,11 +136,11 @@ def _select_active_indices(xyz: torch.Tensor) -> tuple[Optional[torch.Tensor], i
     else:
         total = xyz.shape[0]
 
-    if total <= MAX_POINTS_PER_ITER:
+    if total <= max_points_per_iter:
         return None, total
 
     device = xyz.device
-    idx = torch.randperm(total, device=device)[:MAX_POINTS_PER_ITER]
+    idx = torch.randperm(total, device=device)[:max_points_per_iter]
     return idx, total
 
 
@@ -283,6 +286,10 @@ def training(
     args,
 ):
 
+    max_points_per_iter = int(
+        max(1, getattr(args, "max_points_per_iter", DEFAULT_MAX_POINTS_PER_ITER))
+    )
+
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
 
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
@@ -396,6 +403,7 @@ def training(
             getattr(opt, "intensity_update_interval", 10),
         ),
         sampling_padding_mode=getattr(opt, "sampling_padding_mode", "border"),
+        volume_storage_dtype=getattr(args, "volume_storage_dtype", "fp32"),
     )
     volume_supervisor.enable_render_checkpoint = not bool(
         getattr(args, "disable_render_checkpoint", False)
@@ -465,6 +473,7 @@ def training(
         disable_volume_overflow_guard=bool(
             getattr(args, "disable_volume_overflow_guard", False)
         ),
+        volume_storage_dtype=getattr(args, "volume_storage_dtype", "fp32"),
         init_scale_min_vox=getattr(args, "init_scale_min_vox", 1.0),
         init_scale_max_vox=getattr(args, "init_scale_max_vox", 3.0),
         opacity_gamma=getattr(args, "opacity_gamma", 1.0),
@@ -598,7 +607,10 @@ def training(
         gaussians.optimizer.zero_grad(set_to_none=True)
 
         xyz_for_sampling = gaussians.get_xyz
-        active_idx, total_points = _select_active_indices(xyz_for_sampling)
+        active_idx, total_points = _select_active_indices(
+            xyz_for_sampling,
+            max_points_per_iter=max_points_per_iter,
+        )
         active_points = active_idx.numel() if active_idx is not None else total_points
         if log_mem and total_points > 0:
             _log_gpu_memory("before_forward", iteration, total_points, active_points)

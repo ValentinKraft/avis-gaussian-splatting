@@ -154,6 +154,18 @@ class ModelParams(ParamGroup):
         self._register("volume_render_downscale_factor")
 
         core.add_argument(
+            "--volume_storage_dtype",
+            type=str,
+            default="fp32",
+            choices=["fp32", "fp16", "bf16"],
+            help=(
+                "Storage dtype for loaded supervision volumes on GPU. "
+                "Use fp16/bf16 to reduce persistent VRAM usage; fp32 keeps maximum precision."
+            ),
+        )
+        self._register("volume_storage_dtype")
+
+        core.add_argument(
             "--disable_volume_overflow_guard",
             action="store_true",
             help=(
@@ -662,6 +674,17 @@ class TrainingScriptParams(ParamGroup):
             ),
         )
         self._register("disable_render_checkpoint")
+
+        group.add_argument(
+            "--max_points_per_iter",
+            type=int,
+            default=10000,
+            help=(
+                "Maximum number of Gaussians rendered per optimization step. "
+                "Lower values reduce VRAM peak at the cost of slower convergence per iteration."
+            ),
+        )
+        self._register("max_points_per_iter")
 
 
 class OptimizationParams(ParamGroup):

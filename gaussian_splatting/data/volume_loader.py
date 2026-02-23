@@ -32,6 +32,7 @@ class VolumeLoader:
                  target_shape: Optional[Tuple[int, int, int]] = None,
                  device: torch.device = torch.device('cuda'),
                  downscale_factor: Optional[int] = None,
+                 storage_dtype: str = "fp32",
                  enable_overflow_guard: bool = True):
         """
         Args:
@@ -41,6 +42,8 @@ class VolumeLoader:
                 When provided and > 1, volumes are resampled to (D//factor, H//factor, W//factor).
                 When provided and <= 1, resampling is disabled (native resolution), unless the
                 automatic overflow guard triggers.
+            storage_dtype: Storage dtype used for the returned tensor on device.
+                One of {'fp32', 'fp16', 'bf16'}.
             enable_overflow_guard: When True (default), automatically resample very large volumes
                 to avoid downstream operations that cannot handle >~16M voxels. Set to False to
                 force native resolution loading (may require more memory).
@@ -48,7 +51,21 @@ class VolumeLoader:
         self.target_shape = target_shape
         self.device = device
         self.downscale_factor = downscale_factor
+        self.storage_dtype = str(storage_dtype).lower()
+        if self.storage_dtype not in {"fp32", "fp16", "bf16"}:
+            raise ValueError(
+                "storage_dtype must be one of {'fp32','fp16','bf16'}, "
+                f"got {storage_dtype!r}."
+            )
         self.enable_overflow_guard = bool(enable_overflow_guard)
+
+    def _target_dtype(self) -> torch.dtype:
+        """Return torch dtype configured for stored supervision volumes."""
+        if self.storage_dtype == "fp16":
+            return torch.float16
+        if self.storage_dtype == "bf16":
+            return torch.bfloat16
+        return torch.float32
 
     def load_nifti(self, path: Union[str, Path]) -> Tensor:
         """Load a NIfTI volume file."""
@@ -189,7 +206,7 @@ class VolumeLoader:
             # Remove batch and channel dimensions
             volume = volume.squeeze(0).squeeze(0)
 
-        return volume.to(self.device)
+        return volume.to(device=self.device, dtype=self._target_dtype())
 
     def align_to_space(self, 
                       volume: Tensor,
