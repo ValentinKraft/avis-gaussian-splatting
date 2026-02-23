@@ -108,6 +108,7 @@ class Viewer:
         glfw.set_scroll_callback(self._window, self._on_scroll)
 
     def _init_gl(self) -> None:
+        GL.glEnable(GL.GL_PROGRAM_POINT_SIZE)
         GL.glEnable(GL.GL_BLEND)
         GL.glDisable(GL.GL_CULL_FACE)
         GL.glDisable(GL.GL_DEPTH_TEST)

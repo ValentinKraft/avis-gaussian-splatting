@@ -66,8 +66,9 @@ void main() {
     float z = max(-viewPos.z, 1e-3);
 
     // Approximate: point size covers ~3 sigma radius.
-    float sigma_px = (a_sigma * u_focal_px * u_splat_scale) / z;
-    float pointSize = clamp(6.0 * sigma_px, 1.0, u_max_point_size);
+    float sigma_px = (a_sigma * u_focal_px) / z;
+    float basePointSize = clamp(6.0 * sigma_px, 1.0, u_max_point_size);
+    float pointSize = clamp(basePointSize * u_splat_scale, 1.0, u_max_point_size);
 
     gl_Position = u_proj * viewPos;
     gl_PointSize = pointSize;
@@ -196,7 +197,6 @@ class OitRenderer:
         self._create_or_resize_targets(width, height)
 
     def begin_frame(self) -> None:
-        GL.glEnable(GL.GL_PROGRAM_POINT_SIZE)
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._fbo)
         GL.glViewport(0, 0, self._width, self._height)
 
@@ -220,7 +220,6 @@ class OitRenderer:
         GL.glDrawBuffers(2, [GL.GL_COLOR_ATTACHMENT0, GL.GL_COLOR_ATTACHMENT1])
 
         GL.glUseProgram(self._splat_prog)
-        GL.glEnable(GL.GL_PROGRAM_POINT_SIZE)
 
         loc_view = GL.glGetUniformLocation(self._splat_prog, "u_view")
         loc_proj = GL.glGetUniformLocation(self._splat_prog, "u_proj")
@@ -233,7 +232,7 @@ class OitRenderer:
         GL.glUniform1f(GL.glGetUniformLocation(self._splat_prog, "u_max_point_size"), 256.0)
         GL.glUniform1f(
             GL.glGetUniformLocation(self._splat_prog, "u_splat_scale"),
-            max(0.001, float(splat_scale)),
+            max(0.01, float(splat_scale)),
         )
 
         GL.glActiveTexture(GL.GL_TEXTURE0)
