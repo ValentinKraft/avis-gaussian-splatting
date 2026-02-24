@@ -146,6 +146,8 @@ class VolumeSupervisor:
         # the overflow guard is evaluated against the requested downscaled resolution.
         self.volume_gt = self.loader.load_volume(volume_path)
         self.volume_color = self.volume_gt
+        self.raw_intensity_min = self.loader.last_loaded_raw_min
+        self.raw_intensity_max = self.loader.last_loaded_raw_max
 
         # Always trust the loaded tensor shape for supervision/rendering.
         self.volume_shape = tuple(int(v) for v in self.volume_gt.shape)

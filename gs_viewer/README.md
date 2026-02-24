@@ -34,6 +34,7 @@ python gs_viewer\\run_viewer.py --ply path\\to\\model.ply
 
 ### Notes
 - This viewer expects the GaussianModel PLY schema written by `scene/gaussian_model.py`:
-  `x,y,z`, `f_dc_0..2`, `opacity`, `scale_0..2` (log), `rot_0..3` (quat), optional `ao`.
-- Transfer-function scalar uses decoded SH-DC intensity:
-  `rgb = f_dc * SH_C0 + 0.5`.
+  `x,y,z`, `f_dc_0..2`, `intensity_01`, optional `hu`, `opacity`, `scale_0..2` (log), `rot_0..3` (quat), optional `ao`.
+- Transfer-function scalar uses per-splat `intensity_01` when present.
+- Backward compatibility: if `intensity_01` is missing, the viewer falls back to decoded SH-DC intensity
+  (`rgb = f_dc * SH_C0 + 0.5`).

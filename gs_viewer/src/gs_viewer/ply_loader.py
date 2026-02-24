@@ -3,6 +3,8 @@
 This loader supports the PLY schema produced by `scene/gaussian_model.py`:
 - x,y,z
 - f_dc_0..2 (SH DC coefficients)
+- intensity_01 (optional explicit normalized per-splat intensity)
+- hu (optional per-splat HU value)
 - opacity
 - scale_0..2 (log-scale)
 - rot_0..3 (quaternion)
@@ -33,6 +35,7 @@ class GaussianModelPly:
     log_scale: np.ndarray  # (N, 3) float32
     quat: np.ndarray  # (N, 4) float32
     ao: np.ndarray | None  # (N,) float32 in [0,1]
+    hu: np.ndarray | None  # (N,) float32 HU values
 
     base_rgb01: np.ndarray  # (N, 3) float32 in [0,1]
     intensity01: np.ndarray  # (N,) float32 in [0,1]
@@ -65,6 +68,7 @@ class GaussianModelPly:
             log_scale=log_scale,
             quat=self.quat,
             ao=self.ao,
+            hu=self.hu,
             base_rgb01=self.base_rgb01,
             intensity01=self.intensity01,
             bounds_center=np.array([0.0, 0.0, 0.0], dtype=np.float32),
@@ -119,8 +123,22 @@ def load_gaussian_model_ply(path: Path) -> GaussianModelPly:
     if "ao" in names:
         ao = np.asarray(vertex["ao"], dtype=np.float32)
 
+    hu: np.ndarray | None = None
+    if "hu" in names:
+        hu = np.asarray(vertex["hu"], dtype=np.float32)
+
     base_rgb = np.clip(f_dc * float(SH_C0) + 0.5, 0.0, 1.0).astype(np.float32)
-    intensity = np.clip(base_rgb.mean(axis=1), 0.0, 1.0).astype(np.float32)
+    if "intensity_01" in names:
+        intensity = np.clip(np.asarray(vertex["intensity_01"], dtype=np.float32), 0.0, 1.0)
+    elif hu is not None:
+        hu_min = float(hu.min())
+        hu_max = float(hu.max())
+        if hu_max > hu_min:
+            intensity = np.clip((hu - hu_min) / (hu_max - hu_min), 0.0, 1.0).astype(np.float32)
+        else:
+            intensity = np.full((positions.shape[0],), 0.5, dtype=np.float32)
+    else:
+        intensity = np.clip(base_rgb.mean(axis=1), 0.0, 1.0).astype(np.float32)
 
     pmin = positions.min(axis=0)
     pmax = positions.max(axis=0)
@@ -136,6 +154,7 @@ def load_gaussian_model_ply(path: Path) -> GaussianModelPly:
         log_scale=log_scale,
         quat=quat,
         ao=None if ao is None else np.clip(ao, 0.0, 1.0),
+        hu=hu,
         base_rgb01=base_rgb,
         intensity01=intensity,
         bounds_center=center,

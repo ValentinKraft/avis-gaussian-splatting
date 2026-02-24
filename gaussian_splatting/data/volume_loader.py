@@ -58,6 +58,25 @@ class VolumeLoader:
                 f"got {storage_dtype!r}."
             )
         self.enable_overflow_guard = bool(enable_overflow_guard)
+        self.last_loaded_raw_min: Optional[float] = None
+        self.last_loaded_raw_max: Optional[float] = None
+
+    @staticmethod
+    def peek_raw_range(path: Union[str, Path]) -> Tuple[float, float]:
+        """Return raw (pre-normalization) min/max values for the input volume file."""
+        path = Path(path)
+        if path.suffix in ['.nii', '.gz']:
+            if nib is None:
+                raise ModuleNotFoundError(
+                    "nibabel is required to load NIfTI volumes. Install it or use a .npy input."
+                )
+            volume_np = np.asarray(nib.load(str(path)).get_fdata(), dtype=np.float32)
+        elif path.suffix == '.npy':
+            volume_np = np.asarray(np.load(str(path)), dtype=np.float32)
+        else:
+            raise ValueError(f"Unsupported file format: {path.suffix}")
+
+        return float(volume_np.min()), float(volume_np.max())
 
     def _target_dtype(self) -> torch.dtype:
         """Return torch dtype configured for stored supervision volumes."""
@@ -124,6 +143,10 @@ class VolumeLoader:
         3. Optionally resample to target shape
         4. Move to device
         """
+        # Capture raw range before normalization.
+        self.last_loaded_raw_min = float(volume.min().item())
+        self.last_loaded_raw_max = float(volume.max().item())
+
         # Normalize
         volume = (volume - volume.min()) / (volume.max() - volume.min() + 1e-8)
 

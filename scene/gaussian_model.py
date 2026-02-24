@@ -91,6 +91,8 @@ class GaussianModel:
         self.opacities = torch.empty(0)  # Raw opacity values [N, 1]
         self.volume_min = 0.0  # Global minimum intensity value
         self.volume_max = 1.0  # Global maximum intensity value
+        self.raw_volume_min = None  # Optional raw pre-normalization minimum (e.g., HU)
+        self.raw_volume_max = None  # Optional raw pre-normalization maximum (e.g., HU)
         self.reference_volume = None  # Reference intensity volume
         self.reference_mask = None  # Reference opacity mask
 
@@ -1983,7 +1985,56 @@ class GaussianModel:
 
         return f_dc
 
-    def construct_list_of_attributes(self, *, include_ao: bool = False) -> List[str]:
+    def _prepare_export_intensity01(self, num_points: int, f_dc: np.ndarray) -> np.ndarray:
+        """Prepare normalized [0,1] scalar intensity values for PLY export."""
+        if hasattr(self, "intensities") and self.intensities is not None and self.intensities.numel() > 0:
+            raw_tensor = self.intensities.detach().float().view(-1).cpu()
+            intensity_values = raw_tensor.numpy()
+
+            already_normalized = (
+                intensity_values.size > 0
+                and float(intensity_values.min()) >= -0.05
+                and float(intensity_values.max()) <= 1.05
+            )
+
+            if already_normalized:
+                normalized = intensity_values.astype(np.float32)
+            elif (
+                hasattr(self, "volume_min")
+                and hasattr(self, "volume_max")
+                and self.volume_max > self.volume_min
+            ):
+                denom = max(float(self.volume_max) - float(self.volume_min), 1e-8)
+                normalized = ((intensity_values - float(self.volume_min)) / denom).astype(
+                    np.float32
+                )
+            else:
+                local_min = float(intensity_values.min()) if intensity_values.size > 0 else 0.0
+                local_max = float(intensity_values.max()) if intensity_values.size > 0 else 1.0
+                if local_max > local_min:
+                    normalized = ((intensity_values - local_min) / (local_max - local_min)).astype(
+                        np.float32
+                    )
+                else:
+                    normalized = np.full((num_points,), 0.5, dtype=np.float32)
+
+            normalized = np.clip(normalized, 0.0, 1.0)
+        else:
+            if f_dc.shape[0] == num_points:
+                normalized = np.clip((f_dc * float(SH_C0) + 0.5).mean(axis=1), 0.0, 1.0).astype(np.float32)
+            else:
+                normalized = np.full((num_points,), 0.5, dtype=np.float32)
+
+        if normalized.shape[0] != num_points:
+            if normalized.shape[0] > num_points:
+                normalized = normalized[:num_points]
+            else:
+                pad = np.full((num_points - normalized.shape[0],), 0.5, dtype=np.float32)
+                normalized = np.concatenate([normalized.astype(np.float32), pad], axis=0)
+
+        return normalized.reshape(-1, 1)
+
+    def construct_list_of_attributes(self, *, include_ao: bool = False, include_hu: bool = False) -> List[str]:
         """
         Construct list of attribute names for PLY export.
 
@@ -2004,6 +2055,10 @@ class GaussianModel:
         if self._features_rest is not None and self._features_rest.numel() > 0:
             for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):
                 attributes.append(f"f_rest_{i}")
+
+        attributes.append("intensity_01")
+        if include_hu:
+            attributes.append("hu")
 
         if include_ao:
             attributes.append("ao")
@@ -2063,6 +2118,13 @@ class GaussianModel:
 
         # Use the refactored helper method to get colors
         f_dc = self._prepare_colors_for_ply(num_points)
+        intensity_01 = self._prepare_export_intensity01(num_points, f_dc)
+
+        hu_values: Optional[np.ndarray] = None
+        raw_min = getattr(self, "raw_volume_min", None)
+        raw_max = getattr(self, "raw_volume_max", None)
+        if raw_min is not None and raw_max is not None and float(raw_max) > float(raw_min):
+            hu_values = (float(raw_min) + intensity_01 * (float(raw_max) - float(raw_min))).astype(np.float32)
 
         ao_np: Optional[np.ndarray] = None
         if ao is not None:
@@ -2123,6 +2185,8 @@ class GaussianModel:
             normals,
             f_dc,
             f_rest,
+            intensity_01,
+            hu_values,
             opacities,
             scale,
             rotation,
@@ -2136,6 +2200,8 @@ class GaussianModel:
         normals: np.ndarray,
         f_dc: np.ndarray,
         f_rest: np.ndarray,
+        intensity_01: np.ndarray,
+        hu: Optional[np.ndarray],
         opacities: np.ndarray,
         scale: np.ndarray,
         rotation: np.ndarray,
@@ -2150,12 +2216,17 @@ class GaussianModel:
             normals: Point normals
             f_dc: DC feature values
             f_rest: Rest feature values
+            intensity_01: Normalized per-splat intensity values
+            hu: Optional per-splat HU values
             opacities: Opacity values
             scale: Scale values
             rotation: Rotation quaternions
         """
         num_points = xyz.shape[0]
-        attributes_list = self.construct_list_of_attributes(include_ao=ao is not None)
+        attributes_list = self.construct_list_of_attributes(
+            include_ao=ao is not None,
+            include_hu=hu is not None,
+        )
         dtype_full = [(attribute, 'f4') for attribute in attributes_list]
 
         # Create combined attributes array
@@ -2168,6 +2239,9 @@ class GaussianModel:
         all_attributes.append(f_dc)         # [N, 3]
         if f_rest.shape[1] > 0:
             all_attributes.append(f_rest)  # [N, F-3]
+        all_attributes.append(intensity_01) # [N, 1]
+        if hu is not None:
+            all_attributes.append(hu)       # [N, 1]
         if ao is not None:
             all_attributes.append(ao)       # [N, 1]
         all_attributes.append(opacities)    # [N, 1]

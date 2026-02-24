@@ -2,6 +2,12 @@
 
 ## HOW TO TRAIN
 
+*Minimal test dataset*
+
+```shell
+python train.py --model_path _output_/mini-ct-test-50k --mask_path _input_/minimask-float.nii.gz --volume_path _input_/minict.nii.gz --iterations 1000 --init_n_points 50000 --save_ply_every 100 --enable_diagnostics --volume_downscale_factor 1 --volume_render_downscale_factor 1 --disable_volume_overflow_guard --supervision_target joint --volume_loss_type dice --ct_loss_type mse --medical_mode none --volume_storage_dtype fp16
+```
+
 *Clinical vessel dataset:*
 
 ```shell

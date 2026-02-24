@@ -122,11 +122,15 @@ def _frames_from_directions(direction: Tensor, fallback: Tensor) -> Tensor:
     rot = torch.stack([tangent, bitangent, direction], dim=2)
     rot = torch.nan_to_num(rot, nan=0.0, posinf=0.0, neginf=0.0)
 
-    q, _ = torch.linalg.qr(rot)
+    qr_dtype = torch.float32 if rot.dtype in {torch.float16, torch.bfloat16} else rot.dtype
+    q, _ = torch.linalg.qr(rot.to(dtype=qr_dtype))
     det = torch.det(q)
     neg = det < 0
     if neg.any():
         q[neg, :, 0] = -q[neg, :, 0]
+
+    if q.dtype != direction.dtype:
+        q = q.to(dtype=direction.dtype)
 
     if fallback.any():
         q[fallback] = torch.eye(3, device=direction.device, dtype=direction.dtype)
@@ -672,10 +676,15 @@ def gather_rotation_from_gradient(
 def rotmat_to_quat(rot_mats: Tensor) -> Tensor:
     """Convert rotation matrices [N, 3, 3] to unit quaternions [N, 4]."""
     if rot_mats.numel() == 0:
-        return torch.empty(0, 4, device=rot_mats.device)
+        return torch.empty(0, 4, device=rot_mats.device, dtype=rot_mats.dtype)
 
     trace = rot_mats[:, 0, 0] + rot_mats[:, 1, 1] + rot_mats[:, 2, 2]
-    quats = torch.empty(rot_mats.shape[0], 4, device=rot_mats.device)
+    quats = torch.empty(
+        rot_mats.shape[0],
+        4,
+        device=rot_mats.device,
+        dtype=rot_mats.dtype,
+    )
 
     positive = trace > 0.0
     if positive.any():
