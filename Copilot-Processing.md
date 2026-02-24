@@ -1,4 +1,26 @@
 
+## User Request Details (2026-02-24, README Refresh)
+- Update the top-level README with up-to-date information for this fork.
+- README should describe project scope (volume-supervised training), setup, how to run training, outputs, and the standalone PLY viewer.
+
+## Action Plan (2026-02-24)
+1. Confirm current environment/setup requirements and canonical env name from `environment.yml`.
+2. Confirm current CLI flag names and meanings for volume/mask supervision from `arguments.py`.
+3. Rewrite the top of `README.md` to focus on volume-supervised usage, preserving upstream 3DGS README content below for reference.
+
+## Task Tracker (2026-02-24)
+- [x] Verify environment name + key deps from `environment.yml`.
+- [x] Verify volume/mask CLI flags from `arguments.py`.
+- [x] Update `README.md` with scope + setup + training + outputs + viewer.
+
+## Summary / Current State (2026-02-24)
+- `README.md` now starts with a fork-specific overview focused on volume-supervised training (setup, data conventions, example commands, outputs, and the standalone `gs_viewer`).
+- The upstream 3DGS README content remains below for reference.
+
+## Update (2026-02-24, Remove Upstream README Content)
+- Follow-up request: remove the large upstream 3DGS README block and keep only information relevant to this volume-supervised fork.
+- Resolution: replaced `README.md` entirely with a concise fork-only README (volume workflow + setup + training + export + viewer + optional `sparse_adam` note + acknowledgements).
+
 ## User Request Details (2026-02-09, Joint Loss / Dual Render)
 - User wants a single training run to optimize both a clean mask-derived shape and faithful CT intensities/high detail.
 - Implement a joint objective that renders both density (mask supervision) and intensity (CT supervision) and combines losses with configurable weights.
