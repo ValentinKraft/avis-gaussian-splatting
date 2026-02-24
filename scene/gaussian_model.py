@@ -149,8 +149,8 @@ class GaussianModel:
         self._low_density_mask = None
         self._hole_fill_fraction = 0.05
         self._max_memory_bytes = None
-        self.vessel_axial_scale = 2.2
-        self.vessel_radial_scale = 0.55
+        self.vessel_axial_scale = 1.0
+        self.vessel_radial_scale = 1.0
         self.structure_gradient_boost = 0.0
         self.structure_gradient_exponent = 1.0
         self.structure_gradient_threshold = 0.1
@@ -753,14 +753,15 @@ class GaussianModel:
                 if voxel.numel() == 1:
                     voxel = voxel.view(1).repeat(3)
                 voxel = voxel.view(1, 3)
+                voxel_iso = voxel.mean(dim=1, keepdim=True).clamp_min(1e-12)
 
                 min_scale_vox = float(getattr(self, "min_scale_vox", 0.0))
                 max_scale_vox = float(getattr(self, "max_scale_vox", 0.0))
                 if min_scale_vox > 0.0 and max_scale_vox > 0.0:
                     if max_scale_vox < min_scale_vox:
                         max_scale_vox = min_scale_vox
-                    abs_min = (voxel * min_scale_vox).clamp_min(1e-12)
-                    abs_max = (voxel * max_scale_vox).clamp_min(1e-12)
+                    abs_min = (voxel_iso * min_scale_vox).repeat(1, 3)
+                    abs_max = (voxel_iso * max_scale_vox).repeat(1, 3)
                     abs_min_log = torch.log(abs_min)
                     abs_max_log = torch.log(abs_max)
 
@@ -2935,17 +2936,12 @@ class GaussianModel:
         new_xyz = new_xyz.T.contiguous()
 
         # Create scaled-down versions of other attributes
-        # Use smaller children so splits refine structure instead of propagating blobs
-        anisotropic = parent_scaling.repeat(N, 1)
-        anisotropic[:, :2] *= self.vessel_radial_scale
-        anisotropic[:, 2] *= self.vessel_axial_scale
-        # Radial axes shrink more aggressively; axial shrinks moderately
-        shrink_radial = 2.0 * max(float(N), 1.0)
-        shrink_axial = max(float(N) ** 0.5, 1.0)
-        anisotropic[:, :2] = anisotropic[:, :2] / shrink_radial
-        anisotropic[:, 2] = anisotropic[:, 2] / shrink_axial
-        anisotropic = anisotropic.clamp_min(1e-6)
-        new_scaling = self.scaling_inverse_activation(anisotropic)
+        # Use isotropic children so split densification refines detail without
+        # introducing axis-biased elongation over time.
+        child_scaling = parent_scaling.repeat(N, 1)
+        shrink = max(float(N), 1.0)
+        child_scaling = (child_scaling / shrink).clamp_min(1e-6)
+        new_scaling = self.scaling_inverse_activation(child_scaling)
         parent_quats = self.get_rotation[selected_pts_mask].detach()
         fallback_quats = parent_quats.repeat(N, 1)
         new_rotation, fallback_mask = self._sample_orientation_quats(

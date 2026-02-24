@@ -350,12 +350,14 @@ def initialize_from_volume(
         if override.numel() == 3:
             voxel_sizes_xyz = override
 
-    # Global initialization scale band (in voxel units). This avoids systematically
-    # larger interior splats and smaller boundary splats from distance-field scaling.
+    # Global initialization scale band (in voxel units).
+    # Use an isotropic voxel reference (mean axis spacing) to avoid introducing
+    # default axis-dependent elongation when volume dimensions differ by axis.
     min_vox = max(float(init_scale_min_vox), 1e-3)
     max_vox = max(float(init_scale_max_vox), min_vox)
-    scale_min = voxel_sizes_xyz * min_vox
-    scale_max = voxel_sizes_xyz * max_vox
+    voxel_iso = voxel_sizes_xyz.mean().clamp_min(1e-12)
+    scale_min = torch.full((1, 3), voxel_iso * min_vox, device=device, dtype=torch.float32)
+    scale_max = torch.full((1, 3), voxel_iso * max_vox, device=device, dtype=torch.float32)
     u = torch.rand(points.shape[0], 1, device=device, dtype=torch.float32)
     scales = scale_min + u * (scale_max - scale_min)
 

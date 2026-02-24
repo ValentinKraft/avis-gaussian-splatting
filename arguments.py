@@ -621,7 +621,7 @@ class TrainingScriptParams(ParamGroup):
             "--medical_mode",
             type=str,
             choices=["none", "organ", "vessel"],
-            default="organ",
+            default="none",
             help=(
                 "Optional medical-training presets. Use 'organ' or 'vessel' to enable preset overrides; "
                 "use 'none' (default) to keep all CLI knobs (including --init_n_points) fully user-controlled."
