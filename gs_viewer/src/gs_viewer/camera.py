@@ -53,6 +53,7 @@ class OrbitCamera:
     Mouse mapping:
     - Left drag: orbit
     - Right drag: pan
+    - Middle drag (vertical): zoom
     - Wheel: zoom
     """
 

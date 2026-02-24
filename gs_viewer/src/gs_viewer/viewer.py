@@ -154,14 +154,20 @@ class Viewer:
 
         left = glfw.get_mouse_button(self._window, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS
         right = glfw.get_mouse_button(self._window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS
+        middle = glfw.get_mouse_button(self._window, glfw.MOUSE_BUTTON_MIDDLE) == glfw.PRESS
 
-        if not left and not right:
+        if not left and not right and not middle:
             self._drag_last_x = None
             self._drag_last_y = None
             self._drag_button = None
             return
 
-        button = glfw.MOUSE_BUTTON_LEFT if left else glfw.MOUSE_BUTTON_RIGHT
+        if middle:
+            button = glfw.MOUSE_BUTTON_MIDDLE
+        elif left:
+            button = glfw.MOUSE_BUTTON_LEFT
+        else:
+            button = glfw.MOUSE_BUTTON_RIGHT
         if self._drag_button is None:
             self._drag_button = button
 
@@ -175,6 +181,8 @@ class Viewer:
 
         if button == glfw.MOUSE_BUTTON_LEFT:
             self._camera.orbit(dx, dy)
+        elif button == glfw.MOUSE_BUTTON_MIDDLE:
+            self._camera.zoom(-dy * 0.02)
         else:
             self._camera.pan(dx, dy)
 

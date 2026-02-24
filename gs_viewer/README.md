@@ -32,6 +32,12 @@ gs-viewer --ply path\\to\\model.ply
 python gs_viewer\\run_viewer.py --ply path\\to\\model.ply
 ```
 
+### Controls
+- Left mouse drag: orbit
+- Right mouse drag: pan
+- Middle mouse drag (vertical): zoom
+- Mouse wheel: zoom
+
 ### Notes
 - This viewer expects the GaussianModel PLY schema written by `scene/gaussian_model.py`:
   `x,y,z`, `f_dc_0..2`, `intensity_01`, optional `hu`, `opacity`, `scale_0..2` (log), `rot_0..3` (quat), optional `ao`.
