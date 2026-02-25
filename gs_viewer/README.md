@@ -38,6 +38,13 @@ python gs_viewer\\run_viewer.py --ply path\\to\\model.ply
 - Middle mouse drag (vertical): zoom
 - Mouse wheel: zoom
 
+### Transfer Function Editor
+- 2D editor controls scalar (x-axis) vs alpha (y-axis).
+- Left mouse drag on a point: move selected point.
+- Left mouse double-click in empty editor space: add a control point.
+- Right mouse click on a non-endpoint point: remove control point.
+- Use the selected-point controls to edit RGBA precisely.
+
 ### Notes
 - This viewer expects the GaussianModel PLY schema written by `scene/gaussian_model.py`:
   `x,y,z`, `f_dc_0..2`, `intensity_01`, optional `hu`, `opacity`, `scale_0..2` (log), `rot_0..3` (quat), optional `ao`.
