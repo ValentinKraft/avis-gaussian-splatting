@@ -463,6 +463,18 @@ def _setup_model_parameters(
         opacities: Default opacity values [N, 1]
         opacity_values: Optional volume-derived opacity values [N, 1]
     """
+    # Keep trainable parameters in FP32 for stable AMP+GradScaler behavior.
+    points = points.to(dtype=torch.float32)
+    scales = scales.to(device=points.device, dtype=torch.float32)
+    opacities = opacities.to(device=points.device, dtype=torch.float32)
+    if opacity_values is not None:
+        opacity_values = opacity_values.to(device=points.device, dtype=torch.float32)
+    if initial_rotations is not None and initial_rotations.numel() != 0:
+        initial_rotations = initial_rotations.to(
+            device=points.device,
+            dtype=torch.float32,
+        )
+
     # Get shapes and device
     num_points = points.shape[0]
     device = points.device
@@ -523,6 +535,7 @@ def _setup_feature_tensors(
         volume_min: Global minimum intensity value
         volume_max: Global maximum intensity value
     """
+    intensities = intensities.to(dtype=torch.float32)
     num_points = intensities.shape[0]
     device = intensities.device
 
