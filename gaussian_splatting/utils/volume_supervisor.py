@@ -230,28 +230,23 @@ class VolumeSupervisor:
         self.mask_bounds = (z0, z1, y0, y1, x0, x1)
 
         D, H, W = self.volume_shape
-        self.roi_shape = (z1 - z0 + 1, y1 - y0 + 1, x1 - x0 + 1)
-        denom = torch.tensor(
-            [max(W - 1, 1), max(H - 1, 1), max(D - 1, 1)],
-            device=self.device,
-            dtype=torch.float32,
+        # Disable ROI cropping: supervise/render on the full loaded volume.
+        self.roi_shape = (D, H, W)
+        self.bounds_min = torch.tensor(
+            [0.0, 0.0, 0.0], device=self.device, dtype=torch.float32
         )
-        bounds_min = torch.tensor([x0, y0, z0], device=self.device, dtype=torch.float32) / denom
-        bounds_max = torch.tensor([x1, y1, z1], device=self.device, dtype=torch.float32) / denom
-        self.bounds_min = bounds_min
-        self.bounds_max = bounds_max
-        # Loosen bounds slightly (3 voxels) to avoid freezing positions at the ROI edge.
-        # Padding is expressed in voxel units of the current supervision grid.
-        self.roi_pad_vox = 3.0
-        pad = self.voxel_size * float(self.roi_pad_vox)
-        self.bounds_min_padded = torch.clamp(bounds_min - pad, min=0.0)
-        self.bounds_max_padded = torch.clamp(bounds_max + pad, max=1.0)
+        self.bounds_max = torch.tensor(
+            [1.0, 1.0, 1.0], device=self.device, dtype=torch.float32
+        )
+        self.bounds_min_padded = self.bounds_min.clone()
+        self.bounds_max_padded = self.bounds_max.clone()
+        self.roi_pad_vox = 0.0
 
-        # Cache ROI-aligned tensors for per-iteration reuse.
+        # Cache full-volume tensors for per-iteration reuse.
         self._roi_slices = (
-            slice(z0, z1 + 1),
-            slice(y0, y1 + 1),
-            slice(x0, x1 + 1),
+            slice(0, D),
+            slice(0, H),
+            slice(0, W),
         )
         zsl, ysl, xsl = self._roi_slices
         self.volume_gt_roi = self.volume_gt[zsl, ysl, xsl]
@@ -831,8 +826,7 @@ class VolumeSupervisor:
 
         # Debug tensor shapes is no longer needed
 
-        # Compute loss only inside the mask. Also compute the tight ROI bounding
-        # box of the mask and render only that subvolume for speed.
+        # Compute predictions on the full supervision volume (no ROI cropping).
         roi_shape = self.roi_shape
         bounds_min = self.bounds_min.to(xyz.device)
         bounds_max = self.bounds_max.to(xyz.device)
@@ -920,7 +914,6 @@ class VolumeSupervisor:
         # Store predicted volume for visualization only when needed.
         # For joint mode, we store the mask/density branch for compatibility.
         if getattr(self, "iteration", 0) % 1000 == 0:
-            z0, z1, y0, y1, x0, x1 = self.mask_bounds
             full_pred = torch.zeros(
                 self.volume_shape,
                 device=ref_pred.device,
@@ -932,7 +925,8 @@ class VolumeSupervisor:
                 else volume_pred_ct_roi
             )
             assert insert is not None
-            full_pred[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1] = insert
+            zsl, ysl, xsl = self._roi_slices
+            full_pred[zsl, ysl, xsl] = insert
             self.volume_pred = full_pred.detach().clone()
 
         mask_loss = None

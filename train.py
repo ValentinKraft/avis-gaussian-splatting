@@ -434,8 +434,8 @@ def training(
         opt, "sampling_padding_mode", volume_supervisor.sampling_padding_mode
     )
     gaussians.position_bounds = (
-        getattr(volume_supervisor, "bounds_min_padded", volume_supervisor.bounds_min),
-        getattr(volume_supervisor, "bounds_max_padded", volume_supervisor.bounds_max),
+        volume_supervisor.bounds_min,
+        volume_supervisor.bounds_max,
     )
     if hasattr(args, "structure_sigma"):
         volume_supervisor.structure_sigma = float(args.structure_sigma)

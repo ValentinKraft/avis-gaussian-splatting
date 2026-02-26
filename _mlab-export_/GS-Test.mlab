@@ -697,8 +697,8 @@ module gaussian_splatting_export {
     localMacro = 1
     windows {
       window _default {
-        geometry = "478 352 492 238"
-        relativePosition = "-0.2895 -0.2464"
+        geometry = "477 352 492 238"
+        relativePosition = "-0.2898 -0.2464"
         sizeHint = "248 206"
         wasOpen = yes
       }
@@ -721,8 +721,8 @@ module LoadNIfTI {
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1505 613 420 274"
-        relativePosition = "-0.0015 -0.0589"
+        geometry = "1503 613 420 274"
+        relativePosition = "-0.0020 -0.0589"
         sizeHint = "420 274"
         wasOpen = no
       }
@@ -730,7 +730,7 @@ module LoadNIfTI {
   }
   fields {
     instanceName = LoadNIfTI
-    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/ct.nii.gz
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/minict.nii.gz
     inApplyMode = AutoLoad
   }
 }
@@ -741,8 +741,8 @@ module LoadNIfTI {
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1503 613 420 274"
-        relativePosition = "-0.0020 -0.0589"
+        geometry = "1502 613 420 274"
+        relativePosition = "-0.0023 -0.0589"
         sizeHint = "420 274"
         wasOpen = no
       }
@@ -750,7 +750,7 @@ module LoadNIfTI {
   }
   fields {
     instanceName = LoadNIfTI1
-    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/total-segmentator-masks-binary2.nii.gz
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/minimask-binary.nii.gz
     inApplyMode = AutoLoad
   }
 }
@@ -782,8 +782,8 @@ module View3D {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1723 251 1518 894"
-        relativePosition = "0.2215 -0.3190"
+        geometry = "1721 250 1518 894"
+        relativePosition = "0.2209 -0.3197"
         sizeHint = "1005 629"
         wasOpen = yes
       }
@@ -814,12 +814,12 @@ module View3D {
     alphaFactor = 1
     colorFactor = "1 1 1"
     camType = TRUE
-    camPosition = "-79.6087493896484 -383.414459228516 199.167297363281"
-    camOrientation = "0.876263856887817 -0.332408279180527 -0.348807007074356 0.919452667236328"
+    camPosition = "-62.9910888671875 -269.437255859375 95.4380645751953"
+    camOrientation = "0.722962260246277 -0.682023286819458 0.110317274928093 0.897168159484863"
     initialCameraOrientation = CAMERA_KEEP_AS_IS
-    camFar = 593.1261
-    camNear = 363.03668
-    camFocal = 477.9668
+    camFar = 448.94241
+    camNear = 216.26993
+    camFocal = 332.49017
     camHeight = 0.78539801
     decoration = FALSE
     annotations = FALSE
@@ -1055,108 +1055,16 @@ module EllipsoidTestPattern {
     coneDisplaceTip = TRUE
   }
 }
-module SubImage {
-  internal {
-    frame = "1229 1053 88 56"
-    moduleGroupName = ""
-    windows {
-      window _default {
-        geometry = "940 580 397 540"
-        relativePosition = "-0.1689 -0.0826"
-        sizeHint = "397 540"
-        wasOpen = yes
-      }
-    }
-  }
-  fields {
-    instanceName = SubImage
-    boxInput = "0 0 0 0 0 0 -1 -1 -1 -1 -1 -1"
-    autoApplyBox = FALSE
-    correctForNegativeSubImageExtents = FALSE
-    enableBoxClamping = FALSE
-    x = 300
-    sx = 0
-    modifyX = TRUE
-    y = 200
-    sy = 0
-    modifyY = TRUE
-    z = 200
-    sz = 0
-    modifyZ = TRUE
-    c = 0
-    sc = 1
-    modifyC = FALSE
-    t = 0
-    st = 1
-    modifyT = FALSE
-    u = 0
-    su = 1
-    modifyU = FALSE
-    fillValue = 0
-    mode = VoxelStartEndOffset
-    autoApply = TRUE
-  }
-}
-module SubImage {
-  internal {
-    frame = "1361 1053 96 56"
-    moduleGroupName = ""
-    windows {
-      window _default {
-        geometry = "1375 568 397 540"
-        relativePosition = "-0.0424 -0.0912"
-        sizeHint = "397 540"
-        wasOpen = yes
-      }
-    }
-  }
-  fields {
-    instanceName = SubImage1
-    boxInput = "0 0 0 0 0 0 -1 -1 -1 -1 -1 -1"
-    autoApplyBox = FALSE
-    correctForNegativeSubImageExtents = FALSE
-    enableBoxClamping = FALSE
-    x = 300
-    sx = 0
-    modifyX = TRUE
-    y = 200
-    sy = 0
-    modifyY = TRUE
-    z = 200
-    sz = 0
-    modifyZ = TRUE
-    c = 0
-    sc = 1
-    modifyC = FALSE
-    t = 0
-    st = 1
-    modifyT = FALSE
-    u = 0
-    su = 1
-    modifyU = FALSE
-    fillValue = 0
-    mode = VoxelStartEndOffset
-    autoApply = TRUE
-  }
-}
 connections {
   gaussian_splatting_export.image = Arithmetic2.output0
   gaussian_splatting_export.mask = Arithmetic2.output0
   gaussian_splatting_export.scene = View3D.self
-  Arithmetic2.input0 = SubImage.output0
-  Arithmetic2.input1 = SubImage1.output0
+  Arithmetic2.input0 = LoadNIfTI.outImage
+  Arithmetic2.input1 = LoadNIfTI1.outImage
   View3D.inImage = Arithmetic2.output0
   View3D.inInvPostLUT = SoLUTEditor.outInventorLUT
   MinMaxScan.input0 = Arithmetic2.output0
   SoLUTEditor.newRangeMin = MinMaxScan.trueMinValue
   SoLUTEditor.newRangeMax = MinMaxScan.trueMaxValue
-  SubImage.input0 = LoadNIfTI.outImage
-  SubImage1.input0 = LoadNIfTI1.outImage
-  SubImage1.x = SubImage.x
-  SubImage1.sx = SubImage.sx
-  SubImage1.y = SubImage.y
-  SubImage1.sy = SubImage.sy
-  SubImage1.z = SubImage.z
-  SubImage1.sz = SubImage.sz
 }
 networkModel = ""
