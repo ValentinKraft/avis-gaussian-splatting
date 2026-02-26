@@ -68,7 +68,9 @@ void main() {
     // Approximate: point size covers ~3 sigma radius.
     float sigma_px = (a_sigma * u_focal_px) / z;
     float basePointSize = clamp(6.0 * sigma_px, 1.0, u_max_point_size);
-    float pointSize = clamp(basePointSize * u_splat_scale, 1.0, u_max_point_size);
+    float pointSize = (u_splat_scale <= 0.0)
+        ? 0.0
+        : clamp(basePointSize * u_splat_scale, 1.0, u_max_point_size);
 
     gl_Position = u_proj * viewPos;
     gl_PointSize = pointSize;
@@ -91,18 +93,27 @@ in float v_intensity;
 in float v_ao;
 
 uniform sampler1D u_lut;
+uniform float u_gauss_softness;
 
 void main() {
     vec2 d = gl_PointCoord - vec2(0.5, 0.5);
     float r = length(d);
+    if (r > 0.5) {
+        discard;
+    }
 
-    // r is in [0, ~0.707]. Treat the sprite as a 3-sigma radius.
-    float t = 6.0 * r;
+    // r is in [0, 0.5] after circular discard.
+    // Larger softness makes the Gaussian broader and edges softer.
+    float softness = clamp(u_gauss_softness, 0.05, 10.0);
+    float t = (6.0 * r) / softness;
     float alpha_gauss = exp(-0.5 * t * t);
 
     vec4 lut = texture(u_lut, clamp(v_intensity, 0.0, 1.0));
 
     float alpha = clamp(v_opacity, 0.0, 1.0) * lut.a * alpha_gauss;
+    if (alpha <= 1e-4) {
+        discard;
+    }
     vec3 rgb = lut.rgb;
 
     // Optional AO modulation if provided (a_ao defaults to 1).
@@ -212,6 +223,7 @@ class OitRenderer:
         proj: np.ndarray,
         lut_tex_id: int,
         splat_scale: float = 1.0,
+        gauss_softness: float = 1.0,
     ) -> None:
         self._ensure_model_uploaded(model)
         assert self._gpu is not None
@@ -232,7 +244,11 @@ class OitRenderer:
         GL.glUniform1f(GL.glGetUniformLocation(self._splat_prog, "u_max_point_size"), 256.0)
         GL.glUniform1f(
             GL.glGetUniformLocation(self._splat_prog, "u_splat_scale"),
-            max(0.01, float(splat_scale)),
+            max(0.0, float(splat_scale)),
+        )
+        GL.glUniform1f(
+            GL.glGetUniformLocation(self._splat_prog, "u_gauss_softness"),
+            max(0.05, float(gauss_softness)),
         )
 
         GL.glActiveTexture(GL.GL_TEXTURE0)

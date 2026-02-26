@@ -29,6 +29,7 @@ class _UiState:
     ply_path: str = ""
     error_text: str = ""
     splat_scale: float = 1.0
+    gauss_softness: float = 1.0
 
 
 class Viewer:
@@ -81,6 +82,7 @@ class Viewer:
                         proj,
                         self._tf.lut_texture_id,
                         self._ui.splat_scale,
+                        self._ui.gauss_softness,
                     )
             self._renderer.composite_to_screen(width, height)
 
@@ -219,8 +221,14 @@ class Viewer:
             _, self._ui.splat_scale = imgui.slider_float(
                 "Splat scale",
                 self._ui.splat_scale,
-                0.1,
-                50.0,
+                0.0,
+                5.0,
+            )
+            _, self._ui.gauss_softness = imgui.slider_float(
+                "Gaussian softness",
+                self._ui.gauss_softness,
+                0.25,
+                3.0,
             )
 
         imgui.separator()

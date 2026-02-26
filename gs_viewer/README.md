@@ -37,6 +37,8 @@ python gs_viewer\\run_viewer.py --ply path\\to\\model.ply
 - Right mouse drag: pan
 - Middle mouse drag (vertical): zoom
 - Mouse wheel: zoom
+- UI slider `Splat scale`: adjusts projected splat size (0.0 to 5.0).
+- UI slider `Gaussian softness`: adjusts splat edge falloff (lower = sharper, higher = softer).
 
 ### Transfer Function Editor
 - 2D editor controls scalar (x-axis) vs alpha (y-axis).
