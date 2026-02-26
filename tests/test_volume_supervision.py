@@ -114,6 +114,66 @@ def test_splat_to_volume():
     assert not torch.isnan(splats.grad).any()
     assert float(splats.grad.abs().sum().item()) > 0.0
 
+
+def test_sparse_splat_respects_anisotropy_and_rotation():
+    """Sparse rasterization should preserve anisotropic extent and orientation."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    volume_shape = (33, 33, 33)
+
+    center = torch.tensor([[0.5, 0.5, 0.5]], device=device)
+    scales = torch.tensor([[0.12, 0.03, 0.03]], device=device)
+    opacities = torch.ones(1, device=device)
+
+    volume_x = splat_to_volume(
+        center,
+        point_scales=scales,
+        point_opacities=opacities,
+        volume_shape=volume_shape,
+        render_mode='density',
+        working_grid_downscale_factor=1,
+    )
+
+    z_profile = volume_x.sum(dim=(1, 2))
+    y_profile = volume_x.sum(dim=(0, 2))
+    x_profile = volume_x.sum(dim=(0, 1))
+    coords = torch.arange(volume_shape[0], device=device, dtype=volume_x.dtype)
+
+    def _weighted_std(profile: torch.Tensor) -> torch.Tensor:
+        mass = profile.sum().clamp_min(1e-8)
+        mean = (coords * profile).sum() / mass
+        var = (((coords - mean) ** 2) * profile).sum() / mass
+        return torch.sqrt(var.clamp_min(0.0))
+
+    std_x = _weighted_std(x_profile)
+    std_y = _weighted_std(y_profile)
+    std_z = _weighted_std(z_profile)
+
+    assert std_x > std_y * 1.20
+    assert std_x > std_z * 1.20
+
+    # Rotate around +Z by 90°: long axis should move from X to Y.
+    angle = torch.tensor(np.pi / 2.0, device=device, dtype=volume_x.dtype)
+    qz = torch.tensor(
+        [[torch.cos(angle / 2.0), 0.0, 0.0, torch.sin(angle / 2.0)]],
+        device=device,
+        dtype=volume_x.dtype,
+    )
+    volume_y = splat_to_volume(
+        center,
+        point_scales=scales,
+        point_rotations=qz,
+        point_opacities=opacities,
+        volume_shape=volume_shape,
+        render_mode='density',
+        working_grid_downscale_factor=1,
+    )
+    y_profile_rot = volume_y.sum(dim=(0, 2))
+    x_profile_rot = volume_y.sum(dim=(0, 1))
+    std_y_rot = _weighted_std(y_profile_rot)
+    std_x_rot = _weighted_std(x_profile_rot)
+
+    assert std_y_rot > std_x_rot * 1.15
+
 def test_volume_loader():
     """Test volume data loading and preprocessing."""
     shape = (32, 32, 32)

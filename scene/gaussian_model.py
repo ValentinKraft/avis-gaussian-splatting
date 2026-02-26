@@ -753,15 +753,15 @@ class GaussianModel:
                 if voxel.numel() == 1:
                     voxel = voxel.view(1).repeat(3)
                 voxel = voxel.view(1, 3)
-                voxel_iso = voxel.mean(dim=1, keepdim=True).clamp_min(1e-12)
+                voxel = voxel.clamp_min(1e-12)
 
                 min_scale_vox = float(getattr(self, "min_scale_vox", 0.0))
                 max_scale_vox = float(getattr(self, "max_scale_vox", 0.0))
                 if min_scale_vox > 0.0 and max_scale_vox > 0.0:
                     if max_scale_vox < min_scale_vox:
                         max_scale_vox = min_scale_vox
-                    abs_min = (voxel_iso * min_scale_vox).repeat(1, 3)
-                    abs_max = (voxel_iso * max_scale_vox).repeat(1, 3)
+                    abs_min = voxel * min_scale_vox
+                    abs_max = voxel * max_scale_vox
                     abs_min_log = torch.log(abs_min)
                     abs_max_log = torch.log(abs_max)
 

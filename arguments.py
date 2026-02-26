@@ -1106,6 +1106,36 @@ class OptimizationParams(ParamGroup):
         )
         self._register("scale_logvar_warmup_iters")
 
+        constraint.add_argument(
+            "--anisotropy_reg_weight",
+            type=float,
+            default=0.0,
+            help=(
+                "Weight for the soft anisotropy ratio penalty "
+                "(0 disables)."
+            ),
+        )
+        self._register("anisotropy_reg_weight")
+
+        constraint.add_argument(
+            "--anisotropy_target_ratio",
+            type=float,
+            default=2.0,
+            help=(
+                "Target max/min axis ratio used by anisotropy regularization. "
+                "Penalty applies only above this value."
+            ),
+        )
+        self._register("anisotropy_target_ratio")
+
+        constraint.add_argument(
+            "--anisotropy_reg_warmup_iters",
+            type=int,
+            default=0,
+            help="Iterations to wait before enabling anisotropy regularization.",
+        )
+        self._register("anisotropy_reg_warmup_iters")
+
         # Warmup iterations for the scaling constraint.
         constraint.add_argument(
             "--scaling_constraint_warmup_iters",

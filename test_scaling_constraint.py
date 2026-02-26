@@ -138,6 +138,43 @@ def test_position_displacement_constraint():
     return True
 
 
+def test_axis_wise_absolute_scale_clamp():
+    """Absolute voxel clamp should be axis-wise, not isotropic."""
+
+    model = GaussianModel(sh_degree=0)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model._xyz = nn.Parameter(torch.zeros(3, 1, device=device))
+    model._initial_xyz = model._xyz.detach().clone()
+    model._scaling = nn.Parameter(torch.log(torch.ones(1, 3, device=device) * 1e-6))
+    model._initial_scaling = model._scaling.detach().clone()
+    model._rotation = nn.Parameter(torch.zeros(1, 4, device=device))
+    model._rotation.data[:, 0] = 1.0
+    model._opacity = nn.Parameter(torch.zeros(1, 1, device=device))
+
+    # Anisotropic spacing so per-axis clamp should differ.
+    model.voxel_size = torch.tensor([0.5, 1.0, 2.0], device=device)
+    model.min_scale_vox = 1.0
+    model.max_scale_vox = 1.0
+
+    model.enforce_scaling_constraint(apply_relative=False)
+
+    clamped = torch.exp(model._scaling.detach()).view(-1)
+    expected = model.voxel_size
+    assert torch.allclose(clamped, expected, atol=1e-6)
+    assert not torch.allclose(
+        clamped[0].unsqueeze(0), clamped[1].unsqueeze(0), atol=1e-6
+    )
+    assert not torch.allclose(
+        clamped[1].unsqueeze(0), clamped[2].unsqueeze(0), atol=1e-6
+    )
+    print("✅ SUCCESS: Absolute scale clamp is axis-wise")
+
+
 if __name__ == "__main__":
-    success = test_scaling_constraint() and test_position_displacement_constraint()
+    success = (
+        test_scaling_constraint()
+        and test_position_displacement_constraint()
+        and test_axis_wise_absolute_scale_clamp()
+    )
     exit(0 if success else 1)

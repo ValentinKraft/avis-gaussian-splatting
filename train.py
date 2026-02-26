@@ -680,6 +680,42 @@ def training(
                         scale_spread_reg.detach().item()
                     )
 
+            anisotropy_reg_weight = float(
+                getattr(args, "anisotropy_reg_weight", 0.0)
+            )
+            anisotropy_warmup = int(
+                getattr(args, "anisotropy_reg_warmup_iters", 0)
+            )
+            if anisotropy_reg_weight > 0.0 and iteration >= anisotropy_warmup:
+                scales = gaussians.get_scaling
+                if scales.numel() > 0:
+                    voxel_size = getattr(gaussians, "voxel_size", None)
+                    if isinstance(voxel_size, torch.Tensor) and voxel_size.numel() == 3:
+                        voxel_size_xyz = voxel_size.to(
+                            device=scales.device, dtype=scales.dtype
+                        ).clamp_min(1e-8)
+                        scales_axes = scales / voxel_size_xyz.unsqueeze(0)
+                    else:
+                        scales_axes = scales
+
+                    max_axis = scales_axes.max(dim=1).values.clamp_min(1e-8)
+                    min_axis = scales_axes.min(dim=1).values.clamp_min(1e-8)
+                    axis_ratio = max_axis / min_axis
+                    target_ratio = max(
+                        1.0, float(getattr(args, "anisotropy_target_ratio", 2.0))
+                    )
+                    ratio_excess = torch.relu(axis_ratio - target_ratio) / target_ratio
+                    anisotropy_reg = (
+                        (ratio_excess * ratio_excess).mean() * anisotropy_reg_weight
+                    )
+                    loss = loss + anisotropy_reg
+                    vol_metrics["anisotropy_reg"] = float(
+                        anisotropy_reg.detach().item()
+                    )
+                    vol_metrics["anisotropy_ratio_mean"] = float(
+                        axis_ratio.mean().detach().item()
+                    )
+
         if log_mem and total_points > 0:
             _log_gpu_memory("after_forward", iteration, total_points, active_points)
 

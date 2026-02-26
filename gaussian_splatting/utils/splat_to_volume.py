@@ -362,7 +362,7 @@ def splat_to_volume(
         alpha = alpha.view(-1)
         value_scale = value_scale.view(-1)
 
-        # Adaptive support: include voxels where the (isotropic) Gaussian weight >= cutoff.
+        # Adaptive support: include voxels where Gaussian weight >= cutoff.
         # Use max-axis sigma (in voxel units) to define a conservative neighborhood.
         support_cutoff = 0.5
         cutoff = float(support_cutoff)
@@ -400,7 +400,7 @@ def splat_to_volume(
         diff_vox = offsets.to(device=device, dtype=bp.dtype).unsqueeze(0)
         diff_vox = diff_vox.expand(centers_vox.shape[0], -1, -1)  # (B,K,3)
 
-        # Per-point radius mask (isotropic in voxel units).
+        # Per-point radius mask in voxel space (conservative prefilter).
         within = diff_vox.abs().max(dim=-1).values <= radii.to(device=device).unsqueeze(1).to(diff_vox.dtype)
 
         # Absolute voxel coords in (x,y,z) indexing.
@@ -436,9 +436,13 @@ def splat_to_volume(
         grid_pos = bmin_f + (vox_f / denom_f.view(1, 1, 3)) * extent_f.view(1, 1, 3)
         diff_norm = grid_pos - bp.unsqueeze(1)
 
-        # Isotropic kernel using max-axis sigma in normalized space.
-        sigma_norm = scales_batch.max(dim=1).values.clamp_min(1e-6)
-        diff_scaled = diff_norm / sigma_norm.view(-1, 1, 1)
+        # Anisotropic kernel in local Gaussian frame.
+        if rb is not None:
+            diff_local = torch.einsum("bkj,bji->bki", diff_norm, rb)
+        else:
+            diff_local = diff_norm
+        inv_scales = 1.0 / scales_batch.clamp_min(1e-6)
+        diff_scaled = diff_local * inv_scales.unsqueeze(1)
         sq = (diff_scaled * diff_scaled).sum(dim=-1)
         kern = torch.exp(-0.5 * sq)
         valid = valid & (kern >= support_cutoff)
