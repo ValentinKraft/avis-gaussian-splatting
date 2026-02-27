@@ -1158,8 +1158,8 @@ class OptimizationParams(ParamGroup):
         constraint.add_argument(
             "--position_displacement_scale",
             type=float,
-            default=1.1,
-            help="Multiplier on the max-axis scale limiting splat displacement from its spawn point (slightly tighter to reduce long tails).",
+            default=0.0,
+            help="Multiplier on the max-axis scale limiting splat displacement from its spawn point. Set <= 0 to disable and allow fully free motion.",
         )
         self._register("position_displacement_scale")
 

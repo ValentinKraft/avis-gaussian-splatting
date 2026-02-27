@@ -265,12 +265,15 @@ def initialize_from_volume(
         max_attempts=max(1, max_sampling_attempts),
     )
 
+    # Always place initial points continuously inside voxel cells so seeds are
+    # not restricted to integer lattice centers.
+    subvoxel = torch.rand_like(sampled_coords) - 0.5
+    jittered = sampled_coords + subvoxel
+
     jitter_scale = max(noise_std, 0.0)
     if jitter_scale > 0:
         jitter = (torch.rand_like(sampled_coords) - 0.5) * (jitter_scale * 2.0)
-    else:
-        jitter = torch.zeros_like(sampled_coords)
-    jittered = sampled_coords + jitter
+        jittered = jittered + jitter
     jittered[:, 0].clamp_(0, W - 1)
     jittered[:, 1].clamp_(0, H - 1)
     jittered[:, 2].clamp_(0, D - 1)
@@ -299,6 +302,9 @@ def initialize_from_volume(
                     res_coords = candidate_coords[rand_idx]
                     res_vals = candidate_vals[rand_idx]
                     res_dist = candidate_dist[rand_idx]
+
+                    # Keep replacement samples continuous within voxel cells.
+                    res_coords = res_coords + (torch.rand_like(res_coords) - 0.5)
 
                     if jitter_scale > 0:
                         res_jitter = (torch.rand_like(res_coords) - 0.5) * (
