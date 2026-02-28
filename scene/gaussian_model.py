@@ -2173,6 +2173,19 @@ class GaussianModel:
             # Ensure scale has shape [N, 3]
             scale = np.ones((num_points, 3)) * 0.01
 
+        voxel_size = getattr(self, "voxel_size", None)
+        if voxel_size is not None:
+            voxel_np = np.asarray(
+                torch.as_tensor(voxel_size, dtype=torch.float32).view(-1).cpu().numpy(),
+                dtype=np.float32,
+            )
+            if voxel_np.size == 1:
+                voxel_np = np.repeat(voxel_np, 3)
+            if voxel_np.size >= 3:
+                voxel_xyz = np.clip(voxel_np[:3], 1e-8, None)
+                xyz = (xyz / voxel_xyz.reshape(1, 3)).astype(np.float32)
+                scale = (scale - np.log(voxel_xyz.reshape(1, 3))).astype(np.float32)
+
         rotation = self._rotation.detach().cpu().numpy()
         if rotation.shape[0] != num_points:
             # Ensure rotation has shape [N, 4]
