@@ -58,7 +58,7 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
     """Apply organ/vessel presets and return the resulting state."""
 
     mode = getattr(args, "medical_mode", "none")
-    active = mode in ("organ", "vessel")
+    active = mode in ("organ", "vessel", "vessel_anisotropy")
     diversity_enabled = bool(getattr(args, "enable_diversity", False))
     diagnostics_enabled = bool(getattr(args, "enable_diagnostics", False))
     enable_densification = bool(getattr(args, "enable_densification", False))
@@ -119,6 +119,25 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
         state.densification_enabled = False
         opt.densify_from_iter = max(opt.iterations + 1, opt.densify_from_iter)
         opt.densify_until_iter = opt.iterations
+
+    if mode == "vessel_anisotropy":
+        if hasattr(args, "anisotropy_strength"):
+            args.anisotropy_strength = 2.0
+        if hasattr(args, "init_anisotropy_ratio"):
+            args.init_anisotropy_ratio = 3.5
+        if hasattr(args, "anisotropy_reg_weight"):
+            args.anisotropy_reg_weight = 0.02
+        if hasattr(args, "anisotropy_target_ratio"):
+            args.anisotropy_target_ratio = 3.0
+        if hasattr(args, "anisotropy_reg_warmup_iters"):
+            args.anisotropy_reg_warmup_iters = 200
+
+        if hasattr(opt, "anisotropy_reg_weight"):
+            opt.anisotropy_reg_weight = 0.02
+        if hasattr(opt, "anisotropy_target_ratio"):
+            opt.anisotropy_target_ratio = 3.0
+        if hasattr(opt, "anisotropy_reg_warmup_iters"):
+            opt.anisotropy_reg_warmup_iters = 200
 
     return state
 

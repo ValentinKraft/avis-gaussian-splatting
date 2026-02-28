@@ -14,6 +14,11 @@ def _make_args(**overrides) -> SimpleNamespace:
         "disable_densification": False,
         "init_n_points": 4000,
         "scale_l2_weight": 0.03,
+        "anisotropy_strength": 0.0,
+        "init_anisotropy_ratio": 1.0,
+        "anisotropy_reg_weight": 0.0,
+        "anisotropy_target_ratio": 2.0,
+        "anisotropy_reg_warmup_iters": 0,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -37,6 +42,9 @@ def _make_opt(**overrides) -> SimpleNamespace:
         "diversity_dispersion_weight": 0.1,
         "diversity_alignment_weight": 0.1,
         "scale_l2_weight": 0.03,
+        "anisotropy_reg_weight": 0.0,
+        "anisotropy_target_ratio": 2.0,
+        "anisotropy_reg_warmup_iters": 0,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -88,3 +96,23 @@ def test_medical_mode_vessel_uses_gentle_densification() -> None:
     assert opt.densify_grad_threshold >= 5e-4
     assert opt.densify_until_iter <= opt.densify_from_iter + 2000
     assert args.init_n_points >= 6000
+
+
+def test_medical_mode_vessel_anisotropy_applies_anisotropy_defaults() -> None:
+    """Vessel anisotropy preset enables stronger anisotropy-friendly defaults."""
+
+    args = _make_args(medical_mode="vessel_anisotropy")
+    opt = _make_opt()
+
+    state = _configure_medical_presets(args, opt)
+
+    assert state.active is True
+    assert args.init_n_points >= 6000
+    assert args.anisotropy_strength == 2.0
+    assert args.init_anisotropy_ratio == 3.5
+    assert args.anisotropy_reg_weight == 0.02
+    assert args.anisotropy_target_ratio == 3.0
+    assert args.anisotropy_reg_warmup_iters == 200
+    assert opt.anisotropy_reg_weight == 0.02
+    assert opt.anisotropy_target_ratio == 3.0
+    assert opt.anisotropy_reg_warmup_iters == 200
