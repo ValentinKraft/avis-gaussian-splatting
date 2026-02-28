@@ -1865,6 +1865,19 @@ class GaussianModel:
         Returns:
             Array of color values in appropriate format for PLY export
         """
+        has_intensity_buffer = (
+            hasattr(self, "intensities")
+            and self.intensities is not None
+            and self.intensities.numel() > 0
+            and self.intensities.view(-1).shape[0] == num_points
+        )
+
+        # In volume-supervised workflows, intensity samples are the canonical source
+        # for grayscale appearance. Prefer them over stale/learned feature DC values
+        # to avoid unexpectedly dark exports in downstream viewers.
+        if has_intensity_buffer:
+            return self._create_colors_from_intensities(num_points)
+
         if getattr(self, "intensity_mode", "learned") in {
             "sampled",
             "sampled_mean_covered",
