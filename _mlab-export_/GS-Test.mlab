@@ -697,8 +697,8 @@ module gaussian_splatting_export {
     localMacro = 1
     windows {
       window _default {
-        geometry = "477 352 492 238"
-        relativePosition = "-0.2898 -0.2464"
+        geometry = "476 352 492 238"
+        relativePosition = "-0.2901 -0.2464"
         sizeHint = "248 206"
         wasOpen = yes
       }
@@ -736,13 +736,13 @@ module LoadNIfTI {
 }
 module LoadNIfTI {
   internal {
-    frame = "1357 1157 184 72"
+    frame = "1349 1165 184 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1502 613 420 274"
-        relativePosition = "-0.0023 -0.0589"
+        geometry = "1085 271 420 274"
+        relativePosition = "-0.1235 -0.3046"
         sizeHint = "420 274"
         wasOpen = no
       }
@@ -750,7 +750,7 @@ module LoadNIfTI {
   }
   fields {
     instanceName = LoadNIfTI1
-    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/minimask-binary.nii.gz
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/minimask-binary3.nii.gz
     inApplyMode = AutoLoad
   }
 }
@@ -782,8 +782,8 @@ module View3D {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1721 250 1518 894"
-        relativePosition = "0.2209 -0.3197"
+        geometry = "1792 260 1518 894"
+        relativePosition = "0.2416 -0.3125"
         sizeHint = "1005 629"
         wasOpen = yes
       }
@@ -809,16 +809,16 @@ module View3D {
     orientationLocation = LOWER_RIGHT
     orientationOn = FALSE
     orientationModel = CUBE
-    greyCenter = 0
-    greyWidth = 0.985000014305115
+    greyCenter = 0.134999975562096
+    greyWidth = 0.775000154972076
     alphaFactor = 1
     colorFactor = "1 1 1"
     camType = TRUE
-    camPosition = "-62.9910888671875 -269.437255859375 95.4380645751953"
-    camOrientation = "0.722962260246277 -0.682023286819458 0.110317274928093 0.897168159484863"
+    camPosition = "256.271606445313 -306.742431640625 66.5367279052734"
+    camOrientation = "0.790983736515045 0.123038306832314 0.599338233470917 1.28236413002014"
     initialCameraOrientation = CAMERA_KEEP_AS_IS
-    camFar = 448.94241
-    camNear = 216.26993
+    camFar = 454.25424
+    camNear = 210.96875
     camFocal = 332.49017
     camHeight = 0.78539801
     decoration = FALSE
@@ -843,7 +843,7 @@ module View3D {
     renderer.toneShadingWarmDiffuse = 0.60000002
     renderer.toneShadingColdDiffuse = 0.2
     renderer.toneShadingAngle = 45
-    renderer.materialAmbient = 0.60000002
+    renderer.materialAmbient = 0.63
     renderer.materialDiffuse = 1
     renderer.materialSpecular = 1
     renderer.materialSpecularity = 32
@@ -898,7 +898,7 @@ module View3D {
 }
 module MinMaxScan {
   internal {
-    frame = "1449 949 192 72"
+    frame = "1477 941 152 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -923,8 +923,8 @@ module SoLUTEditor {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1013 802 513 459"
-        relativePosition = "-0.1308 0.0769"
+        geometry = "764 810 513 459"
+        relativePosition = "-0.2032 0.0826"
         sizeHint = "513 459"
         wasOpen = no
       }
@@ -933,20 +933,20 @@ module SoLUTEditor {
   fields {
     instanceName = SoLUTEditor
     rangeMin = 0
-    rangeMax = 1245.5056
+    rangeMax = 2392
     viewMin = 0
-    viewMax = 1245.5056
+    viewMax = 2392
     window = 1
     level = 0.5
     allowNewPoints = TRUE
     updateLutWhileDragging = TRUE
     relativeLut = FALSE
     colorInterpolation = InterpolateRGB
-    colorPoints = "[ 0 0 0 0, 1245.50561523438 1 1 1 ]"
-    alphaPoints = "[ 0 0, 1245.50561523438 1 ]"
+    colorPoints = "[ 0 0 0 0, 0.00239200005307794 0 0 0, 2392 1 1 1 ]"
+    alphaPoints = "[ 0 0, 0.00239200005307794 0, 2392 1 ]"
     alphaFactor = 0.80000001
     newRangeMin = 0
-    newRangeMax = 2210
+    newRangeMax = 2392
     newRangeMode = ClipFormerLUT
     colorEditorHeight = 24
     showColorEditor = TRUE
@@ -1053,6 +1053,28 @@ module EllipsoidTestPattern {
     coneHeight = 32
     coneTipRadius = 0
     coneDisplaceTip = TRUE
+  }
+}
+module SaveNIfTI {
+  internal {
+    frame = "1709 861 88 56"
+    moduleGroupName = ""
+    windows {
+      window _default {
+        geometry = "1613 655 559 191"
+        relativePosition = "0.0503 -0.0287"
+        sizeHint = "213 191"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = SaveNIfTI
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/minimask-binary3.nii.gz
+    inV2 = FALSE
+    inCompressionLevel = 6
+    inAuxiliaryFilename = ""
+    inIntentName = ""
   }
 }
 connections {

@@ -814,9 +814,13 @@ def initialize_gaussians(
                         f"[{mask_intensity_min:.4f}, {mask_intensity_max:.4f}]"
                     )
 
-        # Normalize sampled intensities by default using the mask-bounded range
-        # (derived from the intensity volume), falling back to full-volume range.
-        normalize_samples = True
+        # Only sampled intensity modes should store normalized [0,1] values.
+        # In learned mode, keep raw intensities here and let SH conversion apply
+        # the single intended normalization step via (min_ref, max_ref).
+        normalize_samples = getattr(model, "intensity_mode", "learned") in {
+            "sampled",
+            "sampled_mean_covered",
+        }
         min_ref = mask_intensity_min if mask_intensity_min is not None else global_min
         max_ref = mask_intensity_max if mask_intensity_max is not None else global_max
 
@@ -829,7 +833,65 @@ def initialize_gaussians(
             normalize=normalize_samples,
             min_val=min_ref,
             max_val=max_ref,
+            padding_mode="border",
         )
+
+        # Mask-aware correction: trilinear interpolation near boundaries can blend
+        # outside-mask voxels into otherwise valid seeds and create very dark SH DC
+        # values at iteration 1. Detect those cases and replace with nearest-voxel
+        # samples from the intensity volume.
+        if mask_volume is not None and mask_volume.numel() > 0 and intensities.numel() > 0:
+            mask_threshold = float(kwargs.get("mask_threshold", 0.01))
+            mask_samples, _, _ = sample_intensities_from_volume(
+                points,
+                mask_volume,
+                scale=None,
+                normalize=False,
+                min_val=0.0,
+                max_val=1.0,
+                padding_mode="border",
+            )
+            outside_soft = mask_samples.view(-1) < max(mask_threshold, 1e-4)
+            if bool(outside_soft.any().item()):
+                Dv, Hv, Wv = volume.shape
+                point_indices = (
+                    points
+                    * torch.tensor(
+                        [Wv - 1, Hv - 1, Dv - 1],
+                        device=device,
+                        dtype=points.dtype,
+                    )
+                ).round().long()
+                point_indices = torch.clamp(
+                    point_indices,
+                    min=torch.tensor([0, 0, 0], device=device),
+                    max=torch.tensor([Wv - 1, Hv - 1, Dv - 1], device=device),
+                )
+                x_idx, y_idx, z_idx = (
+                    point_indices[:, 0],
+                    point_indices[:, 1],
+                    point_indices[:, 2],
+                )
+                nearest_vals = volume[z_idx, y_idx, x_idx].unsqueeze(1)
+                nearest_vals = nearest_vals.to(
+                    device=intensities.device,
+                    dtype=intensities.dtype,
+                )
+
+                if normalize_samples:
+                    denom = max(max_ref - min_ref, 1e-8)
+                    if denom <= 1e-8:
+                        nearest_vals = torch.full_like(nearest_vals, 0.5)
+                    else:
+                        nearest_vals = (nearest_vals - min_ref) / denom
+                        nearest_vals = nearest_vals.clamp_(0.0, 1.0)
+
+                intensities = intensities.clone()
+                intensities[outside_soft] = nearest_vals[outside_soft]
+                print(
+                    "Applied mask-boundary intensity correction to "
+                    f"{int(outside_soft.sum().item())} initialized seeds."
+                )
 
         # Check if sampling was successful
         if not _is_valid_sampling(intensities):
