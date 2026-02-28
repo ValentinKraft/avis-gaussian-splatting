@@ -2,7 +2,7 @@
 
 The rendering implementation is intentionally minimal:
 - Splats are rendered as projected anisotropic Gaussian ellipses.
-- Transparency uses weighted blended OIT (no sorting).
+- Splats are sorted back-to-front each frame for alpha compositing.
 - A 1D transfer-function LUT maps per-splat intensity to color/alpha.
 """
 
