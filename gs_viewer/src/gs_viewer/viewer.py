@@ -1,7 +1,7 @@
 """Main viewer loop, OpenGL renderer, and UI.
 
 The rendering implementation is intentionally minimal:
-- Splats are rendered as point sprites (GL_POINTS) with a Gaussian falloff.
+- Splats are rendered as projected anisotropic Gaussian ellipses.
 - Transparency uses weighted blended OIT (no sorting).
 - A 1D transfer-function LUT maps per-splat intensity to color/alpha.
 """
