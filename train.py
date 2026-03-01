@@ -447,6 +447,7 @@ def training(
 
     # Provide voxel spacing to the Gaussian model so voxel-unit clamps work.
     gaussians.voxel_size = volume_supervisor.voxel_size
+    gaussians.voxel_spacing_xyz = getattr(volume_supervisor, "voxel_spacing_xyz", None)
     gaussians.raw_volume_min = getattr(volume_supervisor, "raw_intensity_min", None)
     gaussians.raw_volume_max = getattr(volume_supervisor, "raw_intensity_max", None)
     gaussians.sampling_padding_mode = getattr(

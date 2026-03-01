@@ -60,6 +60,7 @@ class VolumeLoader:
         self.enable_overflow_guard = bool(enable_overflow_guard)
         self.last_loaded_raw_min: Optional[float] = None
         self.last_loaded_raw_max: Optional[float] = None
+        self.last_loaded_spacing_xyz: Optional[Tuple[float, float, float]] = None
 
     @staticmethod
     def peek_raw_range(path: Union[str, Path]) -> Tuple[float, float]:
@@ -93,6 +94,16 @@ class VolumeLoader:
                 "nibabel is required to load NIfTI volumes. Install it or use a .npy input."
             )
         nii = nib.load(str(path))
+        zooms = nii.header.get_zooms()
+        if len(zooms) >= 3:
+            # nibabel reports spacing in (X, Y, Z) voxel index order.
+            self.last_loaded_spacing_xyz = (
+                float(zooms[0]),
+                float(zooms[1]),
+                float(zooms[2]),
+            )
+        else:
+            self.last_loaded_spacing_xyz = None
         volume = torch.from_numpy(nii.get_fdata()).float()
         # nibabel returns arrays in voxel index order (i, j, k) which typically
         # corresponds to (X, Y, Z). This project consistently represents volumes
@@ -103,6 +114,7 @@ class VolumeLoader:
 
     def load_npy(self, path: Union[str, Path]) -> Tensor:
         """Load a NumPy volume file."""
+        self.last_loaded_spacing_xyz = None
         volume = torch.from_numpy(np.load(str(path))).float()
         return self._process_volume(volume)
 
@@ -151,6 +163,7 @@ class VolumeLoader:
         volume = (volume - volume.min()) / (volume.max() - volume.min() + 1e-8)
 
         requested_target_shape = self.target_shape
+        original_shape_dhw = tuple(int(v) for v in volume.shape)
 
         # Optional downscale relative to the input volume shape.
         if requested_target_shape is None and self.downscale_factor is not None:
@@ -228,6 +241,21 @@ class VolumeLoader:
 
             # Remove batch and channel dimensions
             volume = volume.squeeze(0).squeeze(0)
+
+        # Adjust physical spacing if known and resampling changed the grid shape.
+        if self.last_loaded_spacing_xyz is not None:
+            old_dhw = original_shape_dhw
+            new_dhw = tuple(int(v) for v in volume.shape)
+            old_xyz = np.array([old_dhw[2], old_dhw[1], old_dhw[0]], dtype=np.float32)
+            new_xyz = np.array([new_dhw[2], new_dhw[1], new_dhw[0]], dtype=np.float32)
+            old_spacing = np.array(self.last_loaded_spacing_xyz, dtype=np.float32)
+            scale = np.maximum(old_xyz - 1.0, 1.0) / np.maximum(new_xyz - 1.0, 1.0)
+            new_spacing = old_spacing * scale
+            self.last_loaded_spacing_xyz = (
+                float(new_spacing[0]),
+                float(new_spacing[1]),
+                float(new_spacing[2]),
+            )
 
         return volume.to(device=self.device, dtype=self._target_dtype())
 

@@ -180,6 +180,12 @@ class VolumeSupervisor:
         )
         self.volume_origin = origin
         self.voxel_size = spacing
+        raw_spacing = getattr(self.loader, "last_loaded_spacing_xyz", None)
+        self.voxel_spacing_xyz = (
+            None
+            if raw_spacing is None
+            else torch.tensor(raw_spacing, device=self.device, dtype=torch.float32)
+        )
 
         # Load mask volume (required)
         self.mask_volume = self.loader.load_volume(mask_path)

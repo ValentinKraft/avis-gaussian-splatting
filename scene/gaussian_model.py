@@ -2199,6 +2199,21 @@ class GaussianModel:
                 xyz = (xyz / voxel_xyz.reshape(1, 3)).astype(np.float32)
                 scale = (scale - np.log(voxel_xyz.reshape(1, 3))).astype(np.float32)
 
+        # If physical spacing is available (e.g., NIfTI pixdim), export geometry in
+        # physical units instead of pure voxel index units to preserve aspect ratio.
+        voxel_spacing = getattr(self, "voxel_spacing_xyz", None)
+        if voxel_spacing is not None:
+            spacing_np = np.asarray(
+                torch.as_tensor(voxel_spacing, dtype=torch.float32).view(-1).cpu().numpy(),
+                dtype=np.float32,
+            )
+            if spacing_np.size == 1:
+                spacing_np = np.repeat(spacing_np, 3)
+            if spacing_np.size >= 3:
+                spacing_xyz = np.clip(spacing_np[:3], 1e-8, None)
+                xyz = (xyz * spacing_xyz.reshape(1, 3)).astype(np.float32)
+                scale = (scale + np.log(spacing_xyz.reshape(1, 3))).astype(np.float32)
+
         rotation = self._rotation.detach().cpu().numpy()
         if rotation.shape[0] != num_points:
             # Ensure rotation has shape [N, 4]
