@@ -250,10 +250,13 @@ out vec4 out_color;
 
 uniform sampler2D u_accum;
 uniform sampler2D u_reveal;
+uniform vec3 u_background;
 
 void main() {
     vec4 accum = texture(u_accum, v_uv);
-    out_color = accum;
+    float a = clamp(accum.a, 0.0, 1.0);
+    vec3 rgb = mix(u_background, accum.rgb, a);
+    out_color = vec4(rgb, 1.0);
 }
 """
 
@@ -368,10 +371,21 @@ class OitRenderer:
 
         GL.glDisable(GL.GL_BLEND)
 
-    def composite_to_screen(self, width: int, height: int) -> None:
+    def composite_to_screen(
+        self,
+        width: int,
+        height: int,
+        background_rgba: tuple[float, float, float, float] = (0.05, 0.05, 0.05, 1.0),
+    ) -> None:
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, 0)
         GL.glViewport(0, 0, width, height)
-        GL.glClearColor(0.05, 0.05, 0.05, 1.0)
+        r, g, b, a = background_rgba
+        GL.glClearColor(
+            float(np.clip(r, 0.0, 1.0)),
+            float(np.clip(g, 0.0, 1.0)),
+            float(np.clip(b, 0.0, 1.0)),
+            float(np.clip(a, 0.0, 1.0)),
+        )
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
 
         GL.glUseProgram(self._compose_prog)
@@ -383,6 +397,12 @@ class OitRenderer:
         GL.glActiveTexture(GL.GL_TEXTURE1)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self._tex_reveal)
         GL.glUniform1i(GL.glGetUniformLocation(self._compose_prog, "u_reveal"), 1)
+        GL.glUniform3f(
+            GL.glGetUniformLocation(self._compose_prog, "u_background"),
+            float(np.clip(r, 0.0, 1.0)),
+            float(np.clip(g, 0.0, 1.0)),
+            float(np.clip(b, 0.0, 1.0)),
+        )
 
         # Core profile requires a VAO bound for glDrawArrays.
         GL.glBindVertexArray(self._fs_vao)

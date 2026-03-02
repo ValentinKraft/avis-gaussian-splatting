@@ -30,6 +30,7 @@ class _UiState:
     error_text: str = ""
     splat_scale: float = 1.0
     gauss_softness: float = 1.0
+    background_rgba: tuple[float, float, float, float] = (0.05, 0.05, 0.05, 1.0)
 
 
 class Viewer:
@@ -84,7 +85,11 @@ class Viewer:
                         self._ui.splat_scale,
                         self._ui.gauss_softness,
                     )
-            self._renderer.composite_to_screen(width, height)
+            self._renderer.composite_to_screen(
+                width,
+                height,
+                self._ui.background_rgba,
+            )
 
             self._render_ui(width, height)
 
@@ -229,6 +234,22 @@ class Viewer:
                 self._ui.gauss_softness,
                 0.25,
                 3.0,
+            )
+
+        imgui.separator()
+        changed_bg, bg_rgba = imgui.color_edit4(
+            "Background",
+            self._ui.background_rgba[0],
+            self._ui.background_rgba[1],
+            self._ui.background_rgba[2],
+            self._ui.background_rgba[3],
+        )
+        if changed_bg:
+            self._ui.background_rgba = (
+                float(bg_rgba[0]),
+                float(bg_rgba[1]),
+                float(bg_rgba[2]),
+                float(bg_rgba[3]),
             )
 
         imgui.separator()
