@@ -995,7 +995,11 @@ def initialize_gaussians(
             scales_active[:, 0] = scales_active[:, 0] * shrink
             scales_active[:, 1] = scales_active[:, 1] * shrink
             scales[active] = scales_active
-            initial_rotations[active] = structure_quats[active]
+            # Keep gradient-based orientations when available; they are typically
+            # more diverse and robust for global initialization. The mask-Hessian
+            # vesselness still gates anisotropy strength via `active` and `stretch`.
+            if orientation_helper is None:
+                initial_rotations[active] = structure_quats[active]
             print(
                 f"Applied Hessian anisotropy to {active.sum().item()} seeds "
                 f"(threshold={structure_min_vesselness:.2f})."
