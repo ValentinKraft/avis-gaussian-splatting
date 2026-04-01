@@ -2480,8 +2480,11 @@ class GaussianModel:
                     f"Warning: intensities size mismatch. Expected {current_point_count}, got {self.intensities.shape[0]}. Recreating."
                 )
                 remaining_point_count = valid_points_mask.sum().item()
-                self.intensities = torch.zeros(
-                    (remaining_point_count, 1), device="cuda"
+                self.intensities = torch.full(
+                    (remaining_point_count, 1),
+                    0.5,
+                    device=self._tensor_device(),
+                    dtype=self._tensor_dtype(),
                 )
 
         if (
@@ -2571,6 +2574,7 @@ class GaussianModel:
         new_scaling: torch.Tensor,
         new_rotation: torch.Tensor,
         new_tmp_radii: torch.Tensor,
+        new_intensities: Optional[torch.Tensor] = None,
     ):
         """
         Add new points to the model after densification.
@@ -2583,6 +2587,7 @@ class GaussianModel:
             new_scaling: New scaling values
             new_rotation: New rotation values
             new_tmp_radii: New temporary radii (unused)
+            new_intensities: Optional intensity values for new points
         """
         # Enforce that newly created points stay inside the mask.
         # This uses the current `reference_mask` when available.
@@ -2629,16 +2634,42 @@ class GaussianModel:
         # Update volume-specific attributes
         if hasattr(self, "intensities") and self.intensities is not None:
             if self.intensities.numel() > 0:
-                # new_xyz has shape [3, M], so shape[1] gives number of new points
-                new_intensities = torch.zeros(
-                    (new_xyz.shape[1], 1), device=self.intensities.device
+                # Keep new points photometrically valid immediately. Zero-filled
+                # intensities remain black for many iterations under active-point
+                # subsampling and cause visible dark artifacts.
+                prepared_new_intensities = None
+                if isinstance(new_intensities, torch.Tensor) and new_intensities.numel() > 0:
+                    prepared_new_intensities = new_intensities
+                else:
+                    prepared_new_intensities = self._sample_intensities_for_xyz(new_xyz)
+
+                if prepared_new_intensities is None or prepared_new_intensities.numel() == 0:
+                    prepared_new_intensities = torch.full(
+                        (new_xyz.shape[1], 1),
+                        0.5,
+                        device=self.intensities.device,
+                        dtype=self.intensities.dtype,
+                    )
+                else:
+                    prepared_new_intensities = prepared_new_intensities.to(
+                        device=self.intensities.device,
+                        dtype=self.intensities.dtype,
+                    )
+                    prepared_new_intensities = prepared_new_intensities.view(-1, 1)
+
+                self.intensities = torch.cat(
+                    [self.intensities, prepared_new_intensities],
+                    dim=0,
                 )
-                self.intensities = torch.cat([self.intensities, new_intensities], dim=0)
             else:
-                # If intensities is empty, create it to match the current point count
+                # If intensities is empty, create it to match the current point count.
+                # Existing logic in VolumeSupervisor will refresh as needed.
                 current_point_count = self.get_xyz.shape[1]
-                self.intensities = torch.zeros(
-                    (current_point_count, 1), device=self._tensor_device()
+                self.intensities = torch.full(
+                    (current_point_count, 1),
+                    0.5,
+                    device=self._tensor_device(),
+                    dtype=self._tensor_dtype(),
                 )
 
         if self._uses_sampled_opacity():
@@ -2718,6 +2749,38 @@ class GaussianModel:
         if gamma != 1.0:
             sampled = sampled.pow(gamma)
         return sampled.view(-1, 1)
+
+    @torch.no_grad()
+    def _sample_intensities_for_xyz(self, xyz: torch.Tensor) -> Optional[torch.Tensor]:
+        """Sample intensity buffer values for xyz using the cached reference volume."""
+        volume = getattr(self, "reference_volume", None)
+        if volume is None or not isinstance(volume, torch.Tensor) or volume.numel() == 0:
+            return None
+        if xyz is None or not isinstance(xyz, torch.Tensor) or xyz.numel() == 0:
+            return None
+
+        pts_n3 = xyz.transpose(0, 1) if xyz.dim() == 2 and xyz.shape[0] == 3 else xyz
+        if pts_n3.dim() != 2 or pts_n3.shape[1] != 3:
+            pts_n3 = pts_n3.reshape(-1, 3)
+
+        from gaussian_splatting.utils.intensity_sampler import sample_intensities_from_volume
+
+        normalize_samples = getattr(self, "intensity_mode", "learned") in {
+            "sampled",
+            "sampled_mean_covered",
+        }
+        volume_min = getattr(self, "volume_min", None) if normalize_samples else None
+        volume_max = getattr(self, "volume_max", None) if normalize_samples else None
+        sampled, _, _ = sample_intensities_from_volume(
+            pts_n3,
+            volume,
+            scale=None,
+            normalize=normalize_samples,
+            min_val=volume_min,
+            max_val=volume_max,
+            padding_mode=getattr(self, "sampling_padding_mode", "border"),
+        )
+        return sampled.clamp(0.0, 1.0).view(-1, 1)
 
     def _current_parameter_bytes(self) -> float:
         """Estimate current parameter memory footprint in bytes."""
@@ -3033,6 +3096,14 @@ class GaussianModel:
             new_features_rest = None
 
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
+        new_intensities = None
+        if (
+            hasattr(self, "intensities")
+            and isinstance(self.intensities, torch.Tensor)
+            and self.intensities.numel() > 0
+            and self.intensities.shape[0] == n_init_points
+        ):
+            new_intensities = self.intensities[selected_pts_mask].repeat(N, 1)
         new_tmp_radii = torch.zeros(num_new_points, device=device)
 
         # Add new points to the model
@@ -3044,6 +3115,7 @@ class GaussianModel:
             new_scaling,
             new_rotation,
             new_tmp_radii,
+            new_intensities,
         )
 
         # Create pruning filter to remove the original points that were split
@@ -3138,6 +3210,14 @@ class GaussianModel:
             new_features_rest = None
 
         new_opacities = self._opacity[selected_pts_mask]
+        new_intensities = None
+        if (
+            hasattr(self, "intensities")
+            and isinstance(self.intensities, torch.Tensor)
+            and self.intensities.numel() > 0
+            and self.intensities.shape[0] == selected_pts_mask.shape[0]
+        ):
+            new_intensities = self.intensities[selected_pts_mask]
         # Slightly shrink cloned scales so clones act as refinements, not duplicate blobs
         parent_scaling = self.get_scaling[selected_pts_mask]
         shrink_factor = 0.8
@@ -3164,6 +3244,7 @@ class GaussianModel:
             new_scaling,
             new_rotation,
             new_tmp_radii,
+            new_intensities,
         )
         self.last_densify_counts[reason] = num_new_points
         return num_new_points
