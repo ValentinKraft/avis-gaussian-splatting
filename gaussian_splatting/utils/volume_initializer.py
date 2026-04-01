@@ -26,11 +26,9 @@ from scene.gaussian_model import GaussianModel
 from gaussian_splatting.data.volume_loader import VolumeLoader
 from gaussian_splatting.utils.intensity_sampler import (
     sample_intensities_from_volume,
-    update_opacities,
     update_intensities,
 )
 from gaussian_splatting.utils.orientation_field import (
-    build_structure_field,
     compute_gradient_field,
     compute_hessian_field,
     default_origin_and_spacing,
@@ -38,7 +36,6 @@ from gaussian_splatting.utils.orientation_field import (
     quat_from_directions,
     random_quat_perturb,
     structure_from_mask_at_ijk,
-    sample_structure_field,
     world_to_voxel,
 )
 

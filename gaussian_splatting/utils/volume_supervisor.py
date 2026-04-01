@@ -22,8 +22,6 @@ from gaussian_splatting.data.volume_loader import VolumeLoader
 from gaussian_splatting.utils.intensity_sampler import (
     sample_mean_covered_voxel_intensities,
     update_intensities,
-    update_intensities_and_opacities,
-    update_opacities,
 )
 from gaussian_splatting.utils.orientation_field import (
     build_structure_field,
@@ -33,7 +31,6 @@ from gaussian_splatting.utils.orientation_field import (
     random_quat_perturb,
     rotmat_to_quat,
     structure_from_mask_at_ijk,
-    sample_structure_field,
     world_to_voxel,
 )
 
