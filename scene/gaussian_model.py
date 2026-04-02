@@ -95,6 +95,7 @@ class GaussianModel:
         self.raw_volume_max = None  # Optional raw pre-normalization maximum (e.g., HU)
         self.reference_volume = None  # Reference intensity volume
         self.reference_mask = None  # Reference opacity mask
+        self.reference_mask_threshold = 0.5
 
         # Orientation metadata populated during initialization for densification reuse
         self.orientation_field = None
@@ -161,7 +162,7 @@ class GaussianModel:
         self.xyz_boost_factor = 1.15
         self._xyz_boost_active = 0
         self._xyz_boost_duration = 5
-        self.densify_grad_percentile = 0.85
+        self.densify_grad_percentile = 0.60
         self.scaling_constraint_warmup_iters = 0
         self.scaling_constraint_relaxation = 1.0
         self.early_stats_window = 256
@@ -890,6 +891,14 @@ class GaussianModel:
         z = choice[:, 0].to(dtype=torch.float32)
         y = choice[:, 1].to(dtype=torch.float32)
         x = choice[:, 2].to(dtype=torch.float32)
+
+        # Keep respawn points continuous within mask voxels to avoid lattice artifacts.
+        x = x + (torch.rand_like(x) - 0.5)
+        y = y + (torch.rand_like(y) - 0.5)
+        z = z + (torch.rand_like(z) - 0.5)
+        x = x.clamp(0.0, float(mask_t.shape[2] - 1))
+        y = y.clamp(0.0, float(mask_t.shape[1] - 1))
+        z = z.clamp(0.0, float(mask_t.shape[0] - 1))
 
         denom = torch.tensor(
             [mask_t.shape[2] - 1, mask_t.shape[1] - 1, mask_t.shape[0] - 1],
@@ -1872,6 +1881,16 @@ class GaussianModel:
             and self.intensities.view(-1).shape[0] == num_points
         )
 
+        if not has_intensity_buffer and getattr(self, "intensity_mode", "learned") in {
+            "sampled",
+            "learned",
+            "sampled_mean_covered",
+        }:
+            print(
+                "Warning: export intensity buffer missing or size-mismatched; "
+                "falling back to feature-based color source."
+            )
+
         # In volume-supervised workflows, intensity samples are the canonical source
         # for grayscale appearance. Prefer them over stale/learned feature DC values
         # to avoid unexpectedly dark exports in downstream viewers.
@@ -2590,8 +2609,12 @@ class GaussianModel:
             new_intensities: Optional intensity values for new points
         """
         # Enforce that newly created points stay inside the mask.
-        # This uses the current `reference_mask` when available.
-        new_xyz = self._ensure_points_inside_reference_mask(new_xyz, threshold=0.5)
+        # This uses the current reference threshold when available.
+        mask_threshold = float(getattr(self, "reference_mask_threshold", 0.5))
+        new_xyz = self._ensure_points_inside_reference_mask(
+            new_xyz,
+            threshold=mask_threshold,
+        )
 
         # Prepare dictionary of new tensors - only include those that are in the optimizer
         new_tensors = {
@@ -2637,11 +2660,13 @@ class GaussianModel:
                 # Keep new points photometrically valid immediately. Zero-filled
                 # intensities remain black for many iterations under active-point
                 # subsampling and cause visible dark artifacts.
-                prepared_new_intensities = None
-                if isinstance(new_intensities, torch.Tensor) and new_intensities.numel() > 0:
+                prepared_new_intensities = self._sample_intensities_for_xyz(new_xyz)
+                if (
+                    (prepared_new_intensities is None or prepared_new_intensities.numel() == 0)
+                    and isinstance(new_intensities, torch.Tensor)
+                    and new_intensities.numel() > 0
+                ):
                     prepared_new_intensities = new_intensities
-                else:
-                    prepared_new_intensities = self._sample_intensities_for_xyz(new_xyz)
 
                 if prepared_new_intensities is None or prepared_new_intensities.numel() == 0:
                     prepared_new_intensities = torch.full(
@@ -2765,17 +2790,13 @@ class GaussianModel:
 
         from gaussian_splatting.utils.intensity_sampler import sample_intensities_from_volume
 
-        normalize_samples = getattr(self, "intensity_mode", "learned") in {
-            "sampled",
-            "sampled_mean_covered",
-        }
-        volume_min = getattr(self, "volume_min", None) if normalize_samples else None
-        volume_max = getattr(self, "volume_max", None) if normalize_samples else None
+        volume_min = getattr(self, "volume_min", None)
+        volume_max = getattr(self, "volume_max", None)
         sampled, _, _ = sample_intensities_from_volume(
             pts_n3,
             volume,
             scale=None,
-            normalize=normalize_samples,
+            normalize=True,
             min_val=volume_min,
             max_val=volume_max,
             padding_mode=getattr(self, "sampling_padding_mode", "border"),
@@ -3096,14 +3117,6 @@ class GaussianModel:
             new_features_rest = None
 
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
-        new_intensities = None
-        if (
-            hasattr(self, "intensities")
-            and isinstance(self.intensities, torch.Tensor)
-            and self.intensities.numel() > 0
-            and self.intensities.shape[0] == n_init_points
-        ):
-            new_intensities = self.intensities[selected_pts_mask].repeat(N, 1)
         new_tmp_radii = torch.zeros(num_new_points, device=device)
 
         # Add new points to the model
@@ -3115,7 +3128,6 @@ class GaussianModel:
             new_scaling,
             new_rotation,
             new_tmp_radii,
-            new_intensities,
         )
 
         # Create pruning filter to remove the original points that were split
@@ -3210,14 +3222,6 @@ class GaussianModel:
             new_features_rest = None
 
         new_opacities = self._opacity[selected_pts_mask]
-        new_intensities = None
-        if (
-            hasattr(self, "intensities")
-            and isinstance(self.intensities, torch.Tensor)
-            and self.intensities.numel() > 0
-            and self.intensities.shape[0] == selected_pts_mask.shape[0]
-        ):
-            new_intensities = self.intensities[selected_pts_mask]
         # Slightly shrink cloned scales so clones act as refinements, not duplicate blobs
         parent_scaling = self.get_scaling[selected_pts_mask]
         shrink_factor = 0.8
@@ -3244,7 +3248,6 @@ class GaussianModel:
             new_scaling,
             new_rotation,
             new_tmp_radii,
-            new_intensities,
         )
         self.last_densify_counts[reason] = num_new_points
         return num_new_points
@@ -3322,10 +3325,14 @@ class GaussianModel:
             finite_mask = torch.logical_and(finite_mask, valid_mask)
         valid_grad = grad_norm[finite_mask]
         if valid_grad.numel() > 0:
-            adaptive_threshold = torch.quantile(
-                valid_grad, min(max(self.densify_grad_percentile, 0.0), 1.0)
-            ).item()
-            grad_threshold = max(adaptive_threshold, float(max_grad))
+            percentile = min(max(float(self.densify_grad_percentile), 0.0), 1.0)
+            adaptive_threshold = torch.quantile(valid_grad, percentile).item()
+            if float(max_grad) <= 0.0:
+                # Adaptive-only mode should remain permissive enough to sustain
+                # noticeable growth; otherwise pruning can dominate net topology.
+                grad_threshold = max(adaptive_threshold * 0.6, 0.0)
+            else:
+                grad_threshold = max(adaptive_threshold, float(max_grad))
         else:
             grad_threshold = float(max_grad)
 

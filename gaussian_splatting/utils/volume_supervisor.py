@@ -317,6 +317,37 @@ class VolumeSupervisor:
             padding_mode=self.sampling_padding_mode,
         )
 
+        intensity_mode = getattr(gaussians, "intensity_mode", "learned")
+        if (
+            intensity_mode == "sampled_mean_covered"
+            and scales is not None
+            and scales.numel() > 0
+        ):
+            large_mask_global = gaussians.large_splat_mask(
+                getattr(gaussians, "intensity_large_splat_threshold", 0.0)
+            ).to(device=intensities.device)
+            coverage_mask = (
+                large_mask_global
+                if idx_tensor is None
+                else large_mask_global[idx_tensor]
+            )
+            if coverage_mask is not None and coverage_mask.any():
+                refined, _, _ = sample_mean_covered_voxel_intensities(
+                    pts,
+                    self.volume_color,
+                    scales,
+                    self.volume_origin,
+                    self.voxel_size,
+                    radius_scale=getattr(gaussians, "mean_covered_radius", 2.5),
+                    coverage_mask=coverage_mask,
+                    normalize=True,
+                    min_val=self.global_intensity_min,
+                    max_val=self.global_intensity_max,
+                    padding_mode=self.sampling_padding_mode,
+                )
+                intensities = intensities.clone()
+                intensities[coverage_mask] = refined[coverage_mask]
+
         if indices is None:
             gaussians.volume_min = v_min
             gaussians.volume_max = v_max
@@ -648,8 +679,8 @@ class VolumeSupervisor:
                 dtype=dtype,
                 fill_value=0.5,
             )
-            gaussians.intensities = use_intensities
-            gaussians.intensities.requires_grad = False
+            gaussians.intensities = use_intensities.detach()
+            gaussians.intensities.requires_grad_(False)
             gaussians.volume_min = self.global_intensity_min
             gaussians.volume_max = self.global_intensity_max
             use_intensities = gaussians.intensities
@@ -668,7 +699,73 @@ class VolumeSupervisor:
                     )
                 )
         else:
-            self.last_intensity_update_count = 0
+            needs_resize = (
+                not hasattr(gaussians, "intensities")
+                or gaussians.intensities is None
+                or gaussians.intensities.numel() == 0
+                or gaussians.intensities.shape[0] != n_points
+            )
+
+            interval = max(int(self.intensity_update_interval), 1)
+            update_due = ((self._step - 1) % interval) == 0
+
+            dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
+            if active_idx is not None and active_idx.numel() > 0:
+                dirty_subset = gaussians.dirty_indices(
+                    active_idx,
+                    self.dirty_threshold_xyz,
+                    self.dirty_threshold_scale,
+                    self.dirty_threshold_rot,
+                )
+
+            indices_for_update: Optional[Tensor]
+            if needs_resize:
+                indices_for_update = None
+            elif dirty_subset.numel() > 0:
+                indices_for_update = dirty_subset
+            elif update_due:
+                indices_for_update = active_idx
+            else:
+                indices_for_update = None
+
+            if indices_for_update is not None or needs_resize:
+                sampled_buffer = self._intensity_sampler(gaussians, indices_for_update)
+                if sampled_buffer is not None and sampled_buffer.numel() > 0:
+                    sampled_buffer = sampled_buffer.detach()
+                    channels = sampled_buffer.shape[1]
+                    intensity_buffer = gaussians.ensure_intensity_buffer(
+                        n_points,
+                        channels,
+                        device=xyz.device,
+                        dtype=sampled_buffer.dtype,
+                        fill_value=0.5,
+                    )
+                    with torch.no_grad():
+                        if indices_for_update is None:
+                            intensity_buffer.copy_(sampled_buffer)
+                            gaussians.snapshot_params_for_dirty_check(None)
+                            self.last_intensity_update_count = int(n_points)
+                        else:
+                            idx_update = indices_for_update.long()
+                            intensity_buffer[idx_update] = sampled_buffer
+                            gaussians.snapshot_params_for_dirty_check(idx_update)
+                            self.last_intensity_update_count = int(idx_update.numel())
+                    gaussians.intensities = intensity_buffer.detach()
+                else:
+                    self.last_intensity_update_count = 0
+            else:
+                self.last_intensity_update_count = 0
+
+            if (
+                hasattr(gaussians, "intensities")
+                and gaussians.intensities is not None
+                and gaussians.intensities.numel() > 0
+            ):
+                gaussians.intensities = gaussians.intensities.detach()
+                gaussians.intensities.requires_grad_(False)
+                gaussians.volume_min = self.global_intensity_min
+                gaussians.volume_max = self.global_intensity_max
+
             if (
                 hasattr(gaussians, "_features_dc")
                 and gaussians._features_dc is not None
@@ -690,7 +787,8 @@ class VolumeSupervisor:
                         dtype=xyz.dtype,
                         fill_value=0.5,
                     )
-                gaussians.intensities.requires_grad = False
+                gaussians.intensities = gaussians.intensities.detach()
+                gaussians.intensities.requires_grad_(False)
                 use_intensities = gaussians.intensities
 
         # --- Opacity refresh (independent of intensity mode) ---

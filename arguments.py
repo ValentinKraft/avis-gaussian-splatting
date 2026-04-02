@@ -929,6 +929,17 @@ class OptimizationParams(ParamGroup):
         self._register("densify_grad_threshold")
 
         densify.add_argument(
+            "--densify_grad_percentile",
+            type=float,
+            default=0.60,
+            help=(
+                "Percentile used for adaptive densification thresholding. "
+                "Lower values densify more aggressively."
+            ),
+        )
+        self._register("densify_grad_percentile")
+
+        densify.add_argument(
             "--prune_min_opacity",
             type=float,
             default=1e-4,

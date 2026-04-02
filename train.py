@@ -357,6 +357,12 @@ def training(
         "position_displacement_scale",
         gaussians.max_position_displacement_scale,
     )
+    if gaussians.max_position_displacement_scale > 0.0:
+        print(
+            "WARNING: position displacement constraint is active "
+            f"(position_displacement_scale={gaussians.max_position_displacement_scale:.4f}). "
+            "Set <= 0 for fully free motion within volume bounds."
+        )
 
     preset_state = _configure_medical_presets(args, opt)
     diagnostics_enabled = preset_state.diagnostics_enabled
@@ -456,6 +462,11 @@ def training(
     gaussians.position_bounds = (
         volume_supervisor.bounds_min,
         volume_supervisor.bounds_max,
+    )
+    gaussians.reference_mask_threshold = (
+        max(float(getattr(args, "init_mask_threshold", 0.5)), 0.5)
+        if getattr(args, "mask_path", None)
+        else float(getattr(args, "init_mask_threshold", 0.5))
     )
     if hasattr(args, "structure_sigma"):
         volume_supervisor.structure_sigma = float(args.structure_sigma)
@@ -958,8 +969,14 @@ def training(
                         added = int(sum(int(v) for v in last_counts.values()))
                         pruned_est = max(0, points_before + added - points_after)
 
-                        # Log densification
-                        if iteration % 100 == 0 or iteration == opt.densify_from_iter:
+                        # Log densification. With small intervals the previous
+                        # cadence could hide most densification passes.
+                        should_log_densify = (
+                            bool(getattr(args, "enable_diagnostics", False))
+                            or iteration % 100 == 0
+                            or iteration == opt.densify_from_iter
+                        )
+                        if should_log_densify:
                             print(
                                 (
                                     f"\n[ITER {iteration}] Densify: +{added} pruned~{pruned_est} "

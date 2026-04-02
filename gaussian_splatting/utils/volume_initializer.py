@@ -331,13 +331,25 @@ def initialize_from_volume(
 
                     attempts += 1
 
-                # Final fallback: snap remaining invalid samples to in-mask voxels (no jitter).
+                # Final fallback: keep replacement points continuous inside in-mask voxels.
                 if invalid.numel() > 0:
                     need = int(invalid.numel())
                     rand_idx = torch.randint(
                         0, candidate_coords.shape[0], (need,), device=device
                     )
-                    jittered[invalid] = candidate_coords[rand_idx]
+                    fallback_coords = candidate_coords[rand_idx]
+                    fallback_coords = fallback_coords + (
+                        torch.rand_like(fallback_coords) - 0.5
+                    )
+                    if jitter_scale > 0:
+                        fallback_jitter = (
+                            torch.rand_like(fallback_coords) - 0.5
+                        ) * (jitter_scale * 2.0)
+                        fallback_coords = fallback_coords + fallback_jitter
+                    fallback_coords[:, 0].clamp_(0, W - 1)
+                    fallback_coords[:, 1].clamp_(0, H - 1)
+                    fallback_coords[:, 2].clamp_(0, D - 1)
+                    jittered[invalid] = fallback_coords
                     sampled_vals[invalid] = candidate_vals[rand_idx]
                     sampled_dist[invalid] = candidate_dist[rand_idx]
 
