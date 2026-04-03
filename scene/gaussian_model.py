@@ -163,6 +163,7 @@ class GaussianModel:
         self._xyz_boost_active = 0
         self._xyz_boost_duration = 5
         self.densify_grad_percentile = 0.60
+        self.densify_max_new_points = 10000
         self.scaling_constraint_warmup_iters = 0
         self.scaling_constraint_relaxation = 1.0
         self.early_stats_window = 256
@@ -1129,6 +1130,13 @@ class GaussianModel:
         )
         self.densify_grad_percentile = getattr(
             training_args, "densify_grad_percentile", self.densify_grad_percentile
+        )
+        self.densify_max_new_points = int(
+            getattr(
+                training_args,
+                "densify_max_new_points",
+                self.densify_max_new_points,
+            )
         )
 
         self._scale_history.clear()
@@ -2990,6 +2998,29 @@ class GaussianModel:
                 boost = torch.where(weak_mask, damped, boost)
         return boost
 
+    def _cap_selection_mask(
+        self,
+        selected_pts_mask: torch.Tensor,
+        max_count: Optional[int],
+    ) -> torch.Tensor:
+        """Randomly subsample a boolean selection mask to at most max_count items."""
+        if max_count is None:
+            return selected_pts_mask
+
+        allowed = int(max_count)
+        if allowed <= 0:
+            return torch.zeros_like(selected_pts_mask, dtype=torch.bool)
+
+        selected_indices = torch.nonzero(selected_pts_mask, as_tuple=False).view(-1)
+        if selected_indices.numel() <= allowed:
+            return selected_pts_mask
+
+        perm = torch.randperm(selected_indices.numel(), device=selected_indices.device)
+        kept = selected_indices[perm[:allowed]]
+        capped_mask = torch.zeros_like(selected_pts_mask, dtype=torch.bool)
+        capped_mask[kept] = True
+        return capped_mask
+
     @torch.no_grad()
     def densify_and_split(
         self,
@@ -2998,6 +3029,7 @@ class GaussianModel:
         scene_extent: float,
         N: int = 2,
         structure_strength: Optional[torch.Tensor] = None,
+        max_new_points: Optional[int] = None,
     ):
         """
         Split large Gaussians that have high gradients.
@@ -3040,6 +3072,13 @@ class GaussianModel:
         ):
             selected_pts_mask = torch.logical_and(
                 selected_pts_mask, self._low_density_mask
+            )
+
+        if max_new_points is not None:
+            net_per_parent = max(int(N) - 1, 1)
+            max_split_parents = max(0, int(max_new_points) // net_per_parent)
+            selected_pts_mask = self._cap_selection_mask(
+                selected_pts_mask, max_split_parents
             )
 
         if not selected_pts_mask.any():
@@ -3150,6 +3189,7 @@ class GaussianModel:
         grad_threshold: float,
         scene_extent: float,
         structure_strength: Optional[torch.Tensor] = None,
+        max_new_points: Optional[int] = None,
     ):
         """
         Clone small Gaussians that have high gradients.
@@ -3175,6 +3215,8 @@ class GaussianModel:
         selected_pts_mask = torch.logical_and(
             selected_pts_mask, torch.min(scales, dim=1).values > 0.0
         )
+
+        selected_pts_mask = self._cap_selection_mask(selected_pts_mask, max_new_points)
 
         self._clone_by_mask(selected_pts_mask, reason="clone")
 
@@ -3253,7 +3295,11 @@ class GaussianModel:
         return num_new_points
 
     @torch.no_grad()
-    def _trigger_hole_fill(self, target_count: int) -> int:
+    def _trigger_hole_fill(
+        self,
+        target_count: int,
+        max_new_points: Optional[int] = None,
+    ) -> int:
         """Clone additional splats in sparse regions to fill coverage holes."""
         if (
             target_count <= 0
@@ -3265,6 +3311,12 @@ class GaussianModel:
         candidates = torch.nonzero(self._low_density_mask, as_tuple=False).view(-1)
         if candidates.numel() == 0:
             return 0
+
+        if max_new_points is not None:
+            max_allowed = max(0, int(max_new_points))
+            if max_allowed <= 0:
+                return 0
+            target_count = min(target_count, max_allowed)
 
         fill_count = min(target_count, candidates.numel())
         perm = torch.randperm(candidates.numel(), device=candidates.device)[:fill_count]
@@ -3339,15 +3391,37 @@ class GaussianModel:
         # Update density cache to guide densification heuristics
         density_info = self._maybe_update_density_cache(None)
 
+        remaining_budget: Optional[int]
+        if int(getattr(self, "densify_max_new_points", 0)) > 0:
+            remaining_budget = int(self.densify_max_new_points)
+        else:
+            remaining_budget = None
+
         # Perform densification
-        self.densify_and_clone(grads, grad_threshold, extent, structure_strength)
+        self.densify_and_clone(
+            grads,
+            grad_threshold,
+            extent,
+            structure_strength,
+            max_new_points=remaining_budget,
+        )
+        if remaining_budget is not None:
+            remaining_budget = max(
+                0, remaining_budget - int(self.last_densify_counts.get("clone", 0))
+            )
+
         self.densify_and_split(
             grads,
             grad_threshold,
             extent,
             N=2,
             structure_strength=structure_strength,
+            max_new_points=remaining_budget,
         )
+        if remaining_budget is not None:
+            remaining_budget = max(
+                0, remaining_budget - int(self.last_densify_counts.get("split", 0))
+            )
 
         # Perform targeted hole filling when coverage is poor
         hole_added = 0
@@ -3355,7 +3429,11 @@ class GaussianModel:
             coverage_ratio = float(density_info["coverage_ratio"].item())
             if coverage_ratio < self.target_coverage:
                 desired = int(self._hole_fill_fraction * self._xyz.shape[1])
-                hole_added = self._trigger_hole_fill(desired)
+                if remaining_budget is not None:
+                    desired = min(desired, remaining_budget)
+                hole_added = self._trigger_hole_fill(
+                    desired, max_new_points=remaining_budget
+                )
 
         if hole_added > 0:
             self.last_densify_counts["hole_fill"] = hole_added

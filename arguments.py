@@ -878,7 +878,7 @@ class OptimizationParams(ParamGroup):
         densify.add_argument(
             "--densification_interval",
             type=int,
-            default=200,
+            default=100,
             help="Iterations between densification/splitting passes (volume training: keep this relatively large).",
         )
         self._register("densification_interval")
@@ -899,7 +899,7 @@ class OptimizationParams(ParamGroup):
         densify.add_argument(
             "--densify_from_iter",
             type=int,
-            default=400,
+            default=100,
             help="Iteration to begin spawning/splitting Gaussians.",
         )
         self._register("densify_from_iter")
@@ -908,7 +908,7 @@ class OptimizationParams(ParamGroup):
         densify.add_argument(
             "--densify_until_iter",
             type=int,
-            default=2400,
+            default=2000,
             help=(
                 "Iteration after which densification/pruning stops. "
                 "Default uses a short early window to avoid late noisy topology changes."
@@ -938,6 +938,17 @@ class OptimizationParams(ParamGroup):
             ),
         )
         self._register("densify_grad_percentile")
+
+        densify.add_argument(
+            "--densify_max_new_points",
+            type=int,
+            default=10000,
+            help=(
+                "Maximum net new Gaussians added per densification pass "
+                "(clone + split + hole-fill). Set <= 0 to disable this cap."
+            ),
+        )
+        self._register("densify_max_new_points")
 
         densify.add_argument(
             "--prune_min_opacity",

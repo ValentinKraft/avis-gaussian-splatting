@@ -107,13 +107,13 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
 
     # Allow densification for both organ and vessel presets when enabled.
     state.densification_enabled = densification_enabled
-    if state.densification_enabled:
-        opt.densification_interval = max(opt.densification_interval, 200)
-        opt.densify_grad_threshold = max(opt.densify_grad_threshold, 5e-4)
-        opt.densify_from_iter = max(opt.densify_from_iter, 400)
-        opt.densify_until_iter = min(
-            opt.densify_until_iter, opt.iterations, opt.densify_from_iter + 2000
-        )
+    # if state.densification_enabled:
+    # opt.densification_interval = max(opt.densification_interval, 200)
+    # opt.densify_grad_threshold = max(opt.densify_grad_threshold, 5e-4)
+    # opt.densify_from_iter = max(opt.densify_from_iter, 400)
+    # opt.densify_until_iter = min(
+    #     opt.densify_until_iter, opt.iterations, opt.densify_from_iter + 2000
+    # )
 
     if disable_densification and state.densification_enabled:
         state.densification_enabled = False
