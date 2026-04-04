@@ -152,6 +152,9 @@ class GaussianModel:
         self._max_memory_bytes = None
         self.vessel_axial_scale = 1.0
         self.vessel_radial_scale = 1.0
+        self.densify_spawn_jitter_vox = 0.0
+        self.densify_vessel_spawn_bias = 0.0
+        self.densify_vessel_spawn_power = 1.0
         self.structure_gradient_boost = 0.0
         self.structure_gradient_exponent = 1.0
         self.structure_gradient_threshold = 0.1
@@ -1098,11 +1101,55 @@ class GaussianModel:
         self._hole_fill_fraction = getattr(
             training_args, "hole_fill_fraction", self._hole_fill_fraction
         )
-        self.vessel_axial_scale = getattr(
-            training_args, "vessel_axial_scale", self.vessel_axial_scale
+        self.vessel_axial_scale = max(
+            1e-3,
+            float(
+                getattr(
+                    training_args,
+                    "vessel_axial_scale",
+                    self.vessel_axial_scale,
+                )
+            ),
         )
-        self.vessel_radial_scale = getattr(
-            training_args, "vessel_radial_scale", self.vessel_radial_scale
+        self.vessel_radial_scale = max(
+            1e-3,
+            float(
+                getattr(
+                    training_args,
+                    "vessel_radial_scale",
+                    self.vessel_radial_scale,
+                )
+            ),
+        )
+        self.densify_spawn_jitter_vox = max(
+            0.0,
+            float(
+                getattr(
+                    training_args,
+                    "densify_spawn_jitter_vox",
+                    self.densify_spawn_jitter_vox,
+                )
+            ),
+        )
+        self.densify_vessel_spawn_bias = max(
+            0.0,
+            float(
+                getattr(
+                    training_args,
+                    "densify_vessel_spawn_bias",
+                    self.densify_vessel_spawn_bias,
+                )
+            ),
+        )
+        self.densify_vessel_spawn_power = max(
+            1.0,
+            float(
+                getattr(
+                    training_args,
+                    "densify_vessel_spawn_power",
+                    self.densify_vessel_spawn_power,
+                )
+            ),
         )
         self.structure_gradient_boost = getattr(
             training_args,
@@ -2967,8 +3014,9 @@ class GaussianModel:
             voxel.to(device=device),
             mag_field.shape,
         )
-        grid = grid.view(1, -1, 1, 1, 3)
-        mag_tensor = mag_field.unsqueeze(0).unsqueeze(0)
+        sample_dtype = coords.dtype if coords.is_floating_point() else torch.float32
+        grid = grid.to(dtype=sample_dtype).view(1, -1, 1, 1, 3)
+        mag_tensor = mag_field.to(dtype=sample_dtype).unsqueeze(0).unsqueeze(0)
         sampled = F.grid_sample(
             mag_tensor,
             grid,
@@ -2997,6 +3045,97 @@ class GaussianModel:
                 damped = 1.0 + strength * (self.structure_gradient_boost * 0.25)
                 boost = torch.where(weak_mask, damped, boost)
         return boost
+
+    def _structure_blend_weights(
+        self, strength: Optional[torch.Tensor]
+    ) -> Optional[torch.Tensor]:
+        """Map raw structure strength to a 0..1 blend weight."""
+        if strength is None or strength.numel() == 0:
+            return None
+
+        blend = strength.clamp(0.0, 1.0)
+        threshold = float(self.structure_gradient_threshold)
+        if threshold >= 1.0:
+            return torch.zeros_like(blend)
+        if threshold > 0.0:
+            blend = (blend - threshold).clamp_min(0.0) / (1.0 - threshold)
+        return blend
+
+    def _normalized_voxel_size_xyz(
+        self, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        """Return the normalized xyz step size of one voxel."""
+        mask = getattr(self, "reference_mask", None)
+        if isinstance(mask, torch.Tensor) and mask.ndim == 3 and mask.numel() > 0:
+            dims = torch.tensor(
+                [mask.shape[2] - 1, mask.shape[1] - 1, mask.shape[0] - 1],
+                device=device,
+                dtype=dtype,
+            ).clamp_min(1.0)
+            return 1.0 / dims
+
+        voxel = getattr(self, "voxel_size", None)
+        if voxel is not None:
+            voxel_tensor = torch.as_tensor(voxel, device=device, dtype=dtype).view(-1)
+            if voxel_tensor.numel() == 1:
+                voxel_tensor = voxel_tensor.repeat(3)
+            if voxel_tensor.numel() >= 3:
+                return voxel_tensor[:3].clamp_min(1e-6)
+
+        return torch.ones(3, device=device, dtype=dtype)
+
+    def _apply_spawn_jitter(self, xyz: torch.Tensor) -> torch.Tensor:
+        """Apply sub-voxel jitter to cloned spawn locations."""
+        jitter_vox = float(self.densify_spawn_jitter_vox)
+        if jitter_vox <= 0.0 or xyz.numel() == 0:
+            return xyz
+
+        transposed = xyz.dim() == 2 and xyz.shape[0] == 3
+        xyz_n3 = xyz.transpose(0, 1).contiguous() if transposed else xyz
+        if xyz_n3.dim() != 2 or xyz_n3.shape[1] != 3:
+            return xyz
+
+        voxel_step = self._normalized_voxel_size_xyz(
+            xyz_n3.device, xyz_n3.dtype
+        ).view(1, 3)
+        noise = (torch.rand_like(xyz_n3) * 2.0) - 1.0
+        jittered = xyz_n3 + noise * (voxel_step * jitter_vox)
+
+        bounds = getattr(self, "position_bounds", None)
+        if bounds and len(bounds) == 2:
+            bounds_min, bounds_max = bounds
+            if bounds_min is not None and bounds_max is not None:
+                bmin = bounds_min.to(device=xyz_n3.device, dtype=xyz_n3.dtype).view(1, 3)
+                bmax = bounds_max.to(device=xyz_n3.device, dtype=xyz_n3.dtype).view(1, 3)
+                jittered = torch.maximum(torch.minimum(jittered, bmax), bmin)
+
+        return jittered.transpose(0, 1).contiguous() if transposed else jittered
+
+    def _structure_scaled_children(
+        self,
+        parent_scaling: torch.Tensor,
+        strength: Optional[torch.Tensor],
+        base_factor: float,
+    ) -> torch.Tensor:
+        """Blend isotropic runtime refinement with vessel-aware axial scaling."""
+        child_scaling = (parent_scaling * float(base_factor)).clamp_min(1e-6)
+        blend = self._structure_blend_weights(strength)
+        if blend is None or blend.numel() != child_scaling.shape[0]:
+            return child_scaling
+
+        if (
+            abs(float(self.vessel_axial_scale) - 1.0) < 1e-6
+            and abs(float(self.vessel_radial_scale) - 1.0) < 1e-6
+        ):
+            return child_scaling
+
+        vessel_scaling = child_scaling.clone()
+        vessel_scaling[:, 2] = vessel_scaling[:, 2] * float(self.vessel_axial_scale)
+        vessel_scaling[:, 0] = vessel_scaling[:, 0] * float(self.vessel_radial_scale)
+        vessel_scaling[:, 1] = vessel_scaling[:, 1] * float(self.vessel_radial_scale)
+        return torch.lerp(child_scaling, vessel_scaling, blend.unsqueeze(1)).clamp_min(
+            1e-6
+        )
 
     def _cap_selection_mask(
         self,
@@ -3099,12 +3238,15 @@ class GaussianModel:
         # Transpose new_xyz back to [3, N*M] to match _xyz shape
         new_xyz = new_xyz.T.contiguous()
 
-        # Create scaled-down versions of other attributes
-        # Use isotropic children so split densification refines detail without
-        # introducing axis-biased elongation over time.
-        child_scaling = parent_scaling.repeat(N, 1)
-        shrink = max(float(N), 1.0)
-        child_scaling = (child_scaling / shrink).clamp_min(1e-6)
+        selected_strength = None
+        if structure_strength is not None and structure_strength.numel() == n_init_points:
+            selected_strength = structure_strength[selected_pts_mask].repeat(N)
+
+        child_scaling = self._structure_scaled_children(
+            parent_scaling.repeat(N, 1),
+            selected_strength,
+            base_factor=1.0 / max(float(N), 1.0),
+        )
         new_scaling = self.scaling_inverse_activation(child_scaling)
         parent_quats = self.get_rotation[selected_pts_mask].detach()
         fallback_quats = parent_quats.repeat(N, 1)
@@ -3218,10 +3360,19 @@ class GaussianModel:
 
         selected_pts_mask = self._cap_selection_mask(selected_pts_mask, max_new_points)
 
-        self._clone_by_mask(selected_pts_mask, reason="clone")
+        self._clone_by_mask(
+            selected_pts_mask,
+            reason="clone",
+            structure_strength=structure_strength,
+        )
 
     @torch.no_grad()
-    def _clone_by_mask(self, selected_pts_mask: torch.Tensor, reason: str) -> int:
+    def _clone_by_mask(
+        self,
+        selected_pts_mask: torch.Tensor,
+        reason: str,
+        structure_strength: Optional[torch.Tensor] = None,
+    ) -> int:
         """Clone points specified by mask; returns number of clones added."""
         if selected_pts_mask is None or selected_pts_mask.numel() == 0:
             return 0
@@ -3236,6 +3387,7 @@ class GaussianModel:
             return 0
 
         new_xyz = xyz[:, selected_pts_mask]
+        new_xyz = self._apply_spawn_jitter(new_xyz)
 
         has_f_dc = any(group["name"] == "f_dc" for group in self.optimizer.param_groups)
         if has_f_dc and self._features_dc is not None:
@@ -3264,11 +3416,20 @@ class GaussianModel:
             new_features_rest = None
 
         new_opacities = self._opacity[selected_pts_mask]
-        # Slightly shrink cloned scales so clones act as refinements, not duplicate blobs
         parent_scaling = self.get_scaling[selected_pts_mask]
-        shrink_factor = 0.8
-        shrunk_scaling = (parent_scaling * shrink_factor).clamp_min(1e-6)
-        new_scaling = self.scaling_inverse_activation(shrunk_scaling)
+        selected_strength = None
+        if (
+            structure_strength is not None
+            and structure_strength.numel() == selected_pts_mask.numel()
+        ):
+            selected_strength = structure_strength[selected_pts_mask]
+        new_scaling = self.scaling_inverse_activation(
+            self._structure_scaled_children(
+                parent_scaling,
+                selected_strength,
+                base_factor=0.8,
+            )
+        )
         parent_quats = self.get_rotation[selected_pts_mask].detach()
         new_rotation, fallback_mask = self._sample_orientation_quats(
             new_xyz, parent_quats
@@ -3298,6 +3459,7 @@ class GaussianModel:
     def _trigger_hole_fill(
         self,
         target_count: int,
+        structure_strength: Optional[torch.Tensor] = None,
         max_new_points: Optional[int] = None,
     ) -> int:
         """Clone additional splats in sparse regions to fill coverage holes."""
@@ -3319,13 +3481,50 @@ class GaussianModel:
             target_count = min(target_count, max_allowed)
 
         fill_count = min(target_count, candidates.numel())
-        perm = torch.randperm(candidates.numel(), device=candidates.device)[:fill_count]
-        selected = candidates[perm]
+        selected = candidates
+        if fill_count < candidates.numel():
+            weights = None
+            if (
+                structure_strength is not None
+                and structure_strength.numel() == self.get_xyz.shape[1]
+                and self.densify_vessel_spawn_bias > 0.0
+            ):
+                candidate_strength = self._structure_blend_weights(
+                    structure_strength[candidates]
+                )
+                if candidate_strength is not None and candidate_strength.numel() > 0:
+                    weights = 1.0 + float(self.densify_vessel_spawn_bias) * (
+                        candidate_strength.clamp(0.0, 1.0).pow(
+                            float(self.densify_vessel_spawn_power)
+                        )
+                    )
+                    weights = torch.nan_to_num(
+                        weights,
+                        nan=0.0,
+                        posinf=0.0,
+                        neginf=0.0,
+                    )
+                    if not bool(torch.isfinite(weights).all().item()):
+                        weights = None
+                    elif float(weights.sum().item()) <= 0.0:
+                        weights = None
+
+            if weights is None:
+                perm = torch.randperm(candidates.numel(), device=candidates.device)
+                selected = candidates[perm[:fill_count]]
+            else:
+                choice = torch.multinomial(weights, fill_count, replacement=False)
+                selected = candidates[choice]
+
         mask = torch.zeros(
             self.get_xyz.shape[1], dtype=torch.bool, device=self._xyz.device
         )
         mask[selected] = True
-        return self._clone_by_mask(mask, reason="hole_fill")
+        return self._clone_by_mask(
+            mask,
+            reason="hole_fill",
+            structure_strength=structure_strength,
+        )
 
     @torch.no_grad()
     def densify_and_prune(
@@ -3351,7 +3550,13 @@ class GaussianModel:
 
         xyz = self.get_xyz
         structure_strength = None
-        if self.structure_gradient_boost > 0.0:
+        use_structure_guidance = (
+            self.structure_gradient_boost > 0.0
+            or self.densify_vessel_spawn_bias > 0.0
+            or abs(float(self.vessel_axial_scale) - 1.0) > 1e-6
+            or abs(float(self.vessel_radial_scale) - 1.0) > 1e-6
+        )
+        if use_structure_guidance:
             structure_strength = self._structure_strength_from_field(xyz)
             if (
                 structure_strength is not None
@@ -3432,7 +3637,9 @@ class GaussianModel:
                 if remaining_budget is not None:
                     desired = min(desired, remaining_budget)
                 hole_added = self._trigger_hole_fill(
-                    desired, max_new_points=remaining_budget
+                    desired,
+                    structure_strength=structure_strength,
+                    max_new_points=remaining_budget,
                 )
 
         if hole_added > 0:

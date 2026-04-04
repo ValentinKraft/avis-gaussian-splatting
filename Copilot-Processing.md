@@ -1,4 +1,28 @@
 
+## User Request Details (2026-04-04, Runtime Fidelity Densification)
+- Start implementation of the planned runtime densification changes for volume-supervised fidelity.
+- Goal: improve vessel-aware offspring placement/scaling, make active-point subsampling fair for densification stats, and expose the missing runtime controls on the CLI.
+
+## Action Plan (2026-04-04)
+1. Expose the missing adaptive densification and structure-guidance flags in the CLI.
+2. Replace random active-subset sampling with coverage-based cycling so densification stats are not starved.
+3. Make runtime split/clone/hole-fill structure-aware and add spawn jitter / vessel-biased selection.
+4. Run static validation and a short smoke run that actually exercises the new densification paths.
+
+## Task Tracker (2026-04-04)
+- [x] Add runtime densification CLI flags in `arguments.py`.
+- [x] Add fair active-subset coverage state in `train.py`.
+- [x] Add structure-aware child scaling, spawn jitter, and weighted hole-fill in `scene/gaussian_model.py`.
+- [x] Fix the fp16/fp32 structure-field sampling mismatch found during smoke validation.
+- [x] Re-run smoke validation and confirm densification events succeed.
+
+## Summary / Current State (2026-04-04)
+- `arguments.py` now exposes the missing runtime densification controls, including low-density / coverage tuning and vessel-aware spawn controls.
+- `train.py` now cycles capped active subsets through a persistent shuffled order instead of drawing a fresh random subset each iteration.
+- `scene/gaussian_model.py` now uses structure-aware child scaling for split/clone paths, optional spawn jitter, and vessel-weighted hole-fill candidate selection.
+- A smoke run with capped active points and aggressive densification completed after fixing a dtype mismatch in `_structure_strength_from_field(...)`.
+- Verified smoke outcome: densification fired successfully at iteration 5 and 10 with net +4000 points each time.
+
 ## User Request Details (2026-02-24, README Refresh)
 - Update the top-level README with up-to-date information for this fork.
 - README should describe project scope (volume-supervised training), setup, how to run training, outputs, and the standalone PLY viewer.

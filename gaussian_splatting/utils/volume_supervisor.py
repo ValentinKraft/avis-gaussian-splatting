@@ -345,6 +345,10 @@ class VolumeSupervisor:
                     max_val=self.global_intensity_max,
                     padding_mode=self.sampling_padding_mode,
                 )
+                refined = refined.to(
+                    device=intensities.device,
+                    dtype=intensities.dtype,
+                )
                 intensities = intensities.clone()
                 intensities[coverage_mask] = refined[coverage_mask]
 
@@ -416,6 +420,10 @@ class VolumeSupervisor:
                     min_val=0.0,
                     max_val=1.0,
                     padding_mode=self.sampling_padding_mode,
+                )
+                refined = refined.to(
+                    device=opacities.device,
+                    dtype=opacities.dtype,
                 )
                 opacities = opacities.clone()
                 opacities[coverage_mask] = refined[coverage_mask]

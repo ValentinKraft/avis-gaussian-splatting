@@ -951,6 +951,176 @@ class OptimizationParams(ParamGroup):
         self._register("densify_max_new_points")
 
         densify.add_argument(
+            "--low_density_threshold",
+            type=float,
+            default=4.0,
+            help=(
+                "Local-density cutoff below which splats are treated as "
+                "under-covered for adaptive densification."
+            ),
+        )
+        self._register("low_density_threshold")
+
+        densify.add_argument(
+            "--target_coverage",
+            type=float,
+            default=0.78,
+            help=(
+                "Desired occupancy coverage before sparse-region hole-fill "
+                "is skipped."
+            ),
+        )
+        self._register("target_coverage")
+
+        densify.add_argument(
+            "--density_radius_factor",
+            type=float,
+            default=3.0,
+            help=(
+                "Multiplier applied to the mean splat scale when estimating "
+                "local density."
+            ),
+        )
+        self._register("density_radius_factor")
+
+        densify.add_argument(
+            "--density_update_interval",
+            type=int,
+            default=10,
+            help="Iterations between density-cache refreshes.",
+        )
+        self._register("density_update_interval")
+
+        densify.add_argument(
+            "--hole_fill_fraction",
+            type=float,
+            default=0.05,
+            help=(
+                "Fraction of the current point count proposed for sparse-region "
+                "hole-fill when coverage is below target."
+            ),
+        )
+        self._register("hole_fill_fraction")
+
+        densify.add_argument(
+            "--dynamics_log_interval",
+            type=int,
+            default=50,
+            help="Iterations between adaptive-dynamics diagnostic snapshots.",
+        )
+        self._register("dynamics_log_interval")
+
+        densify.add_argument(
+            "--scale_boost_window",
+            type=int,
+            default=16,
+            help="History window used to detect stalled scale updates.",
+        )
+        self._register("scale_boost_window")
+
+        densify.add_argument(
+            "--scale_stall_epsilon",
+            type=float,
+            default=7e-5,
+            help="Average scale-change threshold below which scale motion counts as stalled.",
+        )
+        self._register("scale_stall_epsilon")
+
+        densify.add_argument(
+            "--scale_boost_factor",
+            type=float,
+            default=1.20,
+            help="Temporary scaling-LR multiplier applied when low-density regions stall.",
+        )
+        self._register("scale_boost_factor")
+
+        densify.add_argument(
+            "--scale_boost_duration",
+            type=int,
+            default=6,
+            help="Iterations for which the temporary scaling-LR boost stays active.",
+        )
+        self._register("scale_boost_duration")
+
+        densify.add_argument(
+            "--scale_cooldown",
+            type=int,
+            default=40,
+            help="Iterations to wait before another adaptive scaling boost can trigger.",
+        )
+        self._register("scale_cooldown")
+
+        densify.add_argument(
+            "--structure_gradient_boost",
+            type=float,
+            default=0.0,
+            help=(
+                "Boost factor applied to densification gradients in regions with "
+                "strong structure cues."
+            ),
+        )
+        self._register("structure_gradient_boost")
+
+        densify.add_argument(
+            "--structure_gradient_exponent",
+            type=float,
+            default=1.0,
+            help="Exponent applied to normalized structure strength before reuse.",
+        )
+        self._register("structure_gradient_exponent")
+
+        densify.add_argument(
+            "--structure_gradient_threshold",
+            type=float,
+            default=0.1,
+            help="Minimum normalized structure strength before strong vessel behavior activates.",
+        )
+        self._register("structure_gradient_threshold")
+
+        densify.add_argument(
+            "--vessel_axial_scale",
+            type=float,
+            default=1.0,
+            help="Scale multiplier applied to runtime offspring along the local vessel axis.",
+        )
+        self._register("vessel_axial_scale")
+
+        densify.add_argument(
+            "--vessel_radial_scale",
+            type=float,
+            default=1.0,
+            help="Scale multiplier applied to runtime offspring on the local radial axes.",
+        )
+        self._register("vessel_radial_scale")
+
+        densify.add_argument(
+            "--densify_spawn_jitter_vox",
+            type=float,
+            default=0.0,
+            help="Uniform spawn jitter in voxel units applied to cloned or hole-fill splats.",
+        )
+        self._register("densify_spawn_jitter_vox")
+
+        densify.add_argument(
+            "--densify_vessel_spawn_bias",
+            type=float,
+            default=0.0,
+            help=(
+                "Additional weighting applied when hole-fill sampling prefers "
+                "strong-structure candidates."
+            ),
+        )
+        self._register("densify_vessel_spawn_bias")
+
+        densify.add_argument(
+            "--densify_vessel_spawn_power",
+            type=float,
+            default=1.0,
+            help="Exponent controlling how strongly structure-biased hole-fill sampling concentrates.",
+        )
+        self._register("densify_vessel_spawn_power")
+
+        densify.add_argument(
             "--prune_min_opacity",
             type=float,
             default=1e-4,

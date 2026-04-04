@@ -54,6 +54,15 @@ class MedicalPresetState:
     init_points: int
 
 
+@dataclass
+class ActiveSubsetState:
+    """Track fair coverage when active-point sampling is memory capped."""
+
+    order: Optional[torch.Tensor] = None
+    cursor: int = 0
+    total_points: int = 0
+
+
 def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
     """Apply organ/vessel presets and return the resulting state."""
 
@@ -144,10 +153,14 @@ def _configure_medical_presets(args: Namespace, opt) -> MedicalPresetState:
 def _select_active_indices(
     xyz: torch.Tensor,
     max_points_per_iter: int,
+    state: ActiveSubsetState,
 ) -> tuple[Optional[torch.Tensor], int]:
-    """Return a random subset of point indices capped at max_points_per_iter."""
+    """Return a capped active subset while cycling through all points over time."""
     if xyz.dim() != 2:
         total = xyz.shape[0]
+        state.order = None
+        state.cursor = 0
+        state.total_points = total
         return None, total
 
     if xyz.shape[0] == 3 and xyz.shape[1] != 3:
@@ -156,10 +169,35 @@ def _select_active_indices(
         total = xyz.shape[0]
 
     if total <= max_points_per_iter:
+        state.order = None
+        state.cursor = 0
+        state.total_points = total
         return None, total
 
     device = xyz.device
-    idx = torch.randperm(total, device=device)[:max_points_per_iter]
+    if (
+        state.order is None
+        or state.total_points != total
+        or state.order.device != device
+        or state.order.numel() != total
+    ):
+        state.order = torch.randperm(total, device=device)
+        state.cursor = 0
+        state.total_points = total
+
+    remaining = total - state.cursor
+    if remaining >= max_points_per_iter:
+        idx = state.order[state.cursor : state.cursor + max_points_per_iter]
+        state.cursor += max_points_per_iter
+        return idx, total
+
+    tail = state.order[state.cursor:]
+    state.order = torch.randperm(total, device=device)
+    state.total_points = total
+    head_count = max_points_per_iter - tail.numel()
+    head = state.order[:head_count]
+    state.cursor = head_count
+    idx = torch.cat((tail, head), dim=0)
     return idx, total
 
 
@@ -615,6 +653,7 @@ def training(
         leave=True,
     )
     first_iter += 1
+    active_subset_state = ActiveSubsetState()
     for iteration in range(first_iter, opt.iterations + 1):
         # Skip GUI network in volume-only mode
 
@@ -643,6 +682,7 @@ def training(
         active_idx, total_points = _select_active_indices(
             xyz_for_sampling,
             max_points_per_iter=max_points_per_iter,
+            state=active_subset_state,
         )
         active_points = active_idx.numel() if active_idx is not None else total_points
         if log_mem and total_points > 0:
