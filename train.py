@@ -501,10 +501,8 @@ def training(
         volume_supervisor.bounds_min,
         volume_supervisor.bounds_max,
     )
-    gaussians.reference_mask_threshold = (
-        max(float(getattr(args, "init_mask_threshold", 0.5)), 0.5)
-        if getattr(args, "mask_path", None)
-        else float(getattr(args, "init_mask_threshold", 0.5))
+    gaussians.reference_mask_threshold = float(
+        getattr(args, "init_mask_threshold", 0.05)
     )
     if hasattr(args, "structure_sigma"):
         volume_supervisor.structure_sigma = float(args.structure_sigma)
@@ -555,11 +553,7 @@ def training(
             else opt.position_noise
         ),
         orientation_helper=volume_supervisor,
-        mask_threshold=(
-            max(float(getattr(args, "init_mask_threshold", 0.5)), 0.5)
-            if getattr(args, "mask_path", None)
-            else float(getattr(args, "init_mask_threshold", 0.5))
-        ),
+        mask_threshold=float(getattr(args, "init_mask_threshold", 0.05)),
         structure_mask_threshold=getattr(args, "structure_mask_threshold", 0.1),
         structure_sigma=getattr(args, "structure_sigma", 1.0),
         structure_min_vesselness=getattr(args, "structure_min_vesselness", 0.1),

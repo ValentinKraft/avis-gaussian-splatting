@@ -186,7 +186,7 @@ def initialize_from_volume(
     n_points: int = 5000,
     noise_std: float = 0.01,
     device: torch.device = torch.device("cuda"),
-    mask_threshold: float = 0.01,
+    mask_threshold: float = 0.05,
     volume_downscale_factor: Optional[int] = None,
     volume_storage_dtype: str = "fp32",
     disable_volume_overflow_guard: bool = False,
@@ -809,7 +809,7 @@ def initialize_gaussians(
         mask_intensity_min = None
         mask_intensity_max = None
         if mask_volume is not None and mask_volume.numel() > 0:
-            mask_threshold = float(kwargs.get("mask_threshold", 0.01))
+            mask_threshold = float(kwargs.get("mask_threshold", 0.05))
             mask_bool = mask_volume >= max(mask_threshold, 1e-4)
             if not bool(mask_bool.any().item()):
                 mask_bool = mask_volume > 0
@@ -850,7 +850,7 @@ def initialize_gaussians(
         # values at iteration 1. Detect those cases and replace with nearest-voxel
         # samples from the intensity volume.
         if mask_volume is not None and mask_volume.numel() > 0 and intensities.numel() > 0:
-            mask_threshold = float(kwargs.get("mask_threshold", 0.01))
+            mask_threshold = float(kwargs.get("mask_threshold", 0.05))
             mask_samples, _, _ = sample_intensities_from_volume(
                 points,
                 mask_volume,
