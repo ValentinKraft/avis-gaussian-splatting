@@ -42,6 +42,25 @@ from gaussian_splatting.utils.orientation_field import (
 if TYPE_CHECKING:
     from gaussian_splatting.utils.volume_supervisor import VolumeSupervisor
 
+
+def _blend_quaternions(
+    source_quat: Tensor,
+    target_quat: Tensor,
+    blend: Tensor,
+) -> Tensor:
+    """Blend quaternion pairs with hemisphere alignment and renormalization."""
+    if source_quat.numel() == 0:
+        return source_quat
+
+    blend = blend.to(device=source_quat.device, dtype=source_quat.dtype).view(-1, 1)
+    blend = blend.clamp(0.0, 1.0)
+    target_quat = target_quat.to(device=source_quat.device, dtype=source_quat.dtype)
+
+    dot = (source_quat * target_quat).sum(dim=1, keepdim=True)
+    aligned_target = torch.where(dot < 0.0, -target_quat, target_quat)
+    mixed = (1.0 - blend) * source_quat + blend * aligned_target
+    return F.normalize(mixed, dim=1, eps=1e-6)
+
 def _compute_distance_field(mask: Tensor, threshold: float = 0.1) -> Tensor:
     """Approximate Euclidean distance transform using a weighted grid Dijkstra."""
     mask_cpu = mask.detach().float().cpu()
@@ -723,6 +742,9 @@ def initialize_gaussians(
     structure_sigma = kwargs.pop("structure_sigma", 1.0)
     structure_min_vesselness = kwargs.pop("structure_min_vesselness", 0.2)
     anisotropy_strength = kwargs.pop("anisotropy_strength", 0.0)
+    structure_orientation_strength = float(
+        kwargs.pop("structure_orientation_strength", 0.0)
+    )
     init_anisotropy_ratio = float(kwargs.pop("init_anisotropy_ratio", 1.0))
     border_distance_vox = float(kwargs.pop("border_distance_vox", 0.0))
     border_flatten_ratio = float(kwargs.pop("border_flatten_ratio", 1.0))
@@ -1004,14 +1026,32 @@ def initialize_gaussians(
             scales_active[:, 0] = scales_active[:, 0] * shrink
             scales_active[:, 1] = scales_active[:, 1] * shrink
             scales[active] = scales_active
-            # Keep gradient-based orientations when available; they are typically
-            # more diverse and robust for global initialization. The mask-Hessian
-            # vesselness still gates anisotropy strength via `active` and `stretch`.
+            # Blend in Hessian orientations when requested so strong vessel cues
+            # can sharpen the principal axis instead of only changing scales.
             if orientation_helper is None:
                 initial_rotations[active] = structure_quats[active]
+            elif structure_orientation_strength > 0.0:
+                blend_weight = (
+                    float(structure_orientation_strength) * vessel_strength
+                ).clamp(0.0, 1.0)
+                initial_rotations[active] = _blend_quaternions(
+                    initial_rotations[active],
+                    structure_quats[active],
+                    blend_weight,
+                )
+
+            orientation_note = ""
+            if orientation_helper is None:
+                orientation_note = "; used Hessian orientations"
+            elif structure_orientation_strength > 0.0:
+                orientation_note = (
+                    "; blended Hessian orientations "
+                    f"(strength={structure_orientation_strength:.2f})"
+                )
             print(
                 f"Applied Hessian anisotropy to {active.sum().item()} seeds "
-                f"(threshold={structure_min_vesselness:.2f})."
+                f"(threshold={structure_min_vesselness:.2f})"
+                f"{orientation_note}."
             )
 
     # Border splats: align the Hessian largest-|lambda| eigenvector to the mask gradient
@@ -1063,6 +1103,8 @@ def initialize_gaussians(
                 hess_pts = torch.nan_to_num(
                     hess_pts, nan=0.0, posinf=0.0, neginf=0.0
                 )
+                # CUDA eigendecomposition does not support fp16 here.
+                hess_pts = hess_pts.to(dtype=torch.float32)
                 evals, evecs = torch.linalg.eigh(hess_pts)
                 idx = evals.abs().argmax(dim=1)
                 arange = torch.arange(
@@ -1081,6 +1123,10 @@ def initialize_gaussians(
                 good = ~fallback_g[border_idx]
                 if good.any():
                     quats_border, _ = quat_from_directions(h_dir[good])
+                    quats_border = quats_border.to(
+                        device=initial_rotations.device,
+                        dtype=initial_rotations.dtype,
+                    )
                     initial_rotations[border_idx[good]] = quats_border
 
                     # Flatten along local axis-2 (normal) and expand tangential axes.

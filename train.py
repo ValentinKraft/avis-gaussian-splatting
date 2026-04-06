@@ -504,6 +504,18 @@ def training(
     gaussians.reference_mask_threshold = float(
         getattr(args, "init_mask_threshold", 0.05)
     )
+    if hasattr(args, "orientation_sigma_grad"):
+        volume_supervisor.orientation_sigma_grad = float(
+            args.orientation_sigma_grad
+        )
+    if hasattr(args, "orientation_sigma_tensor"):
+        volume_supervisor.orientation_sigma_tensor = float(
+            args.orientation_sigma_tensor
+        )
+    if hasattr(args, "orientation_perturb_deg"):
+        volume_supervisor.orientation_perturb_deg = float(
+            args.orientation_perturb_deg
+        )
     if hasattr(args, "structure_sigma"):
         volume_supervisor.structure_sigma = float(args.structure_sigma)
     if hasattr(args, "structure_mask_threshold"):
@@ -558,6 +570,9 @@ def training(
         structure_sigma=getattr(args, "structure_sigma", 1.0),
         structure_min_vesselness=getattr(args, "structure_min_vesselness", 0.1),
         anisotropy_strength=getattr(args, "anisotropy_strength", 0.0),
+        structure_orientation_strength=getattr(
+            args, "structure_orientation_strength", 0.0
+        ),
         init_anisotropy_ratio=getattr(args, "init_anisotropy_ratio", 1.0),
         border_distance_vox=getattr(args, "border_distance_vox", 0.0),
         border_flatten_ratio=getattr(args, "border_flatten_ratio", 1.0),

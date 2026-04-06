@@ -353,6 +353,19 @@ class ModelParams(ParamGroup):
         self._register("anisotropy_strength")
 
         core.add_argument(
+            "--structure_orientation_strength",
+            type=float,
+            default=0.0,
+            help=(
+                "Blend Hessian-derived vessel orientations into the initial "
+                "Gaussian rotations when structure cues are reliable. "
+                "0.0 keeps the current gradient-driven orientation only; "
+                "1.0 fully adopts the Hessian orientation for eligible seeds."
+            ),
+        )
+        self._register("structure_orientation_strength")
+
+        core.add_argument(
             "--init_anisotropy_ratio",
             type=float,
             default=1.0,
@@ -395,6 +408,39 @@ class ModelParams(ParamGroup):
             ),
         )
         self._register("border_grad_sigma")
+
+        core.add_argument(
+            "--orientation_sigma_grad",
+            type=float,
+            default=0.8,
+            help=(
+                "Gaussian blur (voxels) applied before computing the gradient "
+                "orientation field used for initial rotations."
+            ),
+        )
+        self._register("orientation_sigma_grad")
+
+        core.add_argument(
+            "--orientation_sigma_tensor",
+            type=float,
+            default=0.0,
+            help=(
+                "Additional post-smoothing (voxels) applied to the gradient "
+                "orientation field before quaternion extraction."
+            ),
+        )
+        self._register("orientation_sigma_tensor")
+
+        core.add_argument(
+            "--orientation_perturb_deg",
+            type=float,
+            default=2.0,
+            help=(
+                "Small random perturbation in degrees applied to initial "
+                "orientation quaternions to avoid perfectly identical axes."
+            ),
+        )
+        self._register("orientation_perturb_deg")
 
         legacy = parser.add_argument_group("Legacy RGB Inputs (kept for compatibility)")
 

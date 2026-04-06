@@ -1,4 +1,27 @@
 
+## User Request Details (2026-04-06, Increase Splat Anisotropy)
+- Start implementation of the anisotropy-improvement plan for smoother surfaces, cleaner object boundaries, and more elongated vessel splats.
+- Goal: first leverage existing anisotropy machinery, then add only the smallest missing features that materially improve init-time orientation guidance.
+
+## Action Plan (2026-04-06)
+1. Expose orientation-field smoothing controls on the CLI.
+2. Thread the new settings through `train.py` into `VolumeSupervisor`.
+3. Let strong Hessian vessel cues influence initial rotations even when gradient-based orientations are available.
+4. Run static validation on the touched files.
+
+## Task Tracker (2026-04-06)
+- [x] Add CLI flags for orientation-field smoothing and Hessian-orientation blending in `arguments.py`.
+- [x] Thread new orientation controls into `train.py` and `VolumeSupervisor`.
+- [x] Add init-time quaternion blending so strong Hessian vessel directions can shape initial rotations in `gaussian_splatting/utils/volume_initializer.py`.
+- [x] Validate touched files and derive the first anisotropy-focused command.
+
+## Summary / Current State (2026-04-06)
+- `arguments.py` now exposes `orientation_sigma_grad`, `orientation_sigma_tensor`, `orientation_perturb_deg`, and `structure_orientation_strength`.
+- `train.py` now forwards the orientation-field smoothing controls into `VolumeSupervisor` and passes `structure_orientation_strength` into initialization.
+- `gaussian_splatting/utils/volume_initializer.py` now supports blending Hessian vessel quaternions into initial rotations for strong vesselness regions instead of only stretching scales.
+- Smoke-validated with a 1-iteration fp16 training run using border flattening, Hessian-orientation blending, and the new orientation smoothing flags.
+- Fixed two fp16 border-path bugs found during validation: Hessian eigendecomposition now promotes to float32 before `torch.linalg.eigh(...)`, and border quaternions are cast back to the destination rotation buffer dtype before assignment.
+
 ## User Request Details (2026-04-04, Runtime Fidelity Densification)
 - Start implementation of the planned runtime densification changes for volume-supervised fidelity.
 - Goal: improve vessel-aware offspring placement/scaling, make active-point subsampling fair for densification stats, and expose the missing runtime controls on the CLI.
