@@ -30,6 +30,11 @@ Comments: Core Idea: Mimicing Changing Transfer Functions for 3DGS by creating m
 https://onlinelibrary.wiley.com/doi/full/10.1111/cgf.70032 
 Title: Does 3D Gaussian Splatting Need Accurate Volumetric Rendering?
 
+https://arxiv.org/html/2410.04974 
+Title: 6DGS: Enhanced Direction-Aware Gaussian Splatting for Volumetric Rendering
+Comments: better modeling of view-dependent effects and fine details;
+Volumetric Rendering as example
+
 # Volume Rendering / Realistic Medical Rendering
 
 https://www.researchgate.net/publication/48546966_EWA_volume_splatting
