@@ -137,135 +137,55 @@ In summary, Gaussian Splatting has enabled highly efficient rendering but remain
 \section{Method}
 
 \subsection{Overview}
-We reformulate 3D Gaussian Splatting as a direct volumetric optimization problem. Instead of learning a scene representation from calibrated multi-view RGB images, we optimize a set of anisotropic 3D Gaussians directly against a target volume $V$ and a corresponding region-of-interest (ROI) mask $M$. This volume-native formulation removes the need for camera models and image-based supervision, making it particularly suitable for medical and scientific data.
+We reformulate 3D Gaussian Splatting as a direct volumetric optimization problem. Instead of learning a scene representation from multi-view RGB images, we optimize a set of anisotropic 3D Gaussians directly against a target volume $V$ and a corresponding region-of-interest (ROI) mask $M$. This eliminates the need for camera models and image-based supervision and aligns the representation with the native domain of medical data.
 
-Given a target volume $V$ and an ROI mask $M$, our goal is to learn a compact set of Gaussians that approximates the underlying volumetric signal in relevant regions. Optimization is performed entirely in voxel space using a differentiable splatting formulation.
-
-\subsection{Differences to Standard Gaussian Splatting}
-Our method differs fundamentally from standard 3D Gaussian Splatting. The original 3DGS pipeline is designed for novel-view synthesis from calibrated images and optimizes view-dependent color through image-space rendering. In our formulation, there is no camera setup and no image-plane supervision. Instead, the representation is optimized directly against a 3D target volume.
-
-This shift changes every major stage of the pipeline. Initialization is driven by masks rather than by structure-from-motion geometry, rendering is performed into a voxel grid rather than into images, losses are defined in volume space, and densification relies on voxel-space optimization signals instead of visibility heuristics. As a result, Gaussian Splatting becomes a sparse, trainable volumetric proxy rather than purely a rendering primitive for image reproduction.
-
-\subsection{Gaussian Representation}
-We represent the volume using a set of anisotropic Gaussians. Each Gaussian is defined by a 3D position, anisotropic scale, rotation, opacity, and a scalar intensity value.
-
-A key design choice of our method is the use of intensity-aware Gaussians. Each primitive explicitly encodes a physical intensity value (e.g., Hounsfield units in CT), allowing the representation to model both structure and appearance in a unified way. This enables transfer functions to be applied or modified after training, similar to classical volume rendering.
-
-
-
-
-
-
-
-\subsection{Initialization}
-Initialization is explicitly mask-centric. Instead of starting from sparse-view
-geometry or random points, we sample candidate voxels from the ROI mask and
-place Gaussian centers inside relevant foreground regions. The initializer
-supports both binary masks and soft masks. In the soft-mask case, the method
-retains low-confidence but potentially relevant regions by using a permissive
-mask threshold, while still focusing sampling on voxels with meaningful mask
-support.
-
-To avoid pathological oversampling in dense regions, the initialization stage
-uses a coarse per-cell quota before placing points. Sampled voxel coordinates
-are then perturbed with sub-voxel jitter and bounded positional noise, after
-which invalid samples are corrected if they drift outside the mask support.
-This yields continuous initial positions rather than points locked to the
-integer voxel lattice.
-
-Initial scales are drawn in voxel units from a configurable range and then
-mapped into the normalized volume coordinate system. Opacity is initialized
-from mask support, optionally with gamma remapping. If a source intensity
-volume is provided, each Gaussian also receives an initial scalar intensity
-sampled from the volume. The implementation includes additional boundary-aware
-corrections and fallback nearest-voxel sampling to make this process robust
-near soft boundaries.
-
-The initializer can further inject structural priors. Initial rotations are
-derived from a gradient-based orientation field computed from the intensity
-volume. Optionally, Hessian-based structure cues on the mask are used to
-estimate vesselness and preferred local directions. These cues can stretch
-splats along vessel-like structures, blend structure-derived orientations into
-the initial quaternions, and flatten splats near boundaries. This is important
-for thin anatomical structures, where isotropic seeds are a poor starting
-point.
-
-
-
-\subsection{Training and Optimization}
-
-\subsubsection{Splat-to-Volume Formulation}
-In order to being able to optimize the gaussian set against the groundtruth volume, the Gaussian set is converted into a dense voxel grid through a differentiable splatting operation. Each Gaussian contributes to nearby voxels based on its spatial extent and orientation, and the final volume is obtained by accumulating all contributions.
-
-\[
-\hat{V}(\mathbf{x}) = \sum_{i} \alpha_i , c_i , \mathcal{N}(\mathbf{x} \mid \mu_i, \Sigma_i)
-\]
-
-This formulation allows direct comparison between the predicted volume and the target data without intermediate image rendering.
-
-\subsubsection{Training Loop and Loss Functions}
-
-Training is performed directly in voxel space using a dedicated supervision
-module that manages the target volume, the mask volume, normalization ranges,
-and branch-specific loss computation. The method supports three supervision
-modes: density-only mask fitting, intensity-only fitting, and joint
-optimization of both branches. In all cases, the losses are evaluated on the
-voxel grid rather than on rendered images.
-
-To reduce domination by large empty background regions, supervision is focused
-on the mask-defined support. The implementation supports Dice, Tversky, MSE,
-and KL losses, which makes the framework suitable for both sparse
-segmentation-like targets and continuous scalar reconstruction. In joint mode,
-mask and intensity terms are combined with separate weights, and an additional
-outside-mask penalty discourages density leakage outside the foreground:
-\begin{equation}
-\mathcal{L} = \lambda_m \mathcal{L}_m + \lambda_c \mathcal{L}_c + \lambda_o \mathcal{L}_{\mathrm{out}}.
-\end{equation}
-This compact form is sufficient to capture the training objective without
-overcomplicating the presentation.
-
-The training loop includes several mechanisms that are important in practice.
-Mixed precision is used for efficiency, and gradient clipping is applied to
-avoid instability. Because the point count can exceed the feasible forward-pass
- budget, the implementation optionally renders only an active subset of
-Gaussians per iteration while cycling fairly through the full set over time.
-Attribute buffers for intensity and opacity can be refreshed periodically from
-the source volume or mask, especially for large splats that should remain
-aligned with the underlying data.
-
-The topology of the Gaussian set is adapted during training through
-densification and pruning. Instead of relying on visibility-based heuristics,
-the method accumulates per-point position-gradient norms in voxel space and
-periodically clones or splits high-gradient splats while removing low-opacity
-ones. This is particularly useful for sparse and filamentary structures, where
-fixed topology easily leads to holes or fragmented coverage.
-
-
-
-\subsection{Implementation Details}
-The implementation is organized around three main components. The training
-entry point wires together the Gaussian model, the volume supervisor, the
-initialization logic, the optimizer, and export utilities. Initialization is
-handled in a dedicated module that performs mask sampling, intensity sampling,
-orientation setup, anisotropy injection, and border-aware seeding. Volume
-supervision is handled separately and encapsulates target loading, loss
-computation, and sampled attribute refresh.
-
-Practical training on full 3D data requires explicit memory management. The
-volume loader supports safety downscaling for very large inputs and configurable
-storage dtypes such as fp32, fp16, and bf16. The rasterizer supports reduced
-internal working grids, batched accumulation, and gradient checkpointing to
-trade computation for memory during backpropagation. Together, these choices
-make it possible to optimize on larger volumes and higher point counts than a
-naive full-resolution implementation would permit.
-
-The code also includes several diagnostics and export features that are
-important for research workflows. TensorBoard logging, parameter monitoring,
-gradient statistics, and checkpoint saving are integrated into the training
-loop. In addition, the Gaussian set can be exported as a sequence of PLY files
-throughout training.
+Given $V$ and $M$, the objective is to learn a compact Gaussian set that approximates the underlying volumetric signal within relevant regions. Optimization is performed entirely in voxel space via a differentiable splatting formulation.
 
 The implementation is based on the original 3D Gaussian Splatting code and available at \url{https://github.com/your-repo/3d-gaussian-splatting}.
+
+\subsection{From Image-Space to Volume-Space Optimization}
+Standard 3D Gaussian Splatting optimizes view-dependent appearance from multi-view images. In contrast, our method operates directly in 3D. There is no camera model, no ray integration, and no image-space loss. Instead, all components of the pipeline—initialization, rendering, supervision, and topology adaptation—are defined in voxel space.
+
+This shift fundamentally changes the nature of the representation: Gaussians are no longer a proxy for view synthesis, but a sparse and trainable approximation of a volumetric signal.
+
+\subsection{Gaussian Representation}
+We represent the volume using a set of anisotropic Gaussians, each parameterized by position, scale, rotation, opacity, and a scalar intensity value.
+
+A key design decision is the use of intensity-aware Gaussians. Each primitive explicitly encodes a physical intensity value (e.g., Hounsfield units in CT), enabling the representation to capture both structure and appearance. This allows transfer functions to be applied or modified after training, similar to classical volume rendering, without requiring re-optimization.
+
+\subsection{Differentiable Splat-to-Volume Formulation}
+To compare the Gaussian representation with the target data, we convert the Gaussian set into a dense voxel grid using a differentiable splatting operator. Each Gaussian contributes to nearby voxels based on its spatial extent and orientation, and the final volume is obtained by accumulating all contributions:
+
+[
+\hat{V}(\mathbf{x}) = \sum_{i} \alpha_i , c_i , \mathcal{N}(\mathbf{x} \mid \mu_i, \Sigma_i)
+]
+
+This formulation enables direct optimization in volume space and removes the need for intermediate rendering.
+
+\subsection{Mask-Driven and Structure-Aware Initialization}
+To focus model capacity on relevant regions, Gaussians are initialized by sampling from the ROI mask. For soft masks, sampling probabilities follow voxel confidence, allowing the method to retain uncertain but potentially important regions.
+
+In addition, we incorporate simple structural priors derived from the input volume. Local gradients and second-order cues are used to estimate preferred orientations, enabling anisotropic Gaussians to align with elongated structures such as vessels. This provides a strong initialization that improves convergence and reduces the need for extensive topology adaptation during training.
+
+\subsection{ROI-Aware Supervision}
+Training is performed directly in voxel space using losses restricted to the ROI. This prevents large empty background regions from dominating optimization and improves robustness for sparse anatomical structures.
+
+The framework supports both structure-focused supervision (e.g., mask fitting) and intensity-based supervision, as well as their combination. Standard losses such as Dice, Tversky, and mean squared error are used. An additional penalty discourages density leakage outside the ROI, which stabilizes training.
+
+\subsection{Adaptive Topology Optimization}
+To maintain an efficient representation, the Gaussian set is dynamically adapted during training. Regions with high reconstruction error trigger densification, while Gaussians with negligible contribution are pruned.
+
+Unlike standard Gaussian Splatting, which relies on view-dependent visibility, our approach uses voxel-space signals such as local gradients and reconstruction error. This enables effective modeling of thin and complex anatomical structures while keeping the representation compact.
+
+\subsection{Efficient Training}
+To enable training on large volumetric datasets, we employ several practical strategies, including ROI-restricted computation, reduced-resolution working grids, and chunked accumulation of Gaussian contributions. These techniques allow scalable optimization while preserving fidelity in relevant regions.
+
+\subsection{Relation to Standard Gaussian Splatting}
+Our method should be understood as a volume-native reformulation of Gaussian Splatting. While standard approaches are designed for image-based reconstruction, our formulation directly optimizes a volumetric representation from 3D data.
+
+As a result, supervision, initialization, and topology adaptation are all performed in voxel space. This transforms Gaussian Splatting into a representation that is naturally aligned with medical imaging and other volumetric domains.
+
+
 
 
 % ----------------------------
