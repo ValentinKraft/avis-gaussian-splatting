@@ -1274,6 +1274,54 @@ class OptimizationParams(ParamGroup):
         )
         self._register("intensity_mean_cover_interval")
 
+        intensity.add_argument(
+            "--sparse_support_cutoff",
+            type=float,
+            default=0.2,
+            help=(
+                "Minimum Gaussian kernel weight kept in sparse volume splatting. "
+                "Lower values produce smoother, less point-like accumulation "
+                "at the cost of more compute."
+            ),
+        )
+        self._register("sparse_support_cutoff")
+
+        intensity.add_argument(
+            "--sparse_max_radius_vox",
+            type=int,
+            default=10,
+            help=(
+                "Maximum sparse splat neighborhood radius (voxels) used during "
+                "volume rasterization. Larger values reduce truncation artifacts "
+                "but increase memory/compute."
+            ),
+        )
+        self._register("sparse_max_radius_vox")
+
+        intensity.add_argument(
+            "--sparse_support_softness",
+            type=float,
+            default=0.75,
+            help=(
+                "Soft transition width in sigma units at the sparse-support "
+                "boundary. Larger values reduce lattice-like hard cutoffs at "
+                "the cost of more overlap and compute."
+            ),
+        )
+        self._register("sparse_support_softness")
+
+        intensity.add_argument(
+            "--render_min_sigma_vox",
+            type=float,
+            default=0.35,
+            help=(
+                "Minimum rendered Gaussian sigma in working-grid voxel units. "
+                "Lower values preserve detail and reduce blur, but values that "
+                "are too small can make optimization noisier."
+            ),
+        )
+        self._register("render_min_sigma_vox")
+
         constraint = parser.add_argument_group("Scale Constraints & Diagnostics")
 
         # Optional L2 penalty on absolute scales.

@@ -466,11 +466,16 @@ def training(
             getattr(opt, "intensity_update_interval", 10),
         ),
         sampling_padding_mode=getattr(opt, "sampling_padding_mode", "border"),
+        sparse_support_cutoff=getattr(opt, "sparse_support_cutoff", 0.2),
+        sparse_max_radius_vox=getattr(opt, "sparse_max_radius_vox", 10),
+        sparse_support_softness=getattr(opt, "sparse_support_softness", 0.75),
+        render_min_sigma_vox=getattr(opt, "render_min_sigma_vox", 0.35),
         volume_storage_dtype=getattr(args, "volume_storage_dtype", "fp32"),
     )
     volume_supervisor.enable_render_checkpoint = not bool(
         getattr(args, "disable_render_checkpoint", False)
     )
+    volume_supervisor.enable_diagnostics = diagnostics_enabled
 
     ao_volume = None
     ao_strength = float(getattr(args, "export_ao_strength", 1.0))

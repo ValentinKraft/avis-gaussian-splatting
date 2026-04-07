@@ -1935,8 +1935,15 @@ class GaussianModel:
             and self.intensities.numel() > 0
             and self.intensities.view(-1).shape[0] == num_points
         )
+        has_feature_colors = (
+            self._features_dc is not None
+            and self._features_dc.numel() > 0
+            and self._features_dc.shape[0] == num_points
+            and torch.sum(torch.abs(self._features_dc)) > 0
+        )
+        intensity_mode = getattr(self, "intensity_mode", "learned")
 
-        if not has_intensity_buffer and getattr(self, "intensity_mode", "learned") in {
+        if not has_intensity_buffer and intensity_mode in {
             "sampled",
             "learned",
             "sampled_mean_covered",
@@ -1946,24 +1953,27 @@ class GaussianModel:
                 "falling back to feature-based color source."
             )
 
-        # In volume-supervised workflows, intensity samples are the canonical source
-        # for grayscale appearance. Prefer them over stale/learned feature DC values
-        # to avoid unexpectedly dark exports in downstream viewers.
+        # Learned mode should export the same appearance source used by optimization.
+        if intensity_mode == "learned" and has_feature_colors:
+            if _DEBUG_PLY_EXPORT:
+                print("Using learned feature DC values for PLY export.")
+            features_tensor = self._features_dc.detach()
+            features_tensor = features_tensor.transpose(1, 2)
+            features_tensor = features_tensor.flatten(start_dim=1)
+            return features_tensor.contiguous().cpu().numpy()
+
+        # Sampled modes export the cached scalar intensity buffer.
         if has_intensity_buffer:
             return self._create_colors_from_intensities(num_points)
 
-        if getattr(self, "intensity_mode", "learned") in {
+        if intensity_mode in {
             "sampled",
             "sampled_mean_covered",
         }:
             return self._create_colors_from_intensities(num_points)
 
         # Check if we have valid feature tensors
-        if (
-            self._features_dc is not None
-            and self._features_dc.numel() > 0
-            and torch.sum(torch.abs(self._features_dc)) > 0
-        ):
+        if has_feature_colors:
             if _DEBUG_PLY_EXPORT:
                 print("Using provided features for volume rendering.")
             features_tensor = self._features_dc.detach()
@@ -2075,7 +2085,16 @@ class GaussianModel:
 
     def _prepare_export_intensity01(self, num_points: int, f_dc: np.ndarray) -> np.ndarray:
         """Prepare normalized [0,1] scalar intensity values for PLY export."""
-        if hasattr(self, "intensities") and self.intensities is not None and self.intensities.numel() > 0:
+        if getattr(self, "intensity_mode", "learned") == "learned":
+            if f_dc.shape[0] == num_points:
+                normalized = np.clip(
+                    (f_dc * float(SH_C0) + 0.5).mean(axis=1),
+                    0.0,
+                    1.0,
+                ).astype(np.float32)
+            else:
+                normalized = np.full((num_points,), 0.5, dtype=np.float32)
+        elif hasattr(self, "intensities") and self.intensities is not None and self.intensities.numel() > 0:
             raw_tensor = self.intensities.detach().float().view(-1).cpu()
             intensity_values = raw_tensor.numpy()
 

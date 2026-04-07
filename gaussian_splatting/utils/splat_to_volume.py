@@ -1,4 +1,5 @@
 import os
+import math
 from typing import Optional, Tuple
 
 import torch
@@ -12,6 +13,28 @@ from gaussian_splatting.utils.orientation_field import default_origin_and_spacin
 
 
 _GRID_CACHE: dict[tuple, Tensor] = {}
+
+
+def _sparse_support_sigma_from_cutoff(support_cutoff: float) -> float:
+    """Convert a kernel cutoff into an equivalent sigma-space radius."""
+    cutoff = min(max(float(support_cutoff), 1e-8), 0.999999)
+    return math.sqrt(-2.0 * math.log(cutoff))
+
+
+def _sparse_support_gate(
+    sq_mahalanobis: Tensor,
+    support_sigma: float,
+    support_softness: float,
+) -> Tensor:
+    """Return a smooth support gate for sparse splat truncation."""
+    if support_softness <= 0.0:
+        return (sq_mahalanobis <= (support_sigma * support_sigma)).to(
+            dtype=sq_mahalanobis.dtype
+        )
+
+    sigma_distance = torch.sqrt(sq_mahalanobis.clamp_min(0.0) + 1e-6)
+    softness = max(float(support_softness), 1e-6)
+    return torch.sigmoid((support_sigma - sigma_distance) / softness)
 
 
 def _grid_bounds_cache_key(
@@ -180,6 +203,10 @@ def splat_to_volume(
     render_mode: str = "intensity",
     density_scale: float = 1.0,
     working_grid_downscale_factor: int = 2,
+    sparse_support_cutoff: float = 0.2,
+    sparse_max_radius_vox: int = 10,
+    sparse_support_softness: float = 0.75,
+    render_min_sigma_vox: float = 0.35,
 ) -> Tensor:
     """
     Convert 3D Gaussian splats to a volumetric representation.
@@ -293,11 +320,9 @@ def splat_to_volume(
     small_volume = torch.zeros(small_shape, device=device, dtype=accum_dtype)
     weight_volume = torch.zeros_like(small_volume)
 
-    # Compute the effective voxel spacing in normalized coordinates.
-    # When rendering a cropped ROI (grid_bounds not None), spacing is based on the
-    # ROI extent, not the full [0,1] cube.
+    # Compute native and working-grid voxel spacing in normalized coordinates.
     if grid_bounds is None:
-        voxel_spacing = default_origin_and_spacing(volume_shape, device)[1].to(
+        native_voxel_spacing = default_origin_and_spacing(volume_shape, device)[1].to(
             accum_dtype
         )
     else:
@@ -305,12 +330,12 @@ def splat_to_volume(
         bounds_min = bounds_min.to(device=device, dtype=accum_dtype)
         bounds_max = bounds_max.to(device=device, dtype=accum_dtype)
         dims_xyz = torch.tensor(
-            [small_shape[2], small_shape[1], small_shape[0]],
+            [volume_shape[2], volume_shape[1], volume_shape[0]],
             device=device,
             dtype=accum_dtype,
         ).clamp_min(1)
         denom = (dims_xyz - 1.0).clamp_min(1.0)
-        voxel_spacing = (bounds_max - bounds_min) / denom
+        native_voxel_spacing = (bounds_max - bounds_min) / denom
     if small_shape == volume_shape:
         scale_ratio = torch.ones(3, device=device, dtype=points_n3.dtype)
     else:
@@ -323,8 +348,8 @@ def splat_to_volume(
             device=device,
             dtype=accum_dtype,
         )
-    min_sigma = voxel_spacing * scale_ratio
-    min_sigma = torch.maximum(min_sigma, 1.0 * voxel_spacing)
+    working_voxel_spacing = native_voxel_spacing * scale_ratio
+    min_sigma = working_voxel_spacing * max(float(render_min_sigma_vox), 0.0)
     min_sigma = min_sigma.to(accum_dtype)
     min_sigma_broadcast = min_sigma.unsqueeze(0)
 
@@ -341,7 +366,9 @@ def splat_to_volume(
         voxel_spacing_local: Tensor,
         render_mode_local: str,
         density_scale_local: float,
-        max_radius_vox: int = 8,
+        support_cutoff: float = 0.2,
+        max_radius_vox: int = 10,
+        support_softness: float = 0.75,
     ) -> Tuple[Optional[Tensor], Tensor]:
         """Sparse splat into flat buffers for one batch.
 
@@ -362,16 +389,16 @@ def splat_to_volume(
         alpha = alpha.view(-1)
         value_scale = value_scale.view(-1)
 
-        # Adaptive support: include voxels where Gaussian weight >= cutoff.
-        # Use max-axis sigma (in voxel units) to define a conservative neighborhood.
-        support_cutoff = 0.5
-        cutoff = float(support_cutoff)
-        cutoff = min(max(cutoff, 1e-6), 0.999999)
-        k = float((-2.0 * torch.log(torch.tensor(cutoff))).sqrt().item())
+        # Adaptive support: define a finite neighborhood from the requested
+        # kernel cutoff, then soften the support boundary to reduce lattice-like
+        # clipping artifacts.
+        support_sigma = _sparse_support_sigma_from_cutoff(support_cutoff)
+        support_margin = max(float(support_softness), 0.0) * 4.0
+        candidate_sigma = support_sigma + support_margin
 
         sigma_vox_axes = scales_batch / voxel_spacing_local.unsqueeze(0).clamp_min(1e-8)
         sigma_vox_max = sigma_vox_axes.max(dim=1).values
-        radii = torch.ceil(k * sigma_vox_max).to(torch.long).clamp_min(1)
+        radii = torch.ceil(candidate_sigma * sigma_vox_max).to(torch.long).clamp_min(1)
         R = int(radii.max().item()) if radii.numel() > 0 else 0
         if R <= 0:
             if render_mode_local == "intensity":
@@ -445,7 +472,13 @@ def splat_to_volume(
         diff_scaled = diff_local * inv_scales.unsqueeze(1)
         sq = (diff_scaled * diff_scaled).sum(dim=-1)
         kern = torch.exp(-0.5 * sq)
-        valid = valid & (kern >= support_cutoff)
+        support_gate = _sparse_support_gate(
+            sq,
+            support_sigma=support_sigma,
+            support_softness=support_softness,
+        )
+        kern = kern * support_gate
+        valid = valid & (support_gate > 1e-4)
 
         if not valid.any():
             if render_mode_local == "intensity":
@@ -573,9 +606,6 @@ def splat_to_volume(
                 scales_batch = sb
             else:
                 scales_batch = sb.view(-1, 1).repeat(1, 3)
-        if small_shape != volume_shape:
-            scales_batch = scales_batch * 0.5
-
         # Keep splats from collapsing below voxel resolution while preserving gradients
         below_min = scales_batch < min_sigma_broadcast
         if below_min.any():
@@ -627,6 +657,9 @@ def splat_to_volume(
                     voxel_spacing_local=sparse_voxel_spacing,
                     render_mode_local=render_mode,
                     density_scale_local=density_scale,
+                    support_cutoff=float(sparse_support_cutoff),
+                    max_radius_vox=max(1, int(sparse_max_radius_vox)),
+                    support_softness=float(sparse_support_softness),
                 )
             except RuntimeError as exc:
                 # Unexpected sparse failure; fall back to dense.

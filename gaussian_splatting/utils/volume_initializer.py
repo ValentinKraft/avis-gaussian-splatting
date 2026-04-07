@@ -30,7 +30,6 @@ from gaussian_splatting.utils.intensity_sampler import (
 )
 from gaussian_splatting.utils.orientation_field import (
     compute_gradient_field,
-    compute_hessian_field,
     default_origin_and_spacing,
     gather_rotation_from_gradient,
     quat_from_directions,
@@ -1054,8 +1053,9 @@ def initialize_gaussians(
                 f"{orientation_note}."
             )
 
-    # Border splats: align the Hessian largest-|lambda| eigenvector to the mask gradient
-    # surface normal, then flatten along that normal (init-only).
+    # Border splats: align directly to the continuously sampled mask-gradient
+    # normal, then flatten along that normal (init-only). Using rounded-voxel
+    # Hessian directions here made the voxel lattice visible on smooth surfaces.
     enable_border = (
         mask_volume is not None
         and border_distance_vox > 0.0
@@ -1092,37 +1092,12 @@ def initialize_gaussians(
                 )
                 normal_dir = rot_g[:, :, 2]
 
-                hessian = compute_hessian_field(
-                    mask_volume, sigma_pre=float(structure_sigma)
-                )
-                hess_pts = hessian[
-                    ijk_round[border_mask, 0],
-                    ijk_round[border_mask, 1],
-                    ijk_round[border_mask, 2],
-                ]
-                hess_pts = torch.nan_to_num(
-                    hess_pts, nan=0.0, posinf=0.0, neginf=0.0
-                )
-                # CUDA eigendecomposition does not support fp16 here.
-                hess_pts = hess_pts.to(dtype=torch.float32)
-                evals, evecs = torch.linalg.eigh(hess_pts)
-                idx = evals.abs().argmax(dim=1)
-                arange = torch.arange(
-                    evecs.shape[0], device=evecs.device, dtype=torch.long
-                )
-                h_dir = evecs[arange, :, idx]
-                h_dir = torch.nan_to_num(h_dir, nan=0.0, posinf=0.0, neginf=0.0)
-
-                n_dir = normal_dir[border_mask]
-                dot = (h_dir * n_dir).sum(dim=1, keepdim=True)
-                flip = torch.where(dot < 0.0, -1.0, 1.0).to(h_dir.dtype)
-                h_dir = h_dir * flip
-
                 # Skip overrides where the gradient field fell back to identity.
                 border_idx = border_mask.nonzero(as_tuple=False).squeeze(1)
                 good = ~fallback_g[border_idx]
                 if good.any():
-                    quats_border, _ = quat_from_directions(h_dir[good])
+                    border_normals = normal_dir[border_idx[good]]
+                    quats_border, _ = quat_from_directions(border_normals)
                     quats_border = quats_border.to(
                         device=initial_rotations.device,
                         dtype=initial_rotations.dtype,

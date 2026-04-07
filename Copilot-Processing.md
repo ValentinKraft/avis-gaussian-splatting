@@ -22,6 +22,57 @@
 - Smoke-validated with a 1-iteration fp16 training run using border flattening, Hessian-orientation blending, and the new orientation smoothing flags.
 - Fixed two fp16 border-path bugs found during validation: Hessian eigendecomposition now promotes to float32 before `torch.linalg.eigh(...)`, and border quaternions are cast back to the destination rotation buffer dtype before assignment.
 
+## Update (2026-04-06, Border Grid Artifacts)
+- User reported visible grid artifacts on smooth curved boundaries after enabling strong border flattening and anisotropy.
+- Root cause: the border-alignment path in `gaussian_splatting/utils/volume_initializer.py` still sampled border orientations from rounded voxel indices and used voxel-snapped Hessian directions. With strong border flattening on a binary mask, that made the voxel lattice visible as repeated ridges.
+- Resolution: replaced the voxel-snapped Hessian border alignment with continuous gradient-normal alignment using `gather_rotation_from_gradient(...)` at the true floating-point positions. Border splats now align and flatten along the smoothly sampled mask-gradient normal instead of a rounded-voxel principal direction.
+- Validation: reran a 1-iteration fp16 smoke training command with border flattening enabled; initialization, training step, PLY export, and checkpoint save all completed successfully.
+
+## Update (2026-04-06, Sparse Raster Support Smoothing)
+- User reported border/grid artifacts still visible after the border-alignment change.
+- Root cause: sparse volume splat support used a hardcoded contribution cutoff (`0.5`) and max support radius (`8` voxels), which can truncate kernels too aggressively and imprint point-like/gridy supervision patterns.
+- Resolution: made sparse support controls configurable and threaded end-to-end:
+	- Added CLI flags in `arguments.py`: `--sparse_support_cutoff` (default `0.2`) and `--sparse_max_radius_vox` (default `10`).
+	- Threaded the values through `train.py` into `VolumeSupervisor` and down into both density/intensity `splat_to_volume(...)` calls.
+	- Updated `gaussian_splatting/utils/splat_to_volume.py` to use these parameters instead of hardcoded sparse support values.
+- Validation: static validation passed on all touched files. A 1-iteration fp16 smoke run with `--sparse_support_cutoff 0.12 --sparse_max_radius_vox 12` completed successfully (init, backward, PLY save, checkpoint).
+
+## Update (2026-04-07, Appearance Guard + Export Consistency)
+- Started implementation of the broader vshuman quality plan with the first high-signal slice: stop silent appearance corruption and make learned-mode export use the same appearance source as training.
+- `gaussian_splatting/utils/volume_supervisor.py`
+	- Added strict per-point scalar validation for opacity and intensity tensors before rendering. The previous silent broadcast fallback was removed.
+	- Added diagnostics counters/metrics for `active_points`, `intensity_update_count`, `opacity_update_count`, `mean_covered_intensity_count`, and `mean_covered_opacity_count`.
+	- Tracked mean-covered replacement counts in both intensity and opacity samplers.
+- `train.py`
+	- Threaded the training diagnostics flag into `VolumeSupervisor.enable_diagnostics`.
+- `scene/gaussian_model.py`
+	- Changed PLY export so `intensity_mode=learned` prefers learned SH/DC features for color export instead of stale sampled intensity buffers.
+	- Aligned exported `intensity_01` with feature-derived grayscale in learned mode.
+- Added regression tests in `test_export_appearance.py` for learned-vs-sampled export source selection and strict attribute-shape validation.
+- Validation:
+	- `pytest test_export_appearance.py` passed.
+	- A 1-iteration learned-mode smoke training run (`_output_/appearance-guard-smoke`) completed successfully, including backward pass, PLY export, and checkpoint save.
+	- `test_scaling_constraint.py::test_position_displacement_constraint` still fails, but this appears pre-existing and unrelated to the touched code paths.
+
+## Update (2026-04-07, Raster-Core Grid Reduction)
+- Continued implementation with the next quality-critical slice: reduce lattice imprinting and blur in the sparse voxel rasterizer.
+- `gaussian_splatting/utils/splat_to_volume.py`
+	- Added `_sparse_support_sigma_from_cutoff(...)` and `_sparse_support_gate(...)` helpers.
+	- Replaced the hard sparse-support cutoff cliff with a smooth gate in sigma-space. Sparse neighborhoods are still finite, but contributions now taper smoothly near the support boundary instead of disappearing abruptly.
+	- Added a numerical stabilizer (`+1e-6`) inside the support-gate square root to avoid NaN gradients at exact point centers.
+	- Replaced the hardcoded 1-voxel render sigma floor with a configurable `render_min_sigma_vox` floor.
+	- Removed the old `scales_batch *= 0.5` small-grid scale hack so working-grid behavior is no longer arbitrarily tied to a fixed factor.
+	- Clarified working-grid voxel-spacing computation and used it to derive the render sigma floor consistently.
+- `arguments.py`
+	- Added `--sparse_support_softness` (default `0.75`).
+	- Added `--render_min_sigma_vox` (default `0.35`).
+- `train.py` / `gaussian_splatting/utils/volume_supervisor.py`
+	- Threaded the new raster controls from CLI through the supervisor into both density and intensity raster calls.
+- Added focused raster regression tests in `test_sparse_raster.py`.
+- Validation:
+	- `pytest test_sparse_raster.py test_export_appearance.py` passed.
+	- A 1-iteration learned-mode smoke run (`_output_/raster-core-smoke-v2`) completed successfully with finite xyz/scaling/rotation gradients, PLY export, and checkpoint save.
+
 ## User Request Details (2026-04-04, Runtime Fidelity Densification)
 - Start implementation of the planned runtime densification changes for volume-supervised fidelity.
 - Goal: improve vessel-aware offspring placement/scaling, make active-point subsampling fair for densification stats, and expose the missing runtime controls on the CLI.

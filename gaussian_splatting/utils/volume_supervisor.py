@@ -69,6 +69,10 @@ class VolumeSupervisor:
         dirty_threshold_rot: float = 8.726646e-3,
         verbose: bool = False,
         sampling_padding_mode: str = "border",
+        sparse_support_cutoff: float = 0.2,
+        sparse_max_radius_vox: int = 10,
+        sparse_support_softness: float = 0.75,
+        render_min_sigma_vox: float = 0.35,
     ):
         """
         Args:
@@ -264,9 +268,18 @@ class VolumeSupervisor:
             "ct_loss": 0.0,
             "dice_score": 0.0,
             "outside_mask_loss": 0.0,
+            "active_points": 0.0,
+            "intensity_update_count": 0.0,
+            "opacity_update_count": 0.0,
+            "mean_covered_intensity_count": 0.0,
+            "mean_covered_opacity_count": 0.0,
         }
         self._step = 0
+        self.enable_diagnostics = False
         self.last_intensity_update_count = 0
+        self.last_opacity_update_count = 0
+        self.last_mean_covered_intensity_count = 0
+        self.last_mean_covered_opacity_count = 0
         self.intensity_update_interval = max(1, int(intensity_update_interval))
         if opacity_update_interval is None:
             opacity_update_interval = self.intensity_update_interval
@@ -275,6 +288,12 @@ class VolumeSupervisor:
         self.dirty_threshold_scale = float(dirty_threshold_scale)
         self.dirty_threshold_rot = float(dirty_threshold_rot)
         self.sampling_padding_mode = str(sampling_padding_mode)
+        self.sparse_support_cutoff = float(
+            min(max(float(sparse_support_cutoff), 1e-5), 0.9999)
+        )
+        self.sparse_max_radius_vox = max(1, int(sparse_max_radius_vox))
+        self.sparse_support_softness = max(float(sparse_support_softness), 0.0)
+        self.render_min_sigma_vox = max(float(render_min_sigma_vox), 0.0)
         self.enable_render_checkpoint = True
 
     def _orientation_source(self) -> Tensor:
@@ -332,6 +351,9 @@ class VolumeSupervisor:
                 else large_mask_global[idx_tensor]
             )
             if coverage_mask is not None and coverage_mask.any():
+                self.last_mean_covered_intensity_count = int(
+                    coverage_mask.sum().item()
+                )
                 refined, _, _ = sample_mean_covered_voxel_intensities(
                     pts,
                     self.volume_color,
@@ -408,6 +430,9 @@ class VolumeSupervisor:
             ).to(device=opacities.device)
             coverage_mask = large_mask_global if idx_tensor is None else large_mask_global[idx_tensor]
             if coverage_mask is not None and coverage_mask.any():
+                self.last_mean_covered_opacity_count = int(
+                    coverage_mask.sum().item()
+                )
                 refined, _, _ = sample_mean_covered_voxel_intensities(
                     pts,
                     self.mask_volume,
@@ -432,6 +457,30 @@ class VolumeSupervisor:
             opacities = opacities.clamp(0.0, 1.0).pow(self.opacity_gamma)
 
         return opacities
+
+    def _ensure_scalar_point_attribute(
+        self,
+        name: str,
+        tensor: Tensor,
+        n_points: int,
+    ) -> Tensor:
+        """Validate and reshape a per-point scalar attribute to [N, 1]."""
+        if tensor is None:
+            raise ValueError(f"{name} tensor is missing")
+
+        if tensor.dim() == 1 and tensor.shape[0] == n_points:
+            return tensor.view(n_points, 1)
+
+        if tensor.dim() == 2 and tensor.shape[0] == n_points and tensor.shape[1] == 1:
+            return tensor
+
+        if tensor.numel() == n_points:
+            return tensor.reshape(n_points, 1)
+
+        raise RuntimeError(
+            f"{name} shape mismatch: expected {n_points} scalar values, "
+            f"got shape {tuple(tensor.shape)} with {tensor.numel()} values"
+        )
 
     def _ensure_orientation_field(self) -> None:
         """Compute and cache gradient field if needed."""
@@ -585,6 +634,8 @@ class VolumeSupervisor:
 
         self._step += 1
         self.iteration = getattr(self, "iteration", 0) + 1
+        self.last_mean_covered_intensity_count = 0
+        self.last_mean_covered_opacity_count = 0
 
         n_points = xyz.shape[1] if xyz.shape[0] == 3 else xyz.shape[0]
         intensity_mode = getattr(gaussians, "intensity_mode", "learned")
@@ -866,10 +917,16 @@ class VolumeSupervisor:
                         indices_for_update = None
 
             if indices_for_update is not None or needs_resize:
-                gaussians.update_sampled_opacities(
-                    sampler=self._opacity_sampler,
-                    indices=indices_for_update,
+                self.last_opacity_update_count = int(
+                    gaussians.update_sampled_opacities(
+                        sampler=self._opacity_sampler,
+                        indices=indices_for_update,
+                    )
                 )
+            else:
+                self.last_opacity_update_count = 0
+        else:
+            self.last_opacity_update_count = 0
 
         # Convert gaussians to volume using intensity values (or density for mask supervision)
         # Opacity is provided via gaussians.get_opacity, which is mode-aware.
@@ -879,24 +936,11 @@ class VolumeSupervisor:
         # Get the number of points from xyz (whether [3, N] or [N, 3])
         n_points = xyz.shape[1] if xyz.shape[0] == 3 else xyz.shape[0]
 
-        # Fix opacity tensor shape if needed
-        if use_opacity.shape[0] != n_points:
-            # If we have a shape mismatch, broadcast the opacity to all points
-            if use_opacity.numel() == 3:  # We have exactly 3 values
-                use_opacity = use_opacity.mean() * torch.ones(
-                    (n_points, 1),
-                    device=use_opacity.device,
-                    dtype=use_opacity.dtype,
-                    requires_grad=use_opacity.requires_grad,
-                )
-            else:
-                # Otherwise use the first value and broadcast
-                use_opacity = use_opacity[0] * torch.ones(
-                    (n_points, 1),
-                    device=use_opacity.device,
-                    dtype=use_opacity.dtype,
-                    requires_grad=use_opacity.requires_grad,
-                )
+        use_opacity = self._ensure_scalar_point_attribute(
+            "opacity",
+            use_opacity,
+            n_points,
+        )
 
         if total_points is None:
             total_points = n_points
@@ -915,23 +959,11 @@ class VolumeSupervisor:
                     f"Sampled intensities out of [0,1] range: [{min_val:.4f}, {max_val:.4f}]"
                 )
 
-        # Fix intensity tensor shape if needed (use_intensities was computed above from features)
-        if use_intensities.shape[0] != n_points:
-            if use_intensities.numel() == 3:  # We have exactly 3 values
-                use_intensities = use_intensities.mean() * torch.ones(
-                    (n_points, 1),
-                    device=use_intensities.device,
-                    dtype=use_intensities.dtype,
-                    requires_grad=use_intensities.requires_grad,
-                )
-            else:
-                # Otherwise use the first value and broadcast
-                use_intensities = use_intensities[0] * torch.ones(
-                    (n_points, 1),
-                    device=use_intensities.device,
-                    dtype=use_intensities.dtype,
-                    requires_grad=use_intensities.requires_grad,
-                )
+        use_intensities = self._ensure_scalar_point_attribute(
+            "intensity",
+            use_intensities,
+            n_points,
+        )
 
         # Debug tensor shapes is no longer needed
 
@@ -966,6 +998,10 @@ class VolumeSupervisor:
                     render_mode="density",
                     density_scale=float(getattr(self, "density_scale", 1.0)),
                     working_grid_downscale_factor=self.volume_render_downscale_factor,
+                    sparse_support_cutoff=self.sparse_support_cutoff,
+                    sparse_max_radius_vox=self.sparse_max_radius_vox,
+                    sparse_support_softness=self.sparse_support_softness,
+                    render_min_sigma_vox=self.render_min_sigma_vox,
                 )
 
         def _render_intensity(points, scales, rotations, opacities, intensities):
@@ -986,6 +1022,10 @@ class VolumeSupervisor:
                     render_mode="intensity",
                     density_scale=float(getattr(self, "density_scale", 1.0)),
                     working_grid_downscale_factor=self.volume_render_downscale_factor,
+                    sparse_support_cutoff=self.sparse_support_cutoff,
+                    sparse_max_radius_vox=self.sparse_max_radius_vox,
+                    sparse_support_softness=self.sparse_support_softness,
+                    render_min_sigma_vox=self.render_min_sigma_vox,
                 )
 
         volume_pred_mask_roi: Optional[Tensor] = None
@@ -1114,6 +1154,21 @@ class VolumeSupervisor:
             self.metrics["volume_loss_unweighted"] = float(unweighted_loss.item())
             self.metrics["mask_loss"] = float(mask_loss.item()) if mask_loss is not None else 0.0
             self.metrics["ct_loss"] = float(ct_loss.item()) if ct_loss is not None else 0.0
+            self.metrics["active_points"] = float(
+                active_idx.numel() if active_idx is not None else total_points
+            )
+            self.metrics["intensity_update_count"] = float(
+                self.last_intensity_update_count
+            )
+            self.metrics["opacity_update_count"] = float(
+                self.last_opacity_update_count
+            )
+            self.metrics["mean_covered_intensity_count"] = float(
+                self.last_mean_covered_intensity_count
+            )
+            self.metrics["mean_covered_opacity_count"] = float(
+                self.last_mean_covered_opacity_count
+            )
             if outside_loss is not None:
                 self.metrics["outside_mask_loss"] = float(outside_loss.item())
             else:
