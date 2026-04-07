@@ -1,5 +1,5 @@
 // MDL v1 utf8
-mevislabVersion = 4.1.70.498
+mevislabVersion = 4.2.70.787
 network {
   watchlist = ""
 }
@@ -697,10 +697,10 @@ module gaussian_splatting_export {
     localMacro = 1
     windows {
       window _default {
-        geometry = "474 352 492 238"
-        relativePosition = "-0.2907 -0.2464"
+        geometry = "470 352 492 238"
+        relativePosition = "-0.2919 -0.2464"
         sizeHint = "248 206"
-        wasOpen = yes
+        wasOpen = no
       }
     }
   }
@@ -716,7 +716,7 @@ module gaussian_splatting_export {
 }
 module LoadNIfTI {
   internal {
-    frame = "1181 1157 120 72"
+    frame = "849 1149 128 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -736,7 +736,7 @@ module LoadNIfTI {
 }
 module LoadNIfTI {
   internal {
-    frame = "1333 1157 184 72"
+    frame = "1005 1149 184 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -756,7 +756,7 @@ module LoadNIfTI {
 }
 module Arithmetic2 {
   internal {
-    frame = "1321 917 96 72"
+    frame = "969 1029 96 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -782,8 +782,8 @@ module View3D {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1962 275 1518 894"
-        relativePosition = "0.2910 -0.3017"
+        geometry = "1960 275 1518 894"
+        relativePosition = "0.2904 -0.3017"
         sizeHint = "1005 629"
         wasOpen = yes
       }
@@ -814,12 +814,13 @@ module View3D {
     alphaFactor = 1
     colorFactor = "1 1 1"
     camType = TRUE
-    camPosition = "122.671394348145 -314.809814453125 113.061660766602"
-    camOrientation = "0.994974970817566 0.092352956533432 -0.0386722348630428 0.82176274061203"
+    camProjectionType = CAMERA_PERSPECTIVE
+    camPosition = "257.655242919922 -28.4766235351563 1077.59069824219"
+    camOrientation = "0.992937207221985 -0.0908840000629425 -0.0762619972229004 0.777950882911682"
     initialCameraOrientation = CAMERA_KEEP_AS_IS
-    camFar = 433.63458
-    camNear = 231.54718
-    camFocal = 332.49017
+    camFar = 640.22607
+    camNear = 240.83908
+    camFocal = 447.66333
     camHeight = 0.78539801
     decoration = FALSE
     annotations = FALSE
@@ -865,15 +866,15 @@ module View3D {
     renderer.light3Color = "1 1 1"
     renderer.light3PolarPhi = -45
     renderer.light3PolarRho = 0
-    renderer.sizeOutputX = 212
+    renderer.sizeOutputX = 312
     renderer.sizeOutputY = 312
-    renderer.sizeOutputZ = 66
+    renderer.sizeOutputZ = 215
     renderer.subVolumeStartX = 0
     renderer.subVolumeStartY = 0
     renderer.subVolumeStartZ = 0
-    renderer.subVolumeEndX = 212
+    renderer.subVolumeEndX = 312
     renderer.subVolumeEndY = 312
-    renderer.subVolumeEndZ = 66
+    renderer.subVolumeEndZ = 215
     clip.hideGeometry = FALSE
     clip.on = FALSE
     clip.left = FALSE
@@ -923,8 +924,8 @@ module SoLUTEditor {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "761 809 513 459"
-        relativePosition = "-0.2041 0.0819"
+        geometry = "760 809 513 459"
+        relativePosition = "-0.2044 0.0819"
         sizeHint = "513 459"
         wasOpen = no
       }
@@ -933,20 +934,20 @@ module SoLUTEditor {
   fields {
     instanceName = SoLUTEditor
     rangeMin = 0
-    rangeMax = 2392
+    rangeMax = 1449
     viewMin = 0
-    viewMax = 2392
+    viewMax = 1449
     window = 1
     level = 0.5
     allowNewPoints = TRUE
     updateLutWhileDragging = TRUE
     relativeLut = FALSE
     colorInterpolation = InterpolateRGB
-    colorPoints = "[ 0 0 0 0, 0.00239200005307794 0 0 0, 2392 1 1 1 ]"
-    alphaPoints = "[ 0 0, 0.00239200005307794 0, 2392 1 ]"
+    colorPoints = "[ 0 0 0 0, 0.00239200005307794 0 0 0, 1449 1 1 1 ]"
+    alphaPoints = "[ 0 0, 0.00239200005307794 0, 1449 1 ]"
     alphaFactor = 0.80000001
     newRangeMin = 0
-    newRangeMax = 2392
+    newRangeMax = 1449
     newRangeMode = ClipFormerLUT
     colorEditorHeight = 24
     showColorEditor = TRUE
@@ -970,7 +971,7 @@ module SoLUTEditor {
 }
 module TestPattern {
   internal {
-    frame = "1177 1293 112 72"
+    frame = "1129 1437 112 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1009,7 +1010,7 @@ module TestPattern {
 }
 module EllipsoidTestPattern {
   internal {
-    frame = "1409 1341 144 56"
+    frame = "1345 1469 144 56"
     moduleGroupName = ""
     windows {
       window _default {
@@ -1083,8 +1084,8 @@ module SoLUTEditor {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1506 293 513 459"
-        relativePosition = "0.0125 -0.2888"
+        geometry = "852 249 513 459"
+        relativePosition = "-0.1776 -0.3204"
         sizeHint = "513 459"
         wasOpen = no
       }
@@ -1106,7 +1107,7 @@ module SoLUTEditor {
     alphaPoints = "[ 0 0, 623.116027832031 0, 1081.38000488281 0.0613497011363506, 1335.53332519531 0.766871154308319, 1395.32995605469 0.90184098482132, 2094.98999023438 1, 2392 1 ]"
     alphaFactor = 1
     newRangeMin = 0
-    newRangeMax = 2392
+    newRangeMax = 1449
     newRangeMode = ClipFormerLUT
     colorEditorHeight = 24
     showColorEditor = TRUE
@@ -1128,18 +1129,96 @@ module SoLUTEditor {
     useAntiAliasing = TRUE
   }
 }
+module LoadNIfTI {
+  internal {
+    frame = "1225 1149 144 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1500 613 420 274"
+        relativePosition = "-0.0029 -0.0589"
+        sizeHint = "420 274"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = LoadNIfTI2
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/vshuman.nii.gz
+    inApplyMode = AutoLoad
+  }
+}
+module LoadNIfTI {
+  internal {
+    frame = "1401 1149 192 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1083 270 420 274"
+        relativePosition = "-0.1241 -0.3053"
+        sizeHint = "420 274"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = LoadNIfTI3
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/vshuman_tsmasks2.nii.gz
+    inApplyMode = AutoLoad
+  }
+}
+module Arithmetic2 {
+  internal {
+    frame = "1325 1037 104 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1541 700 353 97"
+        relativePosition = "-0.0006 0.0036"
+        sizeHint = "353 97"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = Arithmetic21
+    function = Multiply
+    outputImageSize = InvalidateOutputIfSizesDiffer
+    constant = 0
+    autoReplicate = FALSE
+  }
+}
+module Switch {
+  internal {
+    frame = "1073 909 144 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+  }
+  fields {
+    instanceName = Switch
+    currentInput = 1
+    numberOfInputs = 5
+  }
+}
 connections {
-  gaussian_splatting_export.image = Arithmetic2.output0
-  gaussian_splatting_export.mask = Arithmetic2.output0
+  gaussian_splatting_export.image = Switch.output0
+  gaussian_splatting_export.mask = Switch.output0
   gaussian_splatting_export.scene = View3D.self
   Arithmetic2.input0 = LoadNIfTI.outImage
   Arithmetic2.input1 = LoadNIfTI1.outImage
-  View3D.inImage = Arithmetic2.output0
+  View3D.inImage = Switch.output0
   View3D.inInvPostLUT = SoLUTEditor.outInventorLUT
-  MinMaxScan.input0 = Arithmetic2.output0
+  MinMaxScan.input0 = Switch.output0
   SoLUTEditor.newRangeMin = MinMaxScan.trueMinValue
   SoLUTEditor.newRangeMax = MinMaxScan.trueMaxValue
   BaseLUT.newRangeMin = MinMaxScan.trueMinValue
   BaseLUT.newRangeMax = MinMaxScan.trueMaxValue
+  Arithmetic21.input0 = LoadNIfTI2.outImage
+  Arithmetic21.input1 = LoadNIfTI3.outImage
+  Switch.input0 = Arithmetic2.output0
+  Switch.input1 = Arithmetic21.output0
 }
 networkModel = ""
