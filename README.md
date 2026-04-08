@@ -77,6 +77,35 @@ python train.py --model_path _output_/synthetic-float-test --mask_path _input_/s
 
 ---------------------------------------------------
 
+Standard CLI command (learned):
+
+```shell
+python train.py `
+  --model_path _output_/vshuman-v4 `
+  --mask_path _input_/vshuman_tsmasks3.nii.gz `
+  --volume_path _input_/vshuman.nii.gz `
+  --iterations 1000 `
+  --checkpoint_iterations 800 1200 1600 2000 `
+  --init_n_points 200000 `
+  --medical_mode none `
+  --supervision_target joint `
+  --volume_loss_type dice `
+  --ct_loss_type mse `
+  --enable_densification `
+  --densify_from_iter 100 `
+  --densification_interval 50 `
+  --densify_max_new_points 10000 `
+  --prune_min_opacity 0.002 `
+  --max_points_per_iter 8000 `
+  --volume_downscale_factor 1 `
+  --volume_render_downscale_factor 1 `
+  --disable_volume_overflow_guard `
+  --save_ply_every 50 `
+  --enable_diagnostics `
+  --intensity_mode learned `
+  --opacity_mode learned
+```
+
 ```shell
 python train.py `
   --model_path _output_/fidelity-hiinit-growth-v2 `

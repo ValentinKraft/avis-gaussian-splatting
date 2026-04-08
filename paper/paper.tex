@@ -70,7 +70,7 @@ At the same time, 3D Gaussian Splatting \cite{kerbl2023gaussiansplatting} has re
 
 In this work, we propose a reformulation of 3D Gaussian Splatting that directly operates in volumetric space. Instead of relying on image-based supervision, we optimize a set of anisotropic Gaussians against a target volume, guided by region-of-interest constraints. This eliminates the need for intermediate rendering during training and aligns the representation more closely with the underlying data domain.
 
-A key aspect of our approach is an intensity-aware Gaussian representation, where each splat encodes a physical intensity value (e.g., Hounsfield units). This enables a volume-rendering-like behavior in which transfer functions can be modified after training, providing flexibility comparable to classical volume rendering techniques. Furthermore, we introduce a differentiable splat-to-volume rasterization that allows direct optimization in voxel space, as well as volume-driven initialization strategies and stabilization techniques tailored to this setting.
+A key aspect of our approach is an intensity-aware Gaussian representation, where each splat encodes a physical intensity value (e.g., Hounsfield units for CT data). This enables a volume-rendering-like behavior in which transfer functions can be modified after training, providing flexibility comparable to classical volume rendering techniques while retaining the rendering efficiency of Gaussian Splatting. Furthermore, we introduce a differentiable splat-to-volume rasterization that allows direct optimization in voxel space, as well as volume-driven initialization strategies and stabilization techniques tailored to this setting.
 
 While our method does not aim to fully replace high-quality volume rendering in terms of visual fidelity, it offers a compelling trade-off between quality and efficiency. In particular, it enables fast, lightweight rendering that is well-suited for interactive and immersive applications where computational resources are limited.
 
@@ -91,11 +91,11 @@ Our main contributions are as follows:
 
 \subsection{Gaussian Splatting and Neural Rendering}
 
-Recent advances in neural rendering have introduced highly efficient scene representations, among which 3D Gaussian Splatting has emerged as a particularly impactful approach. The foundational work 3D Gaussian Splatting for Real-Time Radiance Field Rendering represents scenes as sets of anisotropic Gaussians optimized from multi-view image supervision, enabling real-time rendering with high visual fidelity.
+Recent advances in neural rendering have introduced highly efficient scene representations, among which 3D Gaussian Splatting \cite{kerbl2023gaussiansplatting} has emerged as a particularly impactful approach, sparking a lot of follow-up research. The foundational work represents scenes as sets of anisotropic Gaussians optimized from multi-view image supervision, enabling extremely efficient real-time rendering with high visual fidelity.
 
-Subsequent work has explored multiple extensions of this paradigm. Cinematic Gaussians demonstrates that Gaussian Splatting can achieve near photorealistic visualization of anatomical structures using advanced rendering techniques such as path tracing. Similarly, Relightable 3D Gaussian introduces relightable representations that further reduce the need for traditional volume rendering.
+Subsequent work has explored multiple extensions of this paradigm. Siemens Healthineers proposed "Cinematic Gaussians" \cite{cinematicgaussians2024}, which demonstrates that Gaussian Splatting can achieve near photorealistic visualization of anatomical structures using advanced rendering techniques such as path tracing. Similarly, Zhang et al. \cite{relightablegaussian2024} introduces relightable representations that further reduce the need for traditional volume rendering.
 
-Recent work also investigates more advanced formulations of Gaussian-based rendering. DDGS-CT: Direction-Disentangled Gaussian Splatting for Realistic Volume Rendering and 6DGS: Enhanced Direction-Aware Gaussian Splatting for Volumetric Rendering extend Gaussian Splatting toward volumetric rendering scenarios by incorporating direction-dependent effects and improving fine-detail reconstruction. Other extensions explore alternative primitives such as Triangle Splatting for Real-Time Radiance Field Rendering or hybrid pipelines with explicit clipping support RaRa Clipper. More recent work such as iVR-GS: Inverse Volume Rendering for Explorable Visualization via Editable 3D Gaussian Splatting introduces transfer-function-like behavior by combining multiple Gaussian representations.
+Recent work also investigates more advanced formulations of Gaussian-based rendering. Gao et al. \cite{ddgsct2024,sixdgs2024} extend Gaussian Splatting toward volumetric rendering scenarios by incorporating direction-dependent effects and improving fine-detail reconstruction. Also interaction techniques which are known from volume rendering, such as clipping \cite{raraclipper2025} or transfer-function-like behaviour \cite{ivrgs2025} are beginning to get transferred to Gaussian Splatting.
 
 Despite these advances, all existing approaches remain fundamentally tied to image-based supervision and view-dependent rendering. Even methods targeting volumetric effects still rely on rendering-based optimization rather than directly leveraging volumetric ground-truth data.
 
@@ -103,9 +103,9 @@ Despite these advances, all existing approaches remain fundamentally tied to ima
 
 \subsection{Volume Rendering and Splatting Techniques}
 
-Volume rendering is the standard approach for visualizing volumetric data and has been extensively studied in computer graphics. Early work such as Volume Rendering established the foundations for direct volume visualization, while subsequent approaches have focused on improving realism and interactivity. For instance, Exposure Render: An Interactive Photo-Realistic Volume Rendering Framework demonstrates high-quality photorealistic rendering using physically-based techniques.
+Volume rendering is the standard approach for visualizing volumetric data and has been extensively studied in computer graphics. Early work \cite{drebin1988volume} established the foundations for direct volume visualization, while subsequent approaches have focused on improving realism and interactivity. For instance, Path Tracing \cite{kroes2012exposure} demonstrates high-quality photorealistic rendering using physically-based techniques.
 
-Splatting-based approaches, such as EWA Volume Splatting, approximate volume rendering using Gaussian kernels and share conceptual similarities with modern Gaussian Splatting methods. More recent discussions, such as Does 3D Gaussian Splatting Need Accurate Volumetric Rendering?, highlight ongoing challenges in achieving both high fidelity and efficiency.
+Early splatting-based approaches, such as "EWA Volume Splatting" \cite{ewasplatting2001}, approximate volume rendering using Gaussian kernels and share conceptual similarities with modern Gaussian Splatting methods. More recent discussions \cite{cgf2025gs} highlight ongoing challenges in achieving both high fidelity and efficiency.
 
 Despite significant progress, classical and modern volume rendering approaches remain computationally demanding, particularly for large scale medical datasets and real time applications.
 
@@ -114,15 +114,15 @@ Despite significant progress, classical and modern volume rendering approaches r
 \subsection{Efficient Medical Visualization and Mixed Reality}
 
 
-Efficient visualization of volumetric medical data is critical for interactive and immersive applications. Survey works such as Mixed Reality in the Operating Room: A Systematic Review highlight both the potential and limitations of mixed reality in clinical workflows.
+Efficient visualization of volumetric medical data is critical for interactive and immersive applications. Surveys \cite{mrreview2024,mrreview2} highlight both the potential and limitations of mixed reality in clinical workflows.
 
-Prior work has explored optimized rendering techniques such as A Clinical User Study Investigating the Benefits of Adaptive Volumetric Illumination Sampling, which demonstrate that improved volume rendering can positively impact clinical decision-making. However, even optimized approaches may struggle to meet performance requirements on resource-constrained devices without additional system complexity.
+Prior work has explored optimized rendering techniques \cite{avis2024}, which demonstrate that improved volume rendering can positively impact clinical decision-making. However, even optimized approaches may struggle to meet performance requirements on resource-constrained devices without additional system complexity.
 
 
 \subsection{Segmentation and Structure-Aware Medical Imaging}
 
 
-Recent advances in medical image analysis have enabled accurate and large-scale segmentation of anatomical structures. Methods such as nnU-Net, TotalSegmentator, and Segment Anything Model provide detailed structural information directly from volumetric data.
+Recent advances in medical image analysis have enabled accurate and large-scale segmentation of anatomical structures. Methods such as nnU-Net \cite{nnunet}, TotalSegmentator \cite{totalsegmentator}, and Segment Anything Model \cite{sam} provide detailed structural information directly from volumetric data.
 
 However, most visualization pipelines do not integrate this structural information at the representation level, limiting efficiency and flexibility.
 
@@ -136,55 +136,57 @@ In summary, Gaussian Splatting has enabled highly efficient rendering but remain
 
 \section{Method}
 
-\subsection{Overview}
-We reformulate 3D Gaussian Splatting as a direct volumetric optimization problem. Instead of learning a scene representation from multi-view RGB images, we optimize a set of anisotropic 3D Gaussians directly against a target volume $V$ and a corresponding region-of-interest (ROI) mask $M$. This eliminates the need for camera models and image-based supervision and aligns the representation with the native domain of medical data.
+\subsection{From Image-Space to Volume-Space}
+We reformulate 3D Gaussian Splatting as a direct volumetric optimization problem. Instead of learning a scene representation from multi-view RGB images, we optimize a set of anisotropic 3D Gaussians directly against a target volume $V$ and a corresponding region-of-interest (ROI) mask $M$. As a result, supervision, initialization, and topology adaptation are all performed in voxel space, transforming Gaussian Splatting into a representation that is naturally aligned with medical imaging and other volumetric domains. This reformulation also significantly reduces the complexity of the pipeline and eliminates the need for camera models, feature extraction, feature matching and image-based supervision.
 
 Given $V$ and $M$, the objective is to learn a compact Gaussian set that approximates the underlying volumetric signal within relevant regions. Optimization is performed entirely in voxel space via a differentiable splatting formulation.
 
-The implementation is based on the original 3D Gaussian Splatting code and available at \url{https://github.com/your-repo/3d-gaussian-splatting}.
 
-\subsection{From Image-Space to Volume-Space Optimization}
-Standard 3D Gaussian Splatting optimizes view-dependent appearance from multi-view images. In contrast, our method operates directly in 3D. There is no camera model, no ray integration, and no image-space loss. Instead, all components of the pipeline—initialization, rendering, supervision, and topology adaptation—are defined in voxel space.
 
-This shift fundamentally changes the nature of the representation: Gaussians are no longer a proxy for view synthesis, but a sparse and trainable approximation of a volumetric signal.
 
 \subsection{Gaussian Representation}
-We represent the volume using a set of anisotropic Gaussians, each parameterized by position, scale, rotation, opacity, and a scalar intensity value.
+Similar to the original 3DGS approach, we parameterize each Gaussian $i$ by its center position $\mu_i$, its covariance matrix $\Sigma_i$ and opacity $\alpha_i$. In addition to that, each splat explicitly encodes a physical intensity value $c_i$ (e.g., Hounsfield units in CT), sampled directly from the input volume at each Gaussian position using trilinear interpolation in normalized volume space. For large splats, the method can instead use the mean of the voxels covered by the splat footprint.
 
-A key design decision is the use of intensity-aware Gaussians. Each primitive explicitly encodes a physical intensity value (e.g., Hounsfield units in CT), enabling the representation to capture both structure and appearance. This allows transfer functions to be applied or modified after training, similar to classical volume rendering, without requiring re-optimization.
+This allows transfer functions to be applied or modified after training, similar to classical volume rendering, without requiring re-optimization. In contrast to the original method, however, we use a spherical harmonic degree of 0 or 1 to avoid view-dependent colors, which would not fit to the expected precision in medical applications.
+
+In order to still be somewhat compatible with other gaussian splatting tools and workflows, the exported PLY files contain a grayscale sh color value that gets computed by converting the intensity values to a SH color using a standard black-and-white transfer function.
+
 
 \subsection{Differentiable Splat-to-Volume Formulation}
 To compare the Gaussian representation with the target data, we convert the Gaussian set into a dense voxel grid using a differentiable splatting operator. Each Gaussian contributes to nearby voxels based on its spatial extent and orientation, and the final volume is obtained by accumulating all contributions:
 
-[
+\[
 \hat{V}(\mathbf{x}) = \sum_{i} \alpha_i , c_i , \mathcal{N}(\mathbf{x} \mid \mu_i, \Sigma_i)
-]
+\]
+
+Where $\hat{V}(\mathbf{x})$ denotes the predicted volume intensity at voxel location $\mathbf{x}$ for each Gaussian $i$. The term $\mathcal{N}(\mathbf{x} \mid \mu_i, \Sigma_i)$ measures how strongly the $i$-th Gaussian contributes to the voxel at position $\mathbf{x}$.
 
 This formulation enables direct optimization in volume space and removes the need for intermediate rendering.
 
 \subsection{Mask-Driven and Structure-Aware Initialization}
-To focus model capacity on relevant regions, Gaussians are initialized by sampling from the ROI mask. For soft masks, sampling probabilities follow voxel confidence, allowing the method to retain uncertain but potentially important regions.
 
-In addition, we incorporate simple structural priors derived from the input volume. Local gradients and second-order cues are used to estimate preferred orientations, enabling anisotropic Gaussians to align with elongated structures such as vessels. This provides a strong initialization that improves convergence and reduces the need for extensive topology adaptation during training.
+For almost all clinical tasks, e.g. for intervention planning, only specific structures are relevant. Therefore, and to focus model capacity and compute power on only where it is necessary, we decided to always demand a ROI mask from the user. The ROI mask could for instance come from a machine learning-based segmentation model like TotalSegmentator and can be a binary or soft (float) mask and could cover one or multiple relevant structures. During initialization, the Gaussian spawn-positions are sampled inside the ROI mask. For soft masks, sampling probabilities correspond to the voxel value (which, depending on the segmentation method, might be interpreted as a segmentation confidence), allowing the method to retain uncertain but potentially important regions.
 
-\subsection{ROI-Aware Supervision}
+In addition, we incorporate simple structural priors derived from the input volume. Local volume gradients and second-order cues are used to estimate preferred orientations, enabling anisotropic Gaussians to align with elongated structures such as vessels. This provides a strong initialization that improves convergence and reduces the need for extensive topology adaptation during training.
+
+\subsection{ROI-Aware Optimization}
 Training is performed directly in voxel space using losses restricted to the ROI. This prevents large empty background regions from dominating optimization and improves robustness for sparse anatomical structures.
 
-The framework supports both structure-focused supervision (e.g., mask fitting) and intensity-based supervision, as well as their combination. Standard losses such as Dice, Tversky, and mean squared error are used. An additional penalty discourages density leakage outside the ROI, which stabilizes training.
+The framework supports both structure-focused optimization (e.g., mask fitting) and intensity-based optimization, as well as their combination. By default, the loss for the structure-focused optimization is Dice and the standard loss for the intensity / CT data values is mean squared error (MSE). An additional penalty discourages density leakage outside the ROI, which stabilizes training.
 
 \subsection{Adaptive Topology Optimization}
-To maintain an efficient representation, the Gaussian set is dynamically adapted during training. Regions with high reconstruction error trigger densification, while Gaussians with negligible contribution are pruned.
+To maintain an efficient representation, the Gaussian set is dynamically adapted during training. Densification and pruning are performed periodically during a predefined training window. At each densification step, Gaussians with large accumulated position gradients are refined: small splats are cloned, larger splats are split, and low-opacity splats are removed. The selection threshold is set adaptively from the current gradient distribution, and an additional hole-filling step can spawn new splats in under-covered regions. Unlike standard Gaussian Splatting, these topology updates are driven entirely by voxel-space optimization signals rather than by view-dependent visibility.
 
-Unlike standard Gaussian Splatting, which relies on view-dependent visibility, our approach uses voxel-space signals such as local gradients and reconstruction error. This enables effective modeling of thin and complex anatomical structures while keeping the representation compact.
+This enables effective modeling of thin and complex anatomical structures while keeping the representation compact.
 
-\subsection{Efficient Training}
-To enable training on large volumetric datasets, we employ several practical strategies, including ROI-restricted computation, reduced-resolution working grids, and chunked accumulation of Gaussian contributions. These techniques allow scalable optimization while preserving fidelity in relevant regions.
+\subsection{Implementation Details}
+Our implementation follows the original 3D Gaussian Splatting pipeline but replaces image-space supervision with a dedicated volumetric training path. In particular, data loading, initialization, supervision, rasterization, optimization, and export are integrated into a single training workflow that operates directly on target volumes and ROI masks. Data can be loaded using the NIfTI file format.
 
-\subsection{Relation to Standard Gaussian Splatting}
-Our method should be understood as a volume-native reformulation of Gaussian Splatting. While standard approaches are designed for image-based reconstruction, our formulation directly optimizes a volumetric representation from 3D data.
+To make training practical for large medical volumes, the implementation includes several memory- and runtime-aware design choices, including ROI-restricted computation, optional downscaling of the working grid, chunked accumulation of Gaussian contributions, and mixed-precision storage where appropriate. We further use monitoring and logging utilities to track optimization stability and support debugging during long training runs.
 
-As a result, supervision, initialization, and topology adaptation are all performed in voxel space. This transforms Gaussian Splatting into a representation that is naturally aligned with medical imaging and other volumetric domains.
+The system also includes task-specific presets for different anatomical regimes and exports intermediate checkpoints and PLY snapshots for inspection and downstream rendering. Overall, the implementation is designed to keep volumetric optimization tractable while preserving the flexibility needed for different datasets, supervision modes, and hardware constraints. For optimization, we employ the Adam optimizer. (\textbf{QUELLE?})
 
+The implementation is based on the original 3D Gaussian Splatting code and publicly available at \url{https://github.com/your-repo/3d-gaussian-splatting}. All hyperparameters are made accessible as CLI parameters.
 
 
 
@@ -195,7 +197,7 @@ As a result, supervision, initialization, and topology adaptation are all perfor
 \subsection{Experimental Setup}
 We evaluate our method on medical volumetric datasets, focusing on anatomically relevant structures such as vessels and organs. Input data consists of volumetric scans (e.g., CT) together with corresponding segmentation masks.
 
-All volumes are normalized to a common intensity range and processed in voxel space. Gaussian representations are initialized from ROI masks and optimized using the proposed voxel-space formulation.
+For this experiment, we used the "Visible Human Male Without Legs" CT dataset from the "Visible Human" project (\textbf{QUELLE!}). The dataset had an isotrop voxel size of 1x1x1 mm and was cropped to a relevant region of size 312x312x215. The segmentation of the relevant structures was performed using the TotalSegmentator v2. The soft liver mask was generated with an internally trained liver segmentation model.
 
 We compare our method against classical volume rendering approaches and analyze both visual quality and computational efficiency. All experiments are conducted on a standard GPU setup.
 
