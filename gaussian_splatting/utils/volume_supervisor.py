@@ -458,6 +458,61 @@ class VolumeSupervisor:
 
         return opacities
 
+    def _merge_index_sets(
+        self,
+        device: torch.device,
+        *index_sets: Optional[Tensor],
+    ) -> Tensor:
+        """Merge optional index tensors into one unique long tensor."""
+        merged = []
+        for idx in index_sets:
+            if isinstance(idx, torch.Tensor) and idx.numel() > 0:
+                merged.append(idx.long().to(device=device).view(-1))
+
+        if not merged:
+            return torch.empty(0, dtype=torch.long, device=device)
+        if len(merged) == 1:
+            return merged[0].unique()
+        return torch.unique(torch.cat(merged, dim=0))
+
+    def refresh_cached_appearance(
+        self,
+        gaussians,
+        *,
+        intensity_indices: Optional[Tensor] = None,
+        opacity_indices: Optional[Tensor] = None,
+        force_all: bool = False,
+    ) -> Dict[str, int]:
+        """Refresh sampled appearance buffers outside the main loss path."""
+        counts = {"intensity": 0, "opacity": 0}
+
+        intensity_mode = getattr(gaussians, "intensity_mode", "learned")
+        if intensity_mode in {"sampled", "sampled_mean_covered"}:
+            idx = None if force_all else intensity_indices
+            counts["intensity"] = int(
+                gaussians.update_sampled_intensities(
+                    sampler=self._intensity_sampler,
+                    indices=idx,
+                )
+            )
+            self.last_intensity_update_count = counts["intensity"]
+
+        opacity_mode = getattr(gaussians, "opacity_mode", "sampled")
+        if (
+            opacity_mode in {"sampled", "sampled_mean_covered"}
+            and self.mask_volume is not None
+        ):
+            idx = None if force_all else opacity_indices
+            counts["opacity"] = int(
+                gaussians.update_sampled_opacities(
+                    sampler=self._opacity_sampler,
+                    indices=idx,
+                )
+            )
+            self.last_opacity_update_count = counts["opacity"]
+
+        return counts
+
     def _ensure_scalar_point_attribute(
         self,
         name: str,
@@ -639,13 +694,20 @@ class VolumeSupervisor:
 
         n_points = xyz.shape[1] if xyz.shape[0] == 3 else xyz.shape[0]
         intensity_mode = getattr(gaussians, "intensity_mode", "learned")
+        opacity_mode = getattr(gaussians, "opacity_mode", "sampled")
+        pending_refresh_idx = torch.empty(0, dtype=torch.long, device=xyz.device)
+        if (
+            intensity_mode in {"sampled", "sampled_mean_covered"}
+            or opacity_mode in {"sampled", "sampled_mean_covered"}
+        ) and hasattr(gaussians, "consume_pending_appearance_indices"):
+            pending_refresh_idx = gaussians.consume_pending_appearance_indices()
 
+        gaussians.reference_volume = self.volume_color
         if self.mask_volume is not None:
             gaussians.reference_mask = self.mask_volume
 
         use_intensities: Tensor
         if intensity_mode in {"sampled", "sampled_mean_covered"}:
-            gaussians.reference_volume = self.volume_color
             if self.mask_volume is not None:
                 gaussians.reference_mask = self.mask_volume
 
@@ -672,6 +734,20 @@ class VolumeSupervisor:
                     self.dirty_threshold_scale,
                     self.dirty_threshold_rot,
                 )
+            global_dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
+            if update_due:
+                global_dirty_subset = gaussians.dirty_indices(
+                    None,
+                    self.dirty_threshold_xyz,
+                    self.dirty_threshold_scale,
+                    self.dirty_threshold_rot,
+                )
+            dirty_subset = self._merge_index_sets(
+                xyz.device,
+                dirty_subset,
+                pending_refresh_idx,
+                global_dirty_subset,
+            )
 
             indices_for_update: Optional[Tensor]
             if needs_resize:
@@ -776,6 +852,19 @@ class VolumeSupervisor:
                     self.dirty_threshold_scale,
                     self.dirty_threshold_rot,
                 )
+            global_dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
+            if update_due:
+                global_dirty_subset = gaussians.dirty_indices(
+                    None,
+                    self.dirty_threshold_xyz,
+                    self.dirty_threshold_scale,
+                    self.dirty_threshold_rot,
+                )
+            dirty_subset = self._merge_index_sets(
+                xyz.device,
+                dirty_subset,
+                global_dirty_subset,
+            )
 
             indices_for_update: Optional[Tensor]
             if needs_resize:
@@ -830,9 +919,16 @@ class VolumeSupervisor:
                 and gaussians._features_dc is not None
                 and gaussians._features_dc.numel() > 0
             ):
-                use_intensities = torch.sigmoid(
-                    gaussians._features_dc[:, 0, :].mean(dim=1, keepdim=True)
-                )
+                learned_intensity = gaussians.learned_intensity_from_features()
+                if learned_intensity is not None and learned_intensity.numel() > 0:
+                    use_intensities = learned_intensity
+                else:
+                    use_intensities = torch.full(
+                        (n_points, 1),
+                        0.5,
+                        device=xyz.device,
+                        dtype=xyz.dtype,
+                    )
             else:
                 if (
                     not hasattr(gaussians, "intensities")
@@ -851,7 +947,6 @@ class VolumeSupervisor:
                 use_intensities = gaussians.intensities
 
         # --- Opacity refresh (independent of intensity mode) ---
-        opacity_mode = getattr(gaussians, "opacity_mode", "sampled")
         if (
             opacity_mode in {"sampled", "sampled_mean_covered"}
             and self.mask_volume is not None
@@ -882,6 +977,20 @@ class VolumeSupervisor:
                     self.dirty_threshold_scale,
                     self.dirty_threshold_rot,
                 )
+            global_dirty_subset = torch.empty(0, dtype=torch.long, device=xyz.device)
+            if update_due:
+                global_dirty_subset = gaussians.dirty_indices(
+                    None,
+                    self.dirty_threshold_xyz,
+                    self.dirty_threshold_scale,
+                    self.dirty_threshold_rot,
+                )
+            dirty_subset = self._merge_index_sets(
+                xyz.device,
+                dirty_subset,
+                pending_refresh_idx,
+                global_dirty_subset,
+            )
 
             indices_for_update: Optional[Tensor]
             if needs_resize:

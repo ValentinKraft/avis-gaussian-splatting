@@ -201,6 +201,18 @@ def _select_active_indices(
     return idx, total
 
 
+def _densify_due(
+    iteration: int,
+    densify_from_iter: int,
+    densification_interval: int,
+) -> bool:
+    """Return whether densification should run on this iteration."""
+    interval = max(int(densification_interval), 1)
+    if int(iteration) < int(densify_from_iter):
+        return False
+    return ((int(iteration) - int(densify_from_iter)) % interval) == 0
+
+
 def _log_gpu_memory(
     tag: str, iteration: int, total_points: int, active_points: int
 ) -> None:
@@ -997,7 +1009,11 @@ def training(
                     # Perform densification and pruning at intervals
                     if (
                         iteration < opt.iterations
-                        and iteration % opt.densification_interval == 0
+                        and _densify_due(
+                            iteration,
+                            opt.densify_from_iter,
+                            opt.densification_interval,
+                        )
                     ):
                         # Volume-only training uses normalized [0,1]^3 coordinates.
                         # Keep densification heuristics in the same normalized scale.
@@ -1149,6 +1165,19 @@ def training(
             save_ply_every = (
                 args.save_ply_every if hasattr(args, "save_ply_every") else 1
             )
+            needs_serialization_refresh = (
+                iteration % save_ply_every == 0
+                or iteration == 1
+                or iteration == opt.iterations
+                or (iteration in saving_iterations)
+                or (iteration in checkpoint_iterations)
+            )
+            if needs_serialization_refresh:
+                volume_supervisor.refresh_cached_appearance(
+                    gaussians,
+                    force_all=True,
+                )
+
             if (
                 iteration % save_ply_every == 0
                 or iteration == 1

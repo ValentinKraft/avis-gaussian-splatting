@@ -110,6 +110,7 @@ class GaussianModel:
         self._prev_xyz = None
         self._prev_scaling = None
         self._prev_rotation = None
+        self._pending_appearance_mask = None
         self.intensity_color_divisor = 1.0
         self.intensity_large_splat_threshold = 0.03
         self.mean_covered_radius = 2.5
@@ -545,6 +546,42 @@ class GaussianModel:
         self._prev_xyz = self._xyz.detach().clone()
         self._prev_scaling = self._scaling.detach().clone()
         self._prev_rotation = self._rotation.detach().clone()
+
+    def _ensure_pending_appearance_mask(self, count: int) -> torch.Tensor:
+        """Ensure pending-appearance tracking mask exists for current point count."""
+        device = self._xyz.device if self._xyz.numel() > 0 else self._tensor_device()
+        existing = self._pending_appearance_mask
+        if (
+            existing is None
+            or not isinstance(existing, torch.Tensor)
+            or existing.device != device
+            or existing.numel() != count
+        ):
+            new_mask = torch.zeros(count, dtype=torch.bool, device=device)
+            if (
+                isinstance(existing, torch.Tensor)
+                and existing.device == device
+                and existing.numel() > 0
+            ):
+                copy_count = min(int(existing.numel()), int(count))
+                if copy_count > 0:
+                    new_mask[:copy_count] = existing[:copy_count]
+            self._pending_appearance_mask = new_mask
+        return self._pending_appearance_mask
+
+    @torch.no_grad()
+    def consume_pending_appearance_indices(self) -> torch.Tensor:
+        """Return and clear indices that require immediate sampled appearance refresh."""
+        if self._xyz.numel() == 0:
+            self._pending_appearance_mask = None
+            return torch.empty(0, dtype=torch.long, device=self._tensor_device())
+
+        count = int(self._xyz.shape[1])
+        mask = self._ensure_pending_appearance_mask(count)
+        pending = torch.nonzero(mask, as_tuple=False).view(-1)
+        if pending.numel() > 0:
+            mask[pending] = False
+        return pending
 
     @torch.no_grad()
     def snapshot_params_for_dirty_check(
@@ -1919,6 +1956,20 @@ class GaussianModel:
 
         return intensity_tensor
 
+    def learned_intensity_from_features(self) -> Optional[torch.Tensor]:
+        """Decode a scalar [0,1] intensity from SH DC features in a train/export-consistent way."""
+        if self._features_dc is None or self._features_dc.numel() == 0:
+            return None
+        if self._features_dc.dim() != 3 or self._features_dc.shape[1] < 1:
+            return None
+
+        dc_rgb = self._features_dc[:, 0, :]
+        if dc_rgb.numel() == 0:
+            return None
+
+        rgb = dc_rgb * float(SH_C0) + 0.5
+        return rgb.mean(dim=1, keepdim=True).clamp(0.0, 1.0)
+
     def _prepare_colors_for_ply(self, num_points: int) -> np.ndarray:
         """
         Prepares color values for PLY file export.
@@ -2086,7 +2137,10 @@ class GaussianModel:
     def _prepare_export_intensity01(self, num_points: int, f_dc: np.ndarray) -> np.ndarray:
         """Prepare normalized [0,1] scalar intensity values for PLY export."""
         if getattr(self, "intensity_mode", "learned") == "learned":
-            if f_dc.shape[0] == num_points:
+            learned = self.learned_intensity_from_features()
+            if learned is not None and learned.numel() > 0 and learned.shape[0] == num_points:
+                normalized = learned.detach().view(-1).cpu().numpy().astype(np.float32)
+            elif f_dc.shape[0] == num_points:
                 normalized = np.clip(
                     (f_dc * float(SH_C0) + 0.5).mean(axis=1),
                     0.0,
@@ -2602,6 +2656,18 @@ class GaussianModel:
             self._initial_scaling = self._initial_scaling[valid_points_mask]
         if hasattr(self, "_initial_xyz") and self._initial_xyz.numel() > 0:
             self._initial_xyz = self._initial_xyz[:, valid_points_mask]
+        if isinstance(self._pending_appearance_mask, torch.Tensor):
+            if self._pending_appearance_mask.numel() == valid_points_mask.shape[0]:
+                self._pending_appearance_mask = self._pending_appearance_mask[
+                    valid_points_mask
+                ]
+            else:
+                remaining_point_count = int(valid_points_mask.sum().item())
+                self._pending_appearance_mask = torch.zeros(
+                    remaining_point_count,
+                    dtype=torch.bool,
+                    device=self._xyz.device,
+                )
         self._reset_prev_buffers()
 
     def cat_tensors_to_optimizer(
@@ -2689,6 +2755,15 @@ class GaussianModel:
             new_xyz,
             threshold=mask_threshold,
         )
+        previous_count = self._xyz.shape[1] if self._xyz.numel() > 0 else 0
+
+        reseeded_feature_dc, reseeded_feature_rest = (
+            self._sample_learned_feature_tensors_for_xyz(new_xyz)
+        )
+        if reseeded_feature_dc is not None and new_features_dc is not None:
+            new_features_dc = reseeded_feature_dc
+        if reseeded_feature_rest is not None and new_features_rest is not None:
+            new_features_rest = reseeded_feature_rest
 
         # Prepare dictionary of new tensors - only include those that are in the optimizer
         new_tensors = {
@@ -2819,6 +2894,12 @@ class GaussianModel:
             )
         else:
             self._initial_xyz = self._xyz.detach().clone()
+        if new_xyz.numel() > 0:
+            current_count = self._xyz.shape[1] if self._xyz.numel() > 0 else 0
+            pending_mask = self._ensure_pending_appearance_mask(current_count)
+            new_count = max(0, current_count - previous_count)
+            if new_count > 0:
+                pending_mask[-new_count:] = True
         self._reset_prev_buffers()
 
     @torch.no_grad()
@@ -2866,16 +2947,125 @@ class GaussianModel:
 
         volume_min = getattr(self, "volume_min", None)
         volume_max = getattr(self, "volume_max", None)
+        normalize_samples = getattr(self, "intensity_mode", "learned") in {
+            "sampled",
+            "sampled_mean_covered",
+        }
         sampled, _, _ = sample_intensities_from_volume(
             pts_n3,
             volume,
             scale=None,
-            normalize=True,
+            normalize=normalize_samples,
             min_val=volume_min,
             max_val=volume_max,
             padding_mode=getattr(self, "sampling_padding_mode", "border"),
         )
+
+        mask = getattr(self, "reference_mask", None)
+        if (
+            mask is not None
+            and isinstance(mask, torch.Tensor)
+            and mask.numel() > 0
+            and sampled.numel() > 0
+        ):
+            mask_threshold = float(getattr(self, "reference_mask_threshold", 0.5))
+            mask_samples, _, _ = sample_intensities_from_volume(
+                pts_n3,
+                mask,
+                scale=None,
+                normalize=False,
+                min_val=0.0,
+                max_val=1.0,
+                padding_mode="border",
+            )
+            outside_soft = mask_samples.view(-1) < max(mask_threshold, 1e-4)
+            if bool(outside_soft.any().item()):
+                depth, height, width = volume.shape
+                point_indices = (
+                    pts_n3
+                    * torch.tensor(
+                        [width - 1, height - 1, depth - 1],
+                        device=pts_n3.device,
+                        dtype=pts_n3.dtype,
+                    )
+                ).round().long()
+                point_indices = torch.clamp(
+                    point_indices,
+                    min=torch.tensor([0, 0, 0], device=point_indices.device),
+                    max=torch.tensor(
+                        [width - 1, height - 1, depth - 1],
+                        device=point_indices.device,
+                    ),
+                )
+                x_idx = point_indices[:, 0]
+                y_idx = point_indices[:, 1]
+                z_idx = point_indices[:, 2]
+                nearest_vals = volume[z_idx, y_idx, x_idx].unsqueeze(1)
+                nearest_vals = nearest_vals.to(
+                    device=sampled.device,
+                    dtype=sampled.dtype,
+                )
+
+                if normalize_samples:
+                    if volume_min is None or volume_max is None:
+                        min_ref = float(volume.min().item())
+                        max_ref = float(volume.max().item())
+                    else:
+                        min_ref = float(volume_min)
+                        max_ref = float(volume_max)
+                    denom = max(max_ref - min_ref, 1e-8)
+                    if denom <= 1e-8:
+                        nearest_vals = torch.full_like(nearest_vals, 0.5)
+                    else:
+                        nearest_vals = (nearest_vals - min_ref) / denom
+                        nearest_vals = nearest_vals.clamp_(0.0, 1.0)
+
+                sampled = sampled.clone()
+                sampled[outside_soft] = nearest_vals[outside_soft]
+
         return sampled.clamp(0.0, 1.0).view(-1, 1)
+
+    @torch.no_grad()
+    def _sample_learned_feature_tensors_for_xyz(
+        self,
+        xyz: torch.Tensor,
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Reseed learned-mode child feature tensors from local CT samples."""
+        if getattr(self, "intensity_mode", "learned") != "learned":
+            return None, None
+        if self._features_dc is None or self._features_dc.numel() == 0:
+            return None, None
+        if xyz is None or not isinstance(xyz, torch.Tensor) or xyz.numel() == 0:
+            return None, None
+
+        sampled = self._sample_intensities_for_xyz(xyz)
+        if sampled is None or sampled.numel() == 0:
+            return None, None
+
+        sh_vals = self._map_intensities_to_sh_coefficients(
+            sampled,
+            getattr(self, "volume_min", None),
+            getattr(self, "volume_max", None),
+        )
+        feature_dc = sh_vals.expand(-1, 3).unsqueeze(1).to(
+            device=self._features_dc.device,
+            dtype=self._features_dc.dtype,
+        )
+
+        feature_rest = None
+        if self._features_rest is not None and self._features_rest.dim() == 3:
+            point_count = feature_dc.shape[0]
+            feature_rest = torch.zeros(
+                (
+                    point_count,
+                    self._features_rest.shape[1],
+                    self._features_rest.shape[2],
+                ),
+                device=self._features_rest.device,
+                dtype=self._features_rest.dtype,
+            )
+
+        return feature_dc, feature_rest
 
     def _current_parameter_bytes(self) -> float:
         """Estimate current parameter memory footprint in bytes."""

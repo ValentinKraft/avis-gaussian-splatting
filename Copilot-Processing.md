@@ -73,6 +73,39 @@
 	- `pytest test_sparse_raster.py test_export_appearance.py` passed.
 	- A 1-iteration learned-mode smoke run (`_output_/raster-core-smoke-v2`) completed successfully with finite xyz/scaling/rotation gradients, PLY export, and checkpoint save.
 
+## Update (2026-04-07, Densify Spawn Intensity Parity)
+- Implementing the densification-time appearance fix for sampled intensity modes, targeted at the first artifact onset when densification starts.
+- `scene/gaussian_model.py`
+	- Upgraded `_sample_intensities_for_xyz(...)` to mirror initialization-time mask-boundary correction behavior for sampled modes.
+	- Spawn-time intensity sampling now replaces soft outside-mask trilinear values with nearest-voxel reference-volume samples before clamping, matching the existing initialization policy more closely.
+- `test_appearance_refresh.py`
+	- Added a focused regression for `_sample_intensities_for_xyz(...)` mask-boundary correction.
+	- Added a direct `densification_postfix(...)` regression asserting new points append CT-sampled intensities immediately and are marked for pending appearance refresh exactly once.
+- Validation:
+	- `pytest -q test_appearance_refresh.py` passed (`5 passed`).
+	- Short densify-enabled sampled-mode smoke run completed successfully at `_output_/spawn-intensity-parity-smoke`.
+	- Confirmed first post-densify save exists at `_output_/spawn-intensity-parity-smoke/ply_sequence/ply_sequence/gaussians_000010.ply`.
+
+## Update (2026-04-08, Learned-Mode Child Reseeding + Relative Densify Interval)
+- Investigating the remaining bright splats showed the user’s failing command was actually running in learned intensity mode because `--intensity_mode` and `--opacity_mode` were omitted and the training log still showed active `f_dc` and `f_rest` parameter groups.
+- `scene/gaussian_model.py`
+	- Added learned-mode child feature reseeding during `densification_postfix(...)`.
+	- New learned-mode children now derive DC features from local CT samples at the spawned xyz instead of copying parent brightness.
+	- Higher-order SH features for spawned children are reset to zero rather than inheriting stale parent rest coefficients.
+- `gaussian_splatting/utils/volume_supervisor.py`
+	- Ensured `gaussians.reference_volume` is populated in learned mode too, so densification-time reseeding has the required CT source available.
+- `train.py`
+	- Added `_densify_due(...)` and changed densification cadence to be relative to `densify_from_iter` rather than absolute iteration modulo.
+	- Example: `densify_from_iter=10`, `densification_interval=2` now densifies at `10, 12, 14, ...`.
+- `test_appearance_refresh.py`
+	- Added a regression asserting learned-mode `densification_postfix(...)` reseeds child DC features from local CT samples and zeros child SH-rest features.
+	- Added a regression for the new relative densification schedule helper.
+- Validation:
+	- `pytest -q test_appearance_refresh.py` passed (`7 passed`).
+	- Short learned-mode smoke run completed successfully at `_output_/learned-child-reseed-smoke`.
+	- Confirmed densification fired at iterations `10`, `12`, and `14` for `densify_from_iter=10`, `densification_interval=2`.
+	- Confirmed `save_ply_every=2` produced `_output_/learned-child-reseed-smoke/ply_sequence/ply_sequence/gaussians_000002.ply`, `_000004.ply`, `_000006.ply`, `_000008.ply`, `_000010.ply`, `_000012.ply`, `_000014.ply`, and `_000016.ply`.
+
 ## User Request Details (2026-04-04, Runtime Fidelity Densification)
 - Start implementation of the planned runtime densification changes for volume-supervised fidelity.
 - Goal: improve vessel-aware offspring placement/scaling, make active-point subsampling fair for densification stats, and expose the missing runtime controls on the CLI.
@@ -529,5 +562,41 @@ categories: []
 Validation note (2026-02-12)
 - Generated `gs_viewer/_sample/minimal_gaussian.ply` and verified the loader self-check works.
 - No `.ply` files were found under `_output_/` in the current workspace snapshot, so a real-model smoke test is pending.
+
+## Update (2026-04-07, Wrong-Color Singleton Mitigation: Implementation Slice A)
+- Started the revised `vshuman-v3` implementation with singleton appearance stability first.
+- `scene/gaussian_model.py`
+	- Added pending-appearance tracking (`_pending_appearance_mask`) so newly spawned densification children can be force-refreshed on the next supervision step.
+	- Added `consume_pending_appearance_indices()` to expose and clear those indices safely.
+	- Wired pending-mask maintenance through `densification_postfix(...)` and `prune_points(...)` so it survives split/clone/hole-fill plus pruning.
+	- Added `learned_intensity_from_features()` to decode scalar intensity from SH DC consistently (`rgb = f_dc * SH_C0 + 0.5`, then channel-mean).
+	- Updated learned-mode export scalar path to use the same decoder first, with existing fallback retained.
+- `gaussian_splatting/utils/volume_supervisor.py`
+	- Added one-shot `pending_refresh_idx` consumption for sampled appearance modes.
+	- Merged pending indices into dirty refresh subsets for both intensity and opacity sampled refresh logic.
+	- Replaced the learned training intensity surrogate (`sigmoid(mean(f_dc))`) with the new SH-consistent decode helper.
+- Added focused tests in `test_appearance_refresh.py`:
+	- `test_learned_intensity_from_features_matches_sh_decode`
+	- `test_consume_pending_appearance_indices_clears_mask`
+- Validation:
+	- `pytest -q test_appearance_refresh.py` passed (2 tests).
+	- 2-iteration smoke run in target mode mix (`--intensity_mode sampled_mean_covered --opacity_mode learned`) completed successfully at `_output_/appearance-refresh-smoke`.
+	- 120-iteration densification-enabled smoke completed successfully at `_output_/appearance-refresh-densify-smoke` with densify events at iters 20/40/60/80, validating pending refresh tracking through spawn+prune topology changes.
+
+## Update (2026-04-07, Wrong-Color Singleton Mitigation: Implementation Slice B)
+- User reported the screenshot failure mode still persists in exported output.
+- Root cause identified: sampled appearance buffers could still be stale for inactive-but-moved points under active-point training, and PLY/checkpoint serialization could happen immediately after densification before a full-scene sampled refresh.
+- `gaussian_splatting/utils/volume_supervisor.py`
+	- Added `_merge_index_sets(...)` helper.
+	- Added `refresh_cached_appearance(...)` helper to force sampled intensity/opacity buffer refresh outside the main loss path.
+	- On sampled update intervals, expanded dirty refresh from active-only to full-scene dirty detection (`dirty_indices(None, ...)`) and merged it with active dirty sets plus pending spawned indices.
+- `train.py`
+	- Added forced full sampled appearance refresh immediately before PLY saves, scene saves, and checkpoint writes.
+- `test_appearance_refresh.py`
+	- Added `test_refresh_cached_appearance_force_all_uses_full_refresh`.
+- Validation:
+	- `pytest -q test_appearance_refresh.py` passed (3 tests).
+	- 40-iteration densify+save smoke completed successfully at `_output_/appearance-export-refresh-smoke` with densification at iter 20 and serialization at iter 20/40.
+	- Verified exported PLY scalar intensities now exactly match the refreshed checkpoint intensity buffer at iter 40 (`mean_abs_diff=0.0`, `max_abs_diff=0.0`).
 
 
