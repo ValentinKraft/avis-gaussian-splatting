@@ -73,6 +73,11 @@ class VolumeSupervisor:
         sparse_max_radius_vox: int = 10,
         sparse_support_softness: float = 0.75,
         render_min_sigma_vox: float = 0.35,
+        sparse_support_cutoff_final: Optional[float] = None,
+        sparse_support_softness_final: Optional[float] = None,
+        render_min_sigma_vox_final: Optional[float] = None,
+        raster_schedule_start_iter: int = -1,
+        raster_schedule_end_iter: int = -1,
     ):
         """
         Args:
@@ -294,7 +299,64 @@ class VolumeSupervisor:
         self.sparse_max_radius_vox = max(1, int(sparse_max_radius_vox))
         self.sparse_support_softness = max(float(sparse_support_softness), 0.0)
         self.render_min_sigma_vox = max(float(render_min_sigma_vox), 0.0)
+        self.sparse_support_cutoff_final = (
+            None
+            if sparse_support_cutoff_final is None
+            else float(min(max(float(sparse_support_cutoff_final), 1e-5), 0.9999))
+        )
+        self.sparse_support_softness_final = (
+            None
+            if sparse_support_softness_final is None
+            else max(float(sparse_support_softness_final), 0.0)
+        )
+        self.render_min_sigma_vox_final = (
+            None
+            if render_min_sigma_vox_final is None
+            else max(float(render_min_sigma_vox_final), 0.0)
+        )
+        self.raster_schedule_start_iter = int(raster_schedule_start_iter)
+        self.raster_schedule_end_iter = int(raster_schedule_end_iter)
         self.enable_render_checkpoint = True
+
+    def _scheduled_raster_value(
+        self,
+        start_value: float,
+        final_value: Optional[float],
+    ) -> float:
+        """Return the scheduled raster value for the current iteration."""
+        if final_value is None:
+            return float(start_value)
+
+        start_iter = int(getattr(self, "raster_schedule_start_iter", -1))
+        end_iter = int(getattr(self, "raster_schedule_end_iter", -1))
+        iteration = int(getattr(self, "iteration", 0))
+
+        if start_iter < 0 or end_iter <= start_iter:
+            return float(start_value)
+        if iteration <= start_iter:
+            return float(start_value)
+        if iteration >= end_iter:
+            return float(final_value)
+
+        alpha = float(iteration - start_iter) / float(end_iter - start_iter)
+        return float(start_value) + alpha * (float(final_value) - float(start_value))
+
+    def _effective_raster_params(self) -> Dict[str, float]:
+        """Return sparse raster parameters after applying any active schedule."""
+        return {
+            "sparse_support_cutoff": self._scheduled_raster_value(
+                self.sparse_support_cutoff,
+                self.sparse_support_cutoff_final,
+            ),
+            "sparse_support_softness": self._scheduled_raster_value(
+                self.sparse_support_softness,
+                self.sparse_support_softness_final,
+            ),
+            "render_min_sigma_vox": self._scheduled_raster_value(
+                self.render_min_sigma_vox,
+                self.render_min_sigma_vox_final,
+            ),
+        }
 
     def _orientation_source(self) -> Tensor:
         """Return the tensor used to derive orientations."""
@@ -1085,6 +1147,7 @@ class VolumeSupervisor:
 
         render_use_amp = bool(getattr(self, "render_use_amp", False))
         render_amp_dtype = getattr(self, "render_amp_dtype", torch.float16)
+        raster_params = self._effective_raster_params()
 
         def _render_density(points, scales, rotations, opacities):
             # IMPORTANT: checkpoint recompute happens during backward, outside the
@@ -1107,10 +1170,10 @@ class VolumeSupervisor:
                     render_mode="density",
                     density_scale=float(getattr(self, "density_scale", 1.0)),
                     working_grid_downscale_factor=self.volume_render_downscale_factor,
-                    sparse_support_cutoff=self.sparse_support_cutoff,
+                    sparse_support_cutoff=raster_params["sparse_support_cutoff"],
                     sparse_max_radius_vox=self.sparse_max_radius_vox,
-                    sparse_support_softness=self.sparse_support_softness,
-                    render_min_sigma_vox=self.render_min_sigma_vox,
+                    sparse_support_softness=raster_params["sparse_support_softness"],
+                    render_min_sigma_vox=raster_params["render_min_sigma_vox"],
                 )
 
         def _render_intensity(points, scales, rotations, opacities, intensities):
@@ -1131,10 +1194,10 @@ class VolumeSupervisor:
                     render_mode="intensity",
                     density_scale=float(getattr(self, "density_scale", 1.0)),
                     working_grid_downscale_factor=self.volume_render_downscale_factor,
-                    sparse_support_cutoff=self.sparse_support_cutoff,
+                    sparse_support_cutoff=raster_params["sparse_support_cutoff"],
                     sparse_max_radius_vox=self.sparse_max_radius_vox,
-                    sparse_support_softness=self.sparse_support_softness,
-                    render_min_sigma_vox=self.render_min_sigma_vox,
+                    sparse_support_softness=raster_params["sparse_support_softness"],
+                    render_min_sigma_vox=raster_params["render_min_sigma_vox"],
                 )
 
         volume_pred_mask_roi: Optional[Tensor] = None

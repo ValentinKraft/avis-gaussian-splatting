@@ -372,13 +372,13 @@ def add_parameter_regularization_loss(
     volume_gradients: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
-    Add comprehensive regularization losses to encourage proper scaling and rotation.
+    Add bounded regularization losses to discourage scale/rotation collapse.
 
     Args:
         model: GaussianModel instance
         loss: Current loss value
-        scale_diversity_weight: Weight for scale diversity across dimensions (orthogonality)
-        rotation_diversity_weight: Weight for rotation deviation from identity (quaternion dispersion)
+        scale_diversity_weight: Weight for a mild per-point anisotropy floor
+        rotation_diversity_weight: Weight for avoiding quaternion collapse to identity
         scale_range_weight: Weight for pushing scales toward target range
         rotation_entropy_weight: Weight for encouraging diverse rotation distribution
         volume_gt: Optional ground truth volume for gradient-based alignment
@@ -396,14 +396,18 @@ def add_parameter_regularization_loss(
         scale_total_contrib = torch.tensor(0.0, device=scaling.device)
 
         if scaling.shape[1] == 3:  # If we have per-axis scaling
-            # 1. Orthogonality Loss: Encourage differences between x,y,z scale components
-            # This makes the Gaussians more anisotropic (non-uniform scaling)
-            scale_similarity = torch.abs(scaling[:, 0] - scaling[:, 1]) + \
-                              torch.abs(scaling[:, 1] - scaling[:, 2]) + \
-                              torch.abs(scaling[:, 0] - scaling[:, 2])
-
-            # We want to maximize differences, so we minimize the negative
-            orthogonality_loss = -scale_similarity.mean() * scale_diversity_weight
+            # Encourage only a mild minimum axis separation instead of rewarding
+            # arbitrarily large per-point anisotropy. This keeps the term bounded
+            # and avoids pushing splats into needle-like or axis-collapsed shapes.
+            axis_gap = (
+                torch.abs(scaling[:, 0] - scaling[:, 1])
+                + torch.abs(scaling[:, 1] - scaling[:, 2])
+                + torch.abs(scaling[:, 0] - scaling[:, 2])
+            ) / 3.0
+            mean_scale = scaling.mean(dim=1).detach()
+            target_axis_gap = torch.clamp(mean_scale * 0.12, min=1e-4)
+            orthogonality_loss = torch.relu(target_axis_gap - axis_gap).mean()
+            orthogonality_loss = orthogonality_loss * scale_diversity_weight
             modified_loss = modified_loss + orthogonality_loss
             loss_metrics["scale_orthogonality_loss"] = orthogonality_loss.item()
 
@@ -431,24 +435,37 @@ def add_parameter_regularization_loss(
         rot = model.get_rotation
         rotation_total_contrib = torch.tensor(0.0, device=rot.device)
         if rot.shape[1] == 4:  # If we have quaternion rotations
-            # 1. Quaternion Dispersion Loss: Encourage deviation from identity [1,0,0,0]
+            # 1. Penalize only when rotations collapse too close to identity.
             identity_distance = torch.abs(rot[:, 0] - 1.0) + torch.norm(
                 rot[:, 1:], dim=1
             )
-            quaternion_loss = -identity_distance.mean() * rotation_diversity_weight
+            target_identity_distance = torch.full_like(identity_distance, 0.10)
+            quaternion_loss = torch.relu(
+                target_identity_distance - identity_distance
+            ).mean() * rotation_diversity_weight
             modified_loss = modified_loss + quaternion_loss
             loss_metrics["quaternion_dispersion_loss"] = quaternion_loss.item()
 
-            # 2. Rotation Entropy Loss: Encourage diverse distribution of rotations
-            # Approximate entropy by encouraging variance in quaternion components
-            quat_var = torch.var(rot, dim=0).sum()
-            entropy_loss = -quat_var * rotation_entropy_weight
+            # 2. Penalize low quaternion variance rather than rewarding variance
+            # unboundedly. This keeps the loss non-negative and bounded.
+            quat_var = torch.var(rot, dim=0, unbiased=False).sum()
+            target_quat_var = torch.tensor(0.02, device=rot.device, dtype=rot.dtype)
+            entropy_loss = torch.relu(target_quat_var - quat_var)
+            entropy_loss = entropy_loss * rotation_entropy_weight
             modified_loss = modified_loss + entropy_loss
             loss_metrics["rotation_entropy_loss"] = entropy_loss.item()
 
-            rotation_total_contrib = quaternion_loss + entropy_loss
+            # 3. Penalize near-zero spread in vector quaternion components.
+            vector_std = rot[:, 1:].std(dim=0, unbiased=False).mean()
+            target_vector_std = torch.tensor(0.03, device=rot.device, dtype=rot.dtype)
+            dispersion_loss = torch.relu(target_vector_std - vector_std)
+            dispersion_loss = dispersion_loss * dispersion_weight
+            modified_loss = modified_loss + dispersion_loss
+            loss_metrics["rotation_dispersion_loss"] = dispersion_loss.item()
 
-            # 3. Principal Direction Loss: Align with volume gradients if available
+            rotation_total_contrib = quaternion_loss + entropy_loss + dispersion_loss
+
+            # 4. Principal Direction Loss: Align with volume gradients if available
             if volume_gt is not None and principal_dir_weight > 0:
                 # Compute volume gradients (simplified - in real implementation compute proper gradients)
                 if hasattr(model, "_xyz") and model._xyz is not None:

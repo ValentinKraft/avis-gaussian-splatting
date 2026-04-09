@@ -45,6 +45,26 @@ SH_SCALE = 1.77  # Approximate 1/(2*SH_C0)
 _DEBUG_PLY_EXPORT = os.environ.get("GS_PLY_DEBUG", "0") == "1"
 
 
+def _blend_quaternions(
+    start: torch.Tensor,
+    target: torch.Tensor,
+    weight: torch.Tensor,
+) -> torch.Tensor:
+    """Blend quaternion pairs with sign correction and renormalization."""
+    if start.numel() == 0:
+        return start
+
+    if weight.dim() == 1:
+        weight = weight.unsqueeze(1)
+    weight = weight.clamp(0.0, 1.0)
+
+    aligned_target = target.clone()
+    flip_mask = (start * target).sum(dim=1, keepdim=True) < 0.0
+    aligned_target[flip_mask.expand_as(aligned_target)] *= -1.0
+    blended = torch.lerp(start, aligned_target, weight)
+    return torch.nn.functional.normalize(blended, dim=1)
+
+
 class GaussianModel:
     """
     Represents a 3D Gaussian Splatting model with trainable parameters.
@@ -100,6 +120,7 @@ class GaussianModel:
         # Orientation metadata populated during initialization for densification reuse
         self.orientation_field = None
         self.orientation_fallback_stats = {"clone": 0, "split": 0, "hole_fill": 0}
+        self.structure_guidance_helper = None
 
         # Intensity handling mode and cached parameter snapshots
         self.intensity_mode = "learned"
@@ -172,6 +193,13 @@ class GaussianModel:
         self.scaling_constraint_relaxation = 1.0
         self.early_stats_window = 256
         self._early_iteration_log: List[Dict[str, float]] = []
+        self.structure_guidance_start_iter = -1
+        self.structure_guidance_end_iter = -1
+        self.structure_guidance_interval = 0
+        self.structure_guidance_rotation_strength = 0.0
+        self.structure_guidance_anisotropy_strength = 0.0
+        self.structure_guidance_target_ratio = 1.0
+        self.structure_guidance_threshold = 0.1
 
         # Set up activation functions
         self._setup_activation_functions()
@@ -1257,6 +1285,73 @@ class GaussianModel:
             0,
             getattr(training_args, "early_stats_window", self.early_stats_window),
         )
+        self.structure_guidance_start_iter = int(
+            getattr(
+                training_args,
+                "structure_guidance_start_iter",
+                self.structure_guidance_start_iter,
+            )
+        )
+        self.structure_guidance_end_iter = int(
+            getattr(
+                training_args,
+                "structure_guidance_end_iter",
+                self.structure_guidance_end_iter,
+            )
+        )
+        self.structure_guidance_interval = max(
+            0,
+            int(
+                getattr(
+                    training_args,
+                    "structure_guidance_interval",
+                    self.structure_guidance_interval,
+                )
+            ),
+        )
+        self.structure_guidance_rotation_strength = max(
+            0.0,
+            float(
+                getattr(
+                    training_args,
+                    "structure_guidance_rotation_strength",
+                    self.structure_guidance_rotation_strength,
+                )
+            ),
+        )
+        self.structure_guidance_anisotropy_strength = max(
+            0.0,
+            float(
+                getattr(
+                    training_args,
+                    "structure_guidance_anisotropy_strength",
+                    self.structure_guidance_anisotropy_strength,
+                )
+            ),
+        )
+        self.structure_guidance_target_ratio = max(
+            1.0,
+            float(
+                getattr(
+                    training_args,
+                    "structure_guidance_target_ratio",
+                    self.structure_guidance_target_ratio,
+                )
+            ),
+        )
+        self.structure_guidance_threshold = min(
+            1.0,
+            max(
+                0.0,
+                float(
+                    getattr(
+                        training_args,
+                        "structure_guidance_threshold",
+                        self.structure_guidance_threshold,
+                    )
+                ),
+            ),
+        )
         self._max_scale_factor_base = self.max_scale_factor
         self._density_cache = None
         self._coverage_state = None
@@ -1601,7 +1696,13 @@ class GaussianModel:
     def _maybe_update_density_cache(
         self, iteration: Optional[int]
     ) -> Optional[Dict[str, torch.Tensor]]:
-        """Refresh cached density metrics on a fixed cadence."""
+        """Refresh cached density metrics on a fixed cadence.
+
+        Coverage is intentionally derived from the same local-density signal used
+        for low-density selection rather than a coarse global occupancy grid.
+        The older 32^3 occupancy heuristic could imprint an axis-aligned lattice
+        into hole-fill decisions on smooth anatomy.
+        """
         if self._xyz.numel() == 0:
             return None
 
@@ -1630,20 +1731,25 @@ class GaussianModel:
         density = gaussian_compute_local_density(xyz, radius, self._density_cap)
         low_density_mask = density < self.low_density_threshold
 
-        coverage = gaussian_compute_coverage_grid(xyz)
-        hole_mask = coverage["occupancy"].view(-1) == 0
-        hole_voxels = int(hole_mask.sum().item())
-        total_voxels = int(coverage["occupancy"].numel())
-        coverage_ratio = 1.0 - (hole_voxels / max(total_voxels, 1))
+        # Use the fraction of splats that are not flagged as low-density as the
+        # coverage proxy. This keeps the trigger tied to smooth, per-point
+        # neighborhoods instead of a coarse axis-aligned grid over the entire
+        # bounding box.
+        low_density_count = int(low_density_mask.sum().item())
+        total_points = max(int(low_density_mask.numel()), 1)
+        coverage_ratio = 1.0 - (low_density_count / total_points)
         self._low_density_mask = low_density_mask
-        self._coverage_state = coverage
+        self._coverage_state = {
+            "low_density_mask": low_density_mask,
+            "radius": torch.tensor(radius, device=xyz.device),
+        }
 
         self._density_cache = {
             "density": density,
             "radius": torch.tensor(radius, device=xyz.device),
             "low_density_mask": low_density_mask,
             "coverage_ratio": torch.tensor(coverage_ratio, device=xyz.device),
-            "hole_voxels": torch.tensor(hole_voxels, device=xyz.device),
+            "hole_voxels": torch.tensor(low_density_count, device=xyz.device),
         }
         return self._density_cache
 
@@ -3256,19 +3362,197 @@ class GaussianModel:
         return boost
 
     def _structure_blend_weights(
-        self, strength: Optional[torch.Tensor]
+        self,
+        strength: Optional[torch.Tensor],
+        threshold: Optional[float] = None,
     ) -> Optional[torch.Tensor]:
         """Map raw structure strength to a 0..1 blend weight."""
         if strength is None or strength.numel() == 0:
             return None
 
         blend = strength.clamp(0.0, 1.0)
-        threshold = float(self.structure_gradient_threshold)
+        if threshold is None:
+            threshold = float(self.structure_gradient_threshold)
         if threshold >= 1.0:
             return torch.zeros_like(blend)
         if threshold > 0.0:
             blend = (blend - threshold).clamp_min(0.0) / (1.0 - threshold)
         return blend
+
+    def _structure_guidance_progress(self, iteration: int) -> float:
+        """Return 0..1 schedule progress for late structure guidance."""
+        start = int(getattr(self, "structure_guidance_start_iter", -1))
+        end = int(getattr(self, "structure_guidance_end_iter", -1))
+        if start < 0 or iteration < start:
+            return 0.0
+        if end <= start:
+            return 1.0
+        return float(min(max((iteration - start) / float(end - start), 0.0), 1.0))
+
+    def _sample_structure_guidance_targets(
+        self,
+        xyz: torch.Tensor,
+        fallback_quats: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Sample target quaternions and per-point structure strengths."""
+        coords = xyz
+        if coords.dim() == 2 and coords.shape[0] == 3:
+            coords = coords.transpose(0, 1).contiguous()
+        elif coords.dim() != 2 or coords.shape[1] != 3:
+            coords = coords.reshape(-1, 3)
+
+        device = coords.device
+        dtype = coords.dtype
+        helper = getattr(self, "structure_guidance_helper", None)
+        if helper is not None and hasattr(helper, "get_structure_for_points"):
+            structure_quats, structure_strength = helper.get_structure_for_points(coords)
+            if (
+                isinstance(structure_quats, torch.Tensor)
+                and structure_quats.numel() > 0
+                and structure_quats.shape[0] == coords.shape[0]
+            ):
+                quats = structure_quats.to(device=device, dtype=dtype)
+                quats = torch.nn.functional.normalize(quats, dim=1)
+                if (
+                    isinstance(structure_strength, torch.Tensor)
+                    and structure_strength.numel() == coords.shape[0]
+                ):
+                    strength = structure_strength.view(-1).to(
+                        device=device,
+                        dtype=dtype,
+                    )
+                else:
+                    strength = torch.ones(coords.shape[0], device=device, dtype=dtype)
+                return quats, strength.clamp(0.0, 1.0)
+
+        quats, fallback_mask = self._sample_orientation_quats(coords, fallback_quats)
+        strength = self._structure_strength_from_field(coords)
+        if strength is None or strength.numel() != coords.shape[0]:
+            strength = (~fallback_mask).to(device=device, dtype=dtype)
+        else:
+            strength = strength.view(-1).to(device=device, dtype=dtype)
+            if fallback_mask.any():
+                strength = strength.clone()
+                strength[fallback_mask] = 0.0
+        return quats, strength.clamp(0.0, 1.0)
+
+    def _target_structure_scales(
+        self,
+        current_scaling: torch.Tensor,
+        target_ratio: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return volume-preserving target scales with local z as the long axis."""
+        ratio = target_ratio.view(-1).clamp_min(1.0)
+        geom_mean = current_scaling.prod(dim=1).clamp_min(1e-12).pow(1.0 / 3.0)
+        radial = geom_mean / ratio.pow(1.0 / 3.0)
+        axial = geom_mean * ratio.pow(2.0 / 3.0)
+        return torch.stack((radial, radial, axial), dim=1)
+
+    @torch.no_grad()
+    def apply_structure_guidance(
+        self,
+        iteration: int,
+        indices: Optional[torch.Tensor] = None,
+    ) -> Dict[str, float]:
+        """Nudge active splats toward structure-aligned rotations and anisotropy."""
+        interval = int(getattr(self, "structure_guidance_interval", 0))
+        if interval <= 0 or self._xyz.numel() == 0:
+            return {}
+
+        progress = self._structure_guidance_progress(iteration)
+        if progress <= 0.0:
+            return {}
+
+        start = int(getattr(self, "structure_guidance_start_iter", -1))
+        if start >= 0 and ((iteration - start) % interval) != 0:
+            return {}
+
+        device = self._xyz.device
+        if indices is None:
+            idx = torch.arange(self._xyz.shape[1], device=device)
+        else:
+            idx = indices.long().unique()
+
+        if idx.numel() == 0:
+            return {}
+
+        xyz = self._xyz[:, idx].transpose(0, 1).contiguous()
+        current_quats = self.get_rotation[idx].detach()
+        target_quats, structure_strength = self._sample_structure_guidance_targets(
+            xyz,
+            current_quats,
+        )
+        if target_quats.numel() == 0 or structure_strength.numel() == 0:
+            return {}
+
+        base_blend = self._structure_blend_weights(
+            structure_strength,
+            threshold=float(
+                getattr(self, "structure_guidance_threshold", 0.0)
+            ),
+        )
+        if base_blend is None:
+            base_blend = structure_strength.clamp(0.0, 1.0)
+
+        rotation_blend = (
+            base_blend
+            * progress
+            * float(getattr(self, "structure_guidance_rotation_strength", 0.0))
+        ).clamp(0.0, 1.0)
+        anisotropy_blend = (
+            base_blend
+            * progress
+            * float(getattr(self, "structure_guidance_anisotropy_strength", 0.0))
+        ).clamp(0.0, 1.0)
+
+        if not rotation_blend.any() and not anisotropy_blend.any():
+            return {}
+
+        if rotation_blend.any():
+            blended_quats = _blend_quaternions(
+                current_quats,
+                target_quats.to(device=current_quats.device, dtype=current_quats.dtype),
+                rotation_blend.to(device=current_quats.device, dtype=current_quats.dtype),
+            )
+            self._rotation[idx] = blended_quats.to(
+                device=self._rotation.device,
+                dtype=self._rotation.dtype,
+            )
+
+        target_ratio = max(
+            1.0,
+            float(getattr(self, "structure_guidance_target_ratio", 1.0)),
+        )
+        target_ratio_tensor = 1.0 + (target_ratio - 1.0) * base_blend
+        if anisotropy_blend.any() and target_ratio > 1.0:
+            current_scaling = self.get_scaling[idx].detach()
+            desired_scaling = self._target_structure_scales(
+                current_scaling,
+                target_ratio_tensor.to(
+                    device=current_scaling.device,
+                    dtype=current_scaling.dtype,
+                ),
+            )
+            updated_scaling = torch.lerp(
+                current_scaling,
+                desired_scaling,
+                anisotropy_blend.to(
+                    device=current_scaling.device,
+                    dtype=current_scaling.dtype,
+                ).unsqueeze(1),
+            )
+            self._scaling[idx] = self.scaling_inverse_activation(
+                updated_scaling.clamp_min(1e-6)
+            ).to(device=self._scaling.device, dtype=self._scaling.dtype)
+
+        return {
+            "count": float(idx.numel()),
+            "schedule_progress": float(progress),
+            "strength_mean": float(base_blend.mean().item()),
+            "rotation_blend_mean": float(rotation_blend.mean().item()),
+            "anisotropy_blend_mean": float(anisotropy_blend.mean().item()),
+            "target_ratio_mean": float(target_ratio_tensor.mean().item()),
+        }
 
     def _normalized_voxel_size_xyz(
         self, device: torch.device, dtype: torch.dtype

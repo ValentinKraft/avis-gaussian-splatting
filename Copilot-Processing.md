@@ -106,6 +106,43 @@
 	- Confirmed densification fired at iterations `10`, `12`, and `14` for `densify_from_iter=10`, `densification_interval=2`.
 	- Confirmed `save_ply_every=2` produced `_output_/learned-child-reseed-smoke/ply_sequence/ply_sequence/gaussians_000002.ply`, `_000004.ply`, `_000006.ply`, `_000008.ply`, `_000010.ply`, `_000012.ply`, `_000014.ply`, and `_000016.ply`.
 
+## Update (2026-04-08, Safe Diversity Regularization)
+- Investigating the failed anisotropic run showed the warmup diversity block was adding negative reward-style terms, not bounded penalties. The training log confirmed this via persistent negative `[REG]` values while volume loss was rising and geometry was collapsing toward a single axis.
+- `gaussian_splatting/utils/parameter_monitor.py`
+	- Replaced the unbounded negative scale/rotation reward terms with bounded, non-negative collapse penalties.
+	- Scale diversity now only penalizes splats whose per-axis separation falls below a mild floor, instead of rewarding arbitrarily large anisotropy.
+	- Rotation diversity now only penalizes quaternions that stay too close to identity or exhibit too little variance/spread across the batch.
+- `test_parameter_regularization.py`
+	- Added regressions asserting the regularization delta is non-negative for collapsed states and relaxes for already-diverse states.
+
+## Update (2026-04-08, Scheduled Late Sharpening)
+- The raster support controls were static, so the same smoothing used to suppress grid artifacts during densification also kept the model blurry after topology should have stabilized.
+- `arguments.py`
+	- Added optional raster-schedule flags: `--sparse_support_cutoff_final`, `--sparse_support_softness_final`, `--render_min_sigma_vox_final`, `--raster_schedule_start_iter`, and `--raster_schedule_end_iter`.
+- `gaussian_splatting/utils/volume_supervisor.py`
+	- Added scheduled raster interpolation helpers and applied them to both density and intensity render paths.
+	- The supervisor can now keep rasterization smoother early, then sharpen later without forcing one static tradeoff for the whole run.
+- `test_raster_schedule.py`
+	- Added focused tests for the unscheduled case, interpolation behavior, and final-value clamping.
+
+## Update (2026-04-08, Late Structure Guidance)
+- User reported that the scheduled-sharpening run was better but still too point-like in later iterations, with residual lattice visibility.
+- Root cause: structure-aware anisotropy and orientation existed at initialization and densify spawn time, but there was no runtime mechanism to reintroduce bounded structure alignment after the topology settled. Later training therefore drifted back toward nearly isotropic splats.
+- Resolution:
+	- Added runtime structure-guidance CLI flags in `arguments.py` for start/end iteration, cadence, rotation blend strength, anisotropy blend strength, and target ratio.
+	- Added a dedicated `--structure_guidance_threshold` so late anisotropy only activates in confident structure regions without coupling to older densification heuristics.
+	- Added `GaussianModel.apply_structure_guidance(...)` in `scene/gaussian_model.py`, which samples local structure directions from `VolumeSupervisor.get_structure_for_points(...)` and gently nudges active splats toward structure-aligned quaternions plus a volume-preserving axial/radial target ratio.
+	- Threaded the supervisor into the Gaussian model and invoked late guidance from `train.py` on the active subset after each optimizer step, then re-applied scale constraints.
+	- Added focused regressions in `test_structure_guidance.py` for both full-strength application and schedule gating before the start iteration.
+
+## Update (2026-04-08, Remove Coarse Coverage Grid Trigger)
+- User reported that the new structure-guided run still showed strong axis-aligned striping.
+- Root cause: densification hole-fill triggering still used a coarse `32^3` occupancy grid over the current point-cloud bounds. That heuristic can imprint a global axis-aligned lattice into the topology even when rendering and guidance are smoother.
+- Resolution:
+	- Replaced `_maybe_update_density_cache(...)` coverage computation in `scene/gaussian_model.py` so `coverage_ratio` is now derived from the existing local-density signal instead of `gaussian_compute_coverage_grid(...)`.
+	- Preserved the existing `target_coverage` / `hole_fill_fraction` interface, but the trigger now reflects per-splat low-density neighborhoods rather than coarse bbox occupancy.
+	- Added `test_density_cache.py` to ensure the density cache no longer calls the coarse occupancy-grid helper.
+
 ## User Request Details (2026-04-04, Runtime Fidelity Densification)
 - Start implementation of the planned runtime densification changes for volume-supervised fidelity.
 - Goal: improve vessel-aware offspring placement/scaling, make active-point subsampling fair for densification stats, and expose the missing runtime controls on the CLI.

@@ -482,6 +482,17 @@ def training(
         sparse_max_radius_vox=getattr(opt, "sparse_max_radius_vox", 10),
         sparse_support_softness=getattr(opt, "sparse_support_softness", 0.75),
         render_min_sigma_vox=getattr(opt, "render_min_sigma_vox", 0.35),
+        sparse_support_cutoff_final=getattr(
+            opt, "sparse_support_cutoff_final", None
+        ),
+        sparse_support_softness_final=getattr(
+            opt, "sparse_support_softness_final", None
+        ),
+        render_min_sigma_vox_final=getattr(
+            opt, "render_min_sigma_vox_final", None
+        ),
+        raster_schedule_start_iter=getattr(opt, "raster_schedule_start_iter", -1),
+        raster_schedule_end_iter=getattr(opt, "raster_schedule_end_iter", -1),
         volume_storage_dtype=getattr(args, "volume_storage_dtype", "fp32"),
     )
     volume_supervisor.enable_render_checkpoint = not bool(
@@ -518,6 +529,7 @@ def training(
         volume_supervisor.bounds_min,
         volume_supervisor.bounds_max,
     )
+    gaussians.structure_guidance_helper = volume_supervisor
     gaussians.reference_mask_threshold = float(
         getattr(args, "init_mask_threshold", 0.05)
     )
@@ -726,6 +738,7 @@ def training(
         volume_loss = 0.0
         reg_loss_value = None
         reg_metrics = None
+        structure_guidance_metrics = None
         warmup_active = diversity_enabled and iteration <= diversity_warmup_iters
 
         # Compute the volume loss and get volume gradients for parameter diversity loss
@@ -978,6 +991,15 @@ def training(
             )
             gaussians.enforce_position_displacement_constraint()
             gaussians.enforce_position_bounds()
+            structure_guidance_metrics = gaussians.apply_structure_guidance(
+                iteration,
+                indices=active_idx,
+            )
+            if structure_guidance_metrics:
+                gaussians.enforce_scaling_constraint(
+                    iteration=iteration,
+                    apply_relative=bool(scale_constraints_enabled),
+                )
 
             # Adaptive density control for volume-based training
             with torch.no_grad():
@@ -1147,6 +1169,16 @@ def training(
                         )
                     if scaling_lr is not None:
                         tb_writer.add_scalar("lr/scaling", scaling_lr, iteration)
+
+                    if structure_guidance_metrics:
+                        for metric_name, metric_value in (
+                            structure_guidance_metrics.items()
+                        ):
+                            tb_writer.add_scalar(
+                                f"structure_guidance/{metric_name}",
+                                metric_value,
+                                iteration,
+                            )
 
                     if update_tracker is not None:
                         update_metrics = update_tracker.update(gaussians)

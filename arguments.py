@@ -410,6 +410,83 @@ class ModelParams(ParamGroup):
         self._register("border_grad_sigma")
 
         core.add_argument(
+            "--structure_guidance_start_iter",
+            type=int,
+            default=-1,
+            help=(
+                "Iteration at which runtime structure guidance begins. "
+                "Set < 0 to disable late structure-aligned geometry updates."
+            ),
+        )
+        self._register("structure_guidance_start_iter")
+
+        core.add_argument(
+            "--structure_guidance_end_iter",
+            type=int,
+            default=-1,
+            help=(
+                "Iteration at which runtime structure guidance reaches full "
+                "strength. Values after this keep using the final guidance."
+            ),
+        )
+        self._register("structure_guidance_end_iter")
+
+        core.add_argument(
+            "--structure_guidance_interval",
+            type=int,
+            default=0,
+            help=(
+                "Iteration cadence for runtime structure guidance updates. "
+                "Use 0 to disable."
+            ),
+        )
+        self._register("structure_guidance_interval")
+
+        core.add_argument(
+            "--structure_guidance_rotation_strength",
+            type=float,
+            default=0.0,
+            help=(
+                "Blend strength for nudging runtime Gaussian rotations toward "
+                "local structure directions."
+            ),
+        )
+        self._register("structure_guidance_rotation_strength")
+
+        core.add_argument(
+            "--structure_guidance_anisotropy_strength",
+            type=float,
+            default=0.0,
+            help=(
+                "Blend strength for nudging runtime Gaussian scales toward a "
+                "moderate structure-aligned anisotropy target."
+            ),
+        )
+        self._register("structure_guidance_anisotropy_strength")
+
+        core.add_argument(
+            "--structure_guidance_target_ratio",
+            type=float,
+            default=1.6,
+            help=(
+                "Target axial-to-radial scale ratio used by runtime structure "
+                "guidance. Values near 1.4-1.8 are usually stable."
+            ),
+        )
+        self._register("structure_guidance_target_ratio")
+
+        core.add_argument(
+            "--structure_guidance_threshold",
+            type=float,
+            default=0.12,
+            help=(
+                "Minimum structure confidence before runtime guidance starts "
+                "blending rotations and anisotropy."
+            ),
+        )
+        self._register("structure_guidance_threshold")
+
+        core.add_argument(
             "--orientation_sigma_grad",
             type=float,
             default=0.8,
@@ -1321,6 +1398,61 @@ class OptimizationParams(ParamGroup):
             ),
         )
         self._register("render_min_sigma_vox")
+
+        intensity.add_argument(
+            "--sparse_support_cutoff_final",
+            type=float,
+            default=None,
+            help=(
+                "Optional final sparse-support cutoff used by the raster schedule. "
+                "When omitted, --sparse_support_cutoff stays fixed throughout training."
+            ),
+        )
+        self._register("sparse_support_cutoff_final")
+
+        intensity.add_argument(
+            "--sparse_support_softness_final",
+            type=float,
+            default=None,
+            help=(
+                "Optional final sparse-support softness used by the raster schedule. "
+                "Lower values sharpen detail late in training."
+            ),
+        )
+        self._register("sparse_support_softness_final")
+
+        intensity.add_argument(
+            "--render_min_sigma_vox_final",
+            type=float,
+            default=None,
+            help=(
+                "Optional final rendered sigma floor used by the raster schedule. "
+                "Lower values sharpen the model after topology stabilizes."
+            ),
+        )
+        self._register("render_min_sigma_vox_final")
+
+        intensity.add_argument(
+            "--raster_schedule_start_iter",
+            type=int,
+            default=-1,
+            help=(
+                "Iteration at which raster parameters begin interpolating toward "
+                "their *_final values. Set < 0 to disable scheduling."
+            ),
+        )
+        self._register("raster_schedule_start_iter")
+
+        intensity.add_argument(
+            "--raster_schedule_end_iter",
+            type=int,
+            default=-1,
+            help=(
+                "Iteration at which raster interpolation reaches the *_final "
+                "values. Must be greater than --raster_schedule_start_iter."
+            ),
+        )
+        self._register("raster_schedule_end_iter")
 
         constraint = parser.add_argument_group("Scale Constraints & Diagnostics")
 
