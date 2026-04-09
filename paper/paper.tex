@@ -155,19 +155,25 @@ In order to still be somewhat compatible with other gaussian splatting tools and
 \subsection{Differentiable Splat-to-Volume Formulation}
 To compare the Gaussian representation with the target data, we convert the Gaussian set into a dense voxel grid using a differentiable splatting operator. Each Gaussian contributes to nearby voxels based on its spatial extent and orientation, and the final volume is obtained by accumulating all contributions:
 
-\[
+$$
 \hat{V}(\mathbf{x}) = \sum_{i} \alpha_i , c_i , \mathcal{N}(\mathbf{x} \mid \mu_i, \Sigma_i)
-\]
+$$
 
 Where $\hat{V}(\mathbf{x})$ denotes the predicted volume intensity at voxel location $\mathbf{x}$ for each Gaussian $i$. The term $\mathcal{N}(\mathbf{x} \mid \mu_i, \Sigma_i)$ measures how strongly the $i$-th Gaussian contributes to the voxel at position $\mathbf{x}$.
 
 This formulation enables direct optimization in volume space and removes the need for intermediate rendering.
 
-\subsection{Mask-Driven and Structure-Aware Initialization}
+\subsection{Initialization}
 
-For almost all clinical tasks, e.g. for intervention planning, only specific structures are relevant. Therefore, and to focus model capacity and compute power on only where it is necessary, we decided to always demand a ROI mask from the user. The ROI mask could for instance come from a machine learning-based segmentation model like TotalSegmentator and can be a binary or soft (float) mask and could cover one or multiple relevant structures. During initialization, the Gaussian spawn-positions are sampled inside the ROI mask. For soft masks, sampling probabilities correspond to the voxel value (which, depending on the segmentation method, might be interpreted as a segmentation confidence), allowing the method to retain uncertain but potentially important regions.
+For almost all clinical tasks, e.g. for intervention planning, only specific structures are relevant. Therefore, and to focus model capacity and compute power on only where it is necessary, we decided to always require a ROI mask. The ROI mask could for instance come from a machine learning-based segmentation model like TotalSegmentator and can be a binary or soft (float) mask and could cover one or multiple relevant structures. During initialization, the Gaussian spawn-positions are sampled inside the ROI mask. For soft masks, sampling probabilities correspond to the voxel value (which, depending on the segmentation method, might be interpreted as a segmentation confidence), allowing the method to retain uncertain but potentially important regions.
 
 In addition, we incorporate simple structural priors derived from the input volume. Local volume gradients and second-order cues are used to estimate preferred orientations, enabling anisotropic Gaussians to align with elongated structures such as vessels. This provides a strong initialization that improves convergence and reduces the need for extensive topology adaptation during training.
+
+The initial splat scale is sampled per Gaussian from a uniform range defined in voxel units, using the mean voxel spacing as the isotropic reference scale:
+$$
+s_i=\bar v\left(\sigma_{\min}^{\mathrm{vox}}+u_i\left(\sigma_{\max}^{\mathrm{vox}}-\sigma_{\min}^{\mathrm{vox}}\right)\right).
+$$
+Here, $s_i$ is the initial base scale of Gaussian $i$, $\bar v$ is the mean voxel size, $\sigma_{\min}^{\mathrm{vox}}$ and $\sigma_{\max}^{\mathrm{vox}}$ are the user-defined minimum and maximum initialization scales in voxel units, and $u_i \sim \mathcal{U}(0,1)$ is a random sample that selects a scale uniformly within that interval.
 
 \subsection{ROI-Aware Optimization}
 Training is performed directly in voxel space using losses restricted to the ROI. This prevents large empty background regions from dominating optimization and improves robustness for sparse anatomical structures.
@@ -180,14 +186,13 @@ To maintain an efficient representation, the Gaussian set is dynamically adapted
 This enables effective modeling of thin and complex anatomical structures while keeping the representation compact.
 
 \subsection{Implementation Details}
-Our implementation follows the original 3D Gaussian Splatting pipeline but replaces image-space supervision with a dedicated volumetric training path. In particular, data loading, initialization, supervision, rasterization, optimization, and export are integrated into a single training workflow that operates directly on target volumes and ROI masks. Data can be loaded using the NIfTI file format.
+Our implementation follows the original 3D Gaussian Splatting pipeline and is based on the original implementation, but replaces image-space supervision with a dedicated volumetric training path. In particular, data loading, initialization, supervision, rasterization, optimization, and export are integrated into a single training workflow that operates directly on target volumes and ROI masks. Data can be loaded using the NIfTI file format.
 
 To make training practical for large medical volumes, the implementation includes several memory- and runtime-aware design choices, including ROI-restricted computation, optional downscaling of the working grid, chunked accumulation of Gaussian contributions, and mixed-precision storage where appropriate. We further use monitoring and logging utilities to track optimization stability and support debugging during long training runs.
 
-The system also includes task-specific presets for different anatomical regimes and exports intermediate checkpoints and PLY snapshots for inspection and downstream rendering. Overall, the implementation is designed to keep volumetric optimization tractable while preserving the flexibility needed for different datasets, supervision modes, and hardware constraints. For optimization, we employ the Adam optimizer. (\textbf{QUELLE?})
+The system also includes task-specific presets for different anatomical regimes (e.g. for vessels) and exports intermediate checkpoints and PLY snapshots for inspection and downstream rendering. Overall, the implementation is designed to keep volumetric optimization tractable while preserving the flexibility needed for different datasets, supervision modes, and hardware constraints. All hyperparameters are made accessible as CLI parameters. For optimization, we employ the Adam optimizer. (\textbf{QUELLE?})
 
-The implementation is based on the original 3D Gaussian Splatting code and publicly available at \url{https://github.com/your-repo/3d-gaussian-splatting}. All hyperparameters are made accessible as CLI parameters.
-
+The implementation is publicly available at \url{https://github.com/your-repo/3d-gaussian-splatting}
 
 
 % ----------------------------
@@ -199,20 +204,17 @@ We evaluate our method on medical volumetric datasets, focusing on anatomically 
 
 For this experiment, we used the "Visible Human Male Without Legs" CT dataset from the "Visible Human" project (\textbf{QUELLE!}). The dataset had an isotrop voxel size of 1x1x1 mm and was cropped to a relevant region of size 312x312x215. The segmentation of the relevant structures was performed using the TotalSegmentator v2. The soft liver mask was generated with an internally trained liver segmentation model.
 
-We compare our method against classical volume rendering approaches and analyze both visual quality and computational efficiency. All experiments are conducted on a standard GPU setup.
+All experiments are conducted on a Windows 11 system with an Intel i7 Ultra 155H, 32GB RAM and a GeForce RTX 4060 Mobile with 8GB VRAM.
 
 
 \subsection{Baselines}
 We compare our approach against the following baselines:
 
-\textbf{Volume Rendering (VR):}
-Standard GPU-based volume rendering with transfer functions. This serves as the primary reference for visual fidelity.
+\begin{itemize}
+\item \textbf{Volume Rendering (VR):} Standard GPU-based volume rendering. This serves as the primary reference for visual fidelity. Specifically, we use the "GigaVoxelRenderer" inside MeVisLab 4.2.70 (\textbf{QUELLE}).
 
-\textbf{Optimized Volume Rendering:}
-An optimized variant (e.g., adaptive sampling or AVIS-style rendering) representing the current state of efficient medical visualization.
-
-\textbf{3D Gaussian Splatting (Image-Based):}
-Standard 3DGS trained via multi-view rendering (if applicable), highlighting the mismatch between image-based and volumetric supervision.
+\item \textbf{3D Gaussian Splatting (3DGS):} Standard image-based 3DGS trained via multi-view rendering using the Volume Renderer in MeVisLab. For optimization, we used 200 rendered images with a resolution of 1024x1024.
+\end{itemize}
 
 
 \subsection{Evaluation Metrics}
