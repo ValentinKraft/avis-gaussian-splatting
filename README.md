@@ -77,6 +77,8 @@ python train.py --model_path _output_/synthetic-float-test --mask_path _input_/s
 
 ---------------------------------------------------
 
+Recommended Base command:
+
 ```shell
 python train.py `
    --model_path _output_/vshuman-v7-test `
@@ -102,91 +104,6 @@ python train.py `
    --enable_diagnostics `
    --intensity_mode sampled `
    --opacity_mode sampled
-```
-
-Standard CLI command (learned):
-
-```shell
-python train.py `
-  --model_path _output_/vshuman-v4 `
-  --mask_path _input_/vshuman_tsmasks3.nii.gz `
-  --volume_path _input_/vshuman.nii.gz `
-  --iterations 1000 `
-  --checkpoint_iterations 800 1200 1600 2000 `
-  --init_n_points 200000 `
-  --medical_mode none `
-  --supervision_target joint `
-  --volume_loss_type dice `
-  --ct_loss_type mse `
-  --enable_densification `
-  --densify_from_iter 100 `
-  --densification_interval 50 `
-  --densify_max_new_points 10000 `
-  --prune_min_opacity 0.002 `
-  --max_points_per_iter 8000 `
-  --volume_downscale_factor 1 `
-  --volume_render_downscale_factor 1 `
-  --disable_volume_overflow_guard `
-  --save_ply_every 50 `
-  --enable_diagnostics `
-  --intensity_mode learned `
-  --opacity_mode learned
-```
-
-```shell
-python train.py `
-  --model_path _output_/fidelity-hiinit-growth-v2 `
-  --mask_path _input_/minimask-binary3.nii.gz `
-  --volume_path _input_/minict.nii.gz `
-  --iterations 2200 `
-  --checkpoint_iterations 800 1200 1600 2200 `
-  --init_n_points 120000 `
-  --medical_mode none `
-  --supervision_target joint `
-  --volume_loss_type dice `
-  --ct_loss_type mse `
-  --mask_loss_weight 1.0 `
-  --ct_loss_weight 0.75 `
-  --outside_mask_weight 0.15 `
-  --intensity_mode sampled_mean_covered `
-  --opacity_mode learned `
-  --intensity_large_splat_threshold 0.03 `
-  --intensity_mean_cover_radius 2.5 `
-  --intensity_mean_cover_interval 20 `
-  --enable_densification `
-  --densify_from_iter 100 `
-  --densification_interval 100 `
-  --densify_until_iter 1800 `
-  --densify_grad_threshold 0.0 `
-  --densify_grad_percentile 0.38 `
-  --densify_max_new_points 5000 `
-  --densify_spawn_jitter_vox 0.08 `
-  --densify_vessel_spawn_bias 0.60 `
-  --densify_vessel_spawn_power 1.50 `
-  --structure_gradient_boost 0.28 `
-  --structure_gradient_threshold 0.10 `
-  --vessel_axial_scale 1.35 `
-  --vessel_radial_scale 0.70 `
-  --low_density_threshold 5.0 `
-  --target_coverage 0.82 `
-  --hole_fill_fraction 0.02 `
-  --density_radius_factor 2.0 `
-  --density_update_interval 10 `
-  --prune_min_opacity 0.002 `
-  --opacity_reset_interval 0 `
-  --max_points_per_iter 8000 `
-  --volume_downscale_factor 1 `
-  --volume_render_downscale_factor 1 `
-  --disable_volume_overflow_guard `
-  --volume_storage_dtype fp16 `
-  --init_scale_min_vox 0.3 `
-  --init_scale_max_vox 1.5 `
-  --min_scale_vox 0.5 `
-  --max_scale_vox 8.0 `
-  --max_scale_factor 2.5 `
-  --percent_dense 0.015 `
-  --save_ply_every 100 `
-  --enable_diagnostics
 ```
 
 ## Outputs and export
