@@ -1,3 +1,23 @@
+# Nerfstudio commands
+wsl -d Ubuntu-22.04
+conda activate nerfstudio
+
+ns-process-data images --data C:\DEV\TESTS\gs\_SCENES_\_scene_ --output-dir C:\DEV\TESTS\gs\_SCENES_\NERFSTUDIO\AHrEZ-800 --colmap-cmd C:\DEV\TESTS\gs\COLMAP\bin\colmap.exe --matching-method exhaustive --camera-type simple_pinhole --num-downscales 0
+
+## Cheap training
+ns-train splatfacto --data /mnt/c/DEV/TESTS/gs/_SCENES_/NERFSTUDIO/AHrEZ-200-png --mixed-precision True --pipeline.model.sh-degree 2
+
+## Hard training
+ns-train splatfacto --data /mnt/c/DEV/TESTS/gs/_SCENES_/NERFSTUDIO/abdomen --pipeline.model.sh-degree 2 --pipeline.model.stop-split-at 50000 --max-num-iterations 6000 --pipeline.model.densify-grad-thresh 0.0001
+
+## Export
+ns-export gaussian-splat --load-config outputs/MINICT/splatfacto/2026-02-28_163704/config.yml --output-dir /mnt/c/DEV/TESTS/gs/_SCENES_
+
+ns-viewer --load-config ...
+
+
+---------------------------
+
 # Avis Gaussian Splatting (Volume-Supervised)
 
 This repository is a research fork of 3D Gaussian Splatting adapted for **volume-supervised** training on 3D medical-style data (e.g., CT/MR-like volumes). Instead of supervising with multi-view RGB images, training optimizes a 3D Gaussian representation to match a **target volume** inside a **binary/probability ROI mask**.

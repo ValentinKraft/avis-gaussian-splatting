@@ -692,7 +692,7 @@ generate_weighted_splats_from_image(
 }
 module gaussian_splatting_export {
   internal {
-    frame = "925 725 184 56"
+    frame = "845 389 184 56"
     moduleGroupName = ""
     localMacro = 1
     windows {
@@ -716,7 +716,7 @@ module gaussian_splatting_export {
 }
 module LoadNIfTI {
   internal {
-    frame = "849 1149 128 72"
+    frame = "689 1181 128 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -736,7 +736,7 @@ module LoadNIfTI {
 }
 module LoadNIfTI {
   internal {
-    frame = "1005 1149 184 72"
+    frame = "845 1181 184 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -756,7 +756,7 @@ module LoadNIfTI {
 }
 module Arithmetic2 {
   internal {
-    frame = "969 1029 96 72"
+    frame = "809 1061 96 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -778,14 +778,14 @@ module Arithmetic2 {
 }
 module View3D {
   internal {
-    frame = "1353 717 144 56"
+    frame = "1097 557 144 56"
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1960 275 1518 894"
-        relativePosition = "0.2904 -0.3017"
+        geometry = "557 199 1555 1121"
+        relativePosition = "-0.1119 -0.3563"
         sizeHint = "1005 629"
-        wasOpen = yes
+        wasOpen = no
       }
     }
   }
@@ -809,18 +809,18 @@ module View3D {
     orientationLocation = LOWER_RIGHT
     orientationOn = FALSE
     orientationModel = CUBE
-    greyCenter = 0.134999975562096
-    greyWidth = 0.775000154972076
+    greyCenter = 0.0225000008940697
+    greyWidth = 0.155000373721123
     alphaFactor = 1
     colorFactor = "1 1 1"
     camType = TRUE
     camProjectionType = CAMERA_PERSPECTIVE
-    camPosition = "257.655242919922 -28.4766235351563 1077.59069824219"
-    camOrientation = "0.992937207221985 -0.0908840000629425 -0.0762619972229004 0.777950882911682"
+    camPosition = "175.37744140625 -288.943908691406 -157.142761230469"
+    camOrientation = "0.99890661239624 -0.0301830526441336 -0.0357003025710583 1.6380352973938"
     initialCameraOrientation = CAMERA_KEEP_AS_IS
-    camFar = 640.22607
-    camNear = 240.83908
-    camFocal = 447.66333
+    camFar = 753.0976
+    camNear = 266.72226
+    camFocal = 514.15778
     camHeight = 0.78539801
     decoration = FALSE
     annotations = FALSE
@@ -866,15 +866,15 @@ module View3D {
     renderer.light3Color = "1 1 1"
     renderer.light3PolarPhi = -45
     renderer.light3PolarRho = 0
-    renderer.sizeOutputX = 312
-    renderer.sizeOutputY = 312
-    renderer.sizeOutputZ = 215
+    renderer.sizeOutputX = 292
+    renderer.sizeOutputY = 292
+    renderer.sizeOutputZ = 180
     renderer.subVolumeStartX = 0
     renderer.subVolumeStartY = 0
     renderer.subVolumeStartZ = 0
-    renderer.subVolumeEndX = 312
-    renderer.subVolumeEndY = 312
-    renderer.subVolumeEndZ = 215
+    renderer.subVolumeEndX = 292
+    renderer.subVolumeEndY = 292
+    renderer.subVolumeEndZ = 180
     clip.hideGeometry = FALSE
     clip.on = FALSE
     clip.left = FALSE
@@ -899,7 +899,7 @@ module View3D {
 }
 module MinMaxScan {
   internal {
-    frame = "1477 941 152 72"
+    frame = "1213 757 152 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -920,12 +920,12 @@ module MinMaxScan {
 }
 module SoLUTEditor {
   internal {
-    frame = "1453 845 104 56"
+    frame = "1189 661 104 56"
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "760 809 513 459"
-        relativePosition = "-0.2044 0.0819"
+        geometry = "1019 911 513 459"
+        relativePosition = "-0.1291 0.1552"
         sizeHint = "513 459"
         wasOpen = no
       }
@@ -933,21 +933,21 @@ module SoLUTEditor {
   }
   fields {
     instanceName = SoLUTEditor
-    rangeMin = 0
-    rangeMax = 1449
-    viewMin = 0
-    viewMax = 1449
+    rangeMin = -1024
+    rangeMax = 1512.3695
+    viewMin = -1024
+    viewMax = 1512.3695
     window = 1
     level = 0.5
     allowNewPoints = TRUE
     updateLutWhileDragging = TRUE
     relativeLut = FALSE
     colorInterpolation = InterpolateRGB
-    colorPoints = "[ 0 0 0 0, 0.00239200005307794 0 0 0, 1449 1 1 1 ]"
-    alphaPoints = "[ 0 0, 0.00239200005307794 0, 1449 1 ]"
+    colorPoints = "[ -1024 0 0 0, 1.1160089969635 0.23137255012989 0.23137255012989 0.23137255012989, 397.423736572266 0.874509811401367 0.874509811401367 0.874509811401367, 1512.36950683594 1 1 1 ]"
+    alphaPoints = "[ -1024 0.00613496918231249, 1.1160089969635 0, 397.423736572266 1, 1512.36950683594 1 ]"
     alphaFactor = 0.80000001
-    newRangeMin = 0
-    newRangeMax = 1449
+    newRangeMin = -1024
+    newRangeMax = 1512.3695
     newRangeMode = ClipFormerLUT
     colorEditorHeight = 24
     showColorEditor = TRUE
@@ -1056,36 +1056,14 @@ module EllipsoidTestPattern {
     coneDisplaceTip = TRUE
   }
 }
-module SaveNIfTI {
-  internal {
-    frame = "1709 861 88 56"
-    moduleGroupName = ""
-    windows {
-      window _default {
-        geometry = "1613 655 559 191"
-        relativePosition = "0.0503 -0.0287"
-        sizeHint = "213 191"
-        wasOpen = no
-      }
-    }
-  }
-  fields {
-    instanceName = SaveNIfTI
-    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/minimask-binary3.nii.gz
-    inV2 = FALSE
-    inCompressionLevel = 6
-    inAuxiliaryFilename = ""
-    inIntentName = ""
-  }
-}
 module SoLUTEditor {
   internal {
-    frame = "1573 841 104 64"
+    frame = "1309 657 104 64"
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "852 249 513 459"
-        relativePosition = "-0.1776 -0.3204"
+        geometry = "851 249 513 459"
+        relativePosition = "-0.1779 -0.3204"
         sizeHint = "513 459"
         wasOpen = no
       }
@@ -1106,8 +1084,8 @@ module SoLUTEditor {
     colorPoints = "[ 0 0.341176986694336 0.341176986694336 0.560783982276917, 623.116027832031 0.341176986694336 0.341176986694336 0.560783982276917, 1081.38000488281 0.725489974021912 0.101961001753807 0.0823528990149498, 1335.53332519531 1 0.666666984558105 0, 1395.32995605469 0.874509990215302 0.717647016048431 0.533333003520966, 2094.98999023438 1 1 1, 2392 1 1 1 ]"
     alphaPoints = "[ 0 0, 623.116027832031 0, 1081.38000488281 0.0613497011363506, 1335.53332519531 0.766871154308319, 1395.32995605469 0.90184098482132, 2094.98999023438 1, 2392 1 ]"
     alphaFactor = 1
-    newRangeMin = 0
-    newRangeMax = 1449
+    newRangeMin = -1024
+    newRangeMax = 1512.3695
     newRangeMode = ClipFormerLUT
     colorEditorHeight = 24
     showColorEditor = TRUE
@@ -1131,7 +1109,7 @@ module SoLUTEditor {
 }
 module LoadNIfTI {
   internal {
-    frame = "1225 1149 144 72"
+    frame = "1065 1181 144 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1151,7 +1129,7 @@ module LoadNIfTI {
 }
 module LoadNIfTI {
   internal {
-    frame = "1401 1149 192 72"
+    frame = "1241 1181 192 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1171,7 +1149,7 @@ module LoadNIfTI {
 }
 module Arithmetic2 {
   internal {
-    frame = "1325 1037 104 72"
+    frame = "1165 1069 104 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1199,8 +1177,351 @@ module Switch {
   }
   fields {
     instanceName = Switch
-    currentInput = 1
+    currentInput = 2
     numberOfInputs = 5
+  }
+}
+module DLLungVesselSegmentation {
+  internal {
+    frame = "373 773 216 56"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "627 312 479 443"
+        relativePosition = "-0.2480 -0.2751"
+        sizeHint = "398 443"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = DLLungVesselSegmentation
+    inGenericTileProcessorConfigFilename = $(MLAB_FMEstable_ReleaseMeVis)/Projects/TileProcessing/GenericTileProcessor/Modules/inference_provider_configs_FME/FME_LocalOnnxRuntime.yaml
+    inSelectedModel = fme.LungVesselsCT.LungLobes
+    inMinSegmentVolume_ml = 0
+    onInputChangeBehavior = Clear
+  }
+}
+module DLLiverVesselSegmentation {
+  internal {
+    frame = "277 589 216 56"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1928 400 448 817"
+        relativePosition = "0.1256 -0.2119"
+        sizeHint = "376 817"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = DLLiverVesselSegmentation
+    inOutputMode = Both
+    inLabelUnlabeledVessels = FALSE
+    inOutputRest = FALSE
+    inMinRootComponentLength = 100
+    inUseLiverMask = TRUE
+    inModel = FineIso_v2
+    inDefaultModality = CT
+    inForceDefaultModality = FALSE
+    inForceCPU = FALSE
+    inUseGenericTileProcessor = TRUE
+    inGenericTileProcessorConfigFilename = $(MLAB_FMEstable_ReleaseMeVis)/Projects/TileProcessing/GenericTileProcessor/Modules/inference_provider_configs_FME/FME_LocalOnnxRuntime.yaml
+    inDefaultTimeout_ms = 500
+    inPredictionTimeout_ms = 5000
+    inDisableResampling = TRUE
+    inAddTentativeComponents = FALSE
+    inUseNewPostprocessing = TRUE
+    onInputChangeBehavior = Clear
+  }
+}
+module DLMultiscalePVHVSegmentation {
+  internal {
+    frame = "217 685 240 56"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1551 569 482 360"
+        relativePosition = "0.0209 -0.0905"
+        sizeHint = "332 360"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = DLMultiscalePVHVSegmentation
+    inGenericTileProcessorConfigFilename = $(MLAB_FMEstable_ReleaseMeVis)/Projects/TileProcessing/GenericTileProcessor/Modules/inference_provider_configs_FME/FME_LocalOnnxRuntime.yaml
+    inDefaultTimeout_ms = 2000
+    inPredictionTimeout_ms = 90000
+    inKeepTileProcessorsLoaded = FALSE
+    onInputChangeBehavior = Clear
+  }
+}
+module DLLiverSegmentation {
+  internal {
+    frame = "381 1021 184 56"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1551 500 496 498"
+        relativePosition = "0.0230 -0.1401"
+        sizeHint = "332 498"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = DLLiverSegmentation
+    inUseGenericTileProcessor = TRUE
+    inGenericTileProcessorConfigFilename = $(MLAB_FMEstable_ReleaseMeVis)/Projects/TileProcessing/GenericTileProcessor/Modules/inference_provider_configs_FME/FME_LocalOnnxRuntime.yaml
+    inDefaultTimeout_ms = 500
+    inPredictionTimeout_ms = 5000
+    inForceCPU = FALSE
+    inDefaultModality = CT
+    inForceDefaultModality = FALSE
+    inRoughSegmentationOnly = FALSE
+    onInputChangeBehavior = Clear
+  }
+}
+module LoadNIfTI {
+  internal {
+    frame = "321 1165 128 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1502 613 420 274"
+        relativePosition = "-0.0023 -0.0589"
+        sizeHint = "420 274"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = LoadNIfTI4
+    inFilename = C:/DATA/MISC/AbdomenCT-1k/Case_00001_0000.nii.gz
+    inApplyMode = AutoLoad
+  }
+}
+module SaveNIfTI {
+  internal {
+    frame = "189 421 88 56"
+    moduleGroupName = ""
+    windows {
+      window _default {
+        geometry = "1610 655 604 191"
+        relativePosition = "0.0558 -0.0287"
+        sizeHint = "213 191"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = SaveNIfTI
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/abdomen1.5_ts2.nii.gz
+    inV2 = FALSE
+    inCompressionLevel = 6
+    inAuxiliaryFilename = ""
+    inIntentName = ""
+  }
+}
+module LoadNIfTI {
+  internal {
+    frame = "1473 1181 144 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1497 613 420 274"
+        relativePosition = "-0.0038 -0.0589"
+        sizeHint = "420 274"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = LoadNIfTI5
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/abdomen1.5.nii.gz
+    inApplyMode = AutoLoad
+  }
+}
+module LoadNIfTI {
+  internal {
+    frame = "1649 1181 192 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1081 270 420 274"
+        relativePosition = "-0.1247 -0.3053"
+        sizeHint = "420 274"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = LoadNIfTI6
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/abdomen1.5_ts2.nii.gz
+    inApplyMode = AutoLoad
+  }
+}
+module Arithmetic2 {
+  internal {
+    frame = "1573 1069 104 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1541 700 353 97"
+        relativePosition = "-0.0006 0.0036"
+        sizeHint = "353 97"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = Arithmetic22
+    function = Multiply
+    outputImageSize = InvalidateOutputIfSizesDiffer
+    constant = 0
+    autoReplicate = FALSE
+  }
+}
+module TotalSegmentator {
+  internal {
+    frame = "121 893 160 56"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1427 495 600 527"
+        relativePosition = "0.0020 -0.1437"
+        sizeHint = "600 527"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = TotalSegmentator
+    onInputChangeBehavior = Clear
+    inModelVersion = v2
+    inSegmentOrgans = TRUE
+    inSegmentVertebrae = TRUE
+    inSegmentCardiac = TRUE
+    inSegmentMuscles = TRUE
+    inSegmentRibs = TRUE
+    inConfigFilename = $(MLAB_FMEstable_ReleaseMeVis)/Projects/TileProcessing/GenericTileProcessor/Modules/inference_provider_configs_FME/FME_LocalOnnxRuntime.yaml
+  }
+}
+module Resample3D {
+  internal {
+    frame = "197 1021 104 56"
+    moduleGroupName = ""
+    windows {
+      window _default {
+        geometry = "1556 573 324 355"
+        relativePosition = "-0.0006 -0.0876"
+        sizeHint = "324 355"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = Resample3D
+    keep = "Scale factor"
+    filter = Lanczos_3
+    isotropic = TRUE
+    filterAlways = FALSE
+    filterAlwaysTolerance = 0
+    zoom = "0.5703125 0.5703125 0.666666666666667"
+    imageSize = "292 292 180"
+    voxelSize = "1.5 1.5 1.5"
+    subVoxelShift = "0 0 0"
+    useReferenceImage = FALSE
+  }
+}
+module IntervalThreshold {
+  internal {
+    frame = "81 741 128 56"
+    moduleGroupName = ""
+    windows {
+      window _default {
+        geometry = "1513 549 410 402"
+        relativePosition = "-0.0006 -0.1049"
+        sizeHint = "410 402"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = IntervalThreshold
+    lowerType = ImgOrig
+    innerType = UserDef
+    upperType = ImgOrig
+    centerWidthSet = FALSE
+    threshCenter = 19
+    threshWidth = 2.4
+    threshMin = 17.8
+    threshMax = 20.2
+    lowerUserValue = 1
+    innerUserValue = 0
+    upperUserValue = 1
+    changeMinMax = FALSE
+    changedMin = 0
+    changedMax = 1000
+  }
+}
+module Threshold {
+  internal {
+    frame = "109 597 88 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1594 602 282 297"
+        relativePosition = "0.0044 -0.0668"
+        sizeHint = "251 297"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = Threshold
+    threshold = 0
+    relativeThreshold = FALSE
+    comparisonOperator = Greater
+    conditionTrueWriteValue = UserDef
+    userConditionTrueValue = 1
+    conditionFalseWriteValue = UserDef
+    userConditionFalseValue = 0
+  }
+}
+module Histogram {
+  internal {
+    frame = "1397 869 120 56"
+    moduleGroupName = ""
+    showNetworkPanel = true
+  }
+  fields {
+    instanceName = Histogram
+    useMask = TRUE
+    xRange = "Image Min/Max"
+    maskMode = Weights
+    curveType = Line
+    curveStyle = 0
+    curveTitle = ""
+    updateMode = Off
+    useStepFunction = FALSE
+    useZeroAsBinCenter = TRUE
+    useBackgroundValue = FALSE
+    backgroundValue = 0
+    binSize = 1
+    maxBinCount = 25000000
   }
 }
 connections {
@@ -1212,6 +1533,7 @@ connections {
   View3D.inImage = Switch.output0
   View3D.inInvPostLUT = SoLUTEditor.outInventorLUT
   MinMaxScan.input0 = Switch.output0
+  SoLUTEditor.inHistogram = Histogram.outputHistogramCurve
   SoLUTEditor.newRangeMin = MinMaxScan.trueMinValue
   SoLUTEditor.newRangeMax = MinMaxScan.trueMaxValue
   BaseLUT.newRangeMin = MinMaxScan.trueMinValue
@@ -1220,5 +1542,19 @@ connections {
   Arithmetic21.input1 = LoadNIfTI3.outImage
   Switch.input0 = Arithmetic2.output0
   Switch.input1 = Arithmetic21.output0
+  Switch.input2 = Arithmetic22.output0
+  DLLiverVesselSegmentation.inImage = LoadNIfTI4.outImage
+  DLLiverVesselSegmentation.inLiver = DLLiverSegmentation.outImageMask
+  DLMultiscalePVHVSegmentation.inCT = LoadNIfTI4.outImage
+  DLMultiscalePVHVSegmentation.inLiver = DLLiverSegmentation.outImageMask
+  DLLiverSegmentation.inImage = LoadNIfTI4.outImage
+  SaveNIfTI.inImage = Threshold.output0
+  Arithmetic22.input0 = LoadNIfTI5.outImage
+  Arithmetic22.input1 = LoadNIfTI6.outImage
+  TotalSegmentator.input0 = Resample3D.output0
+  Resample3D.input0 = LoadNIfTI4.outImage
+  IntervalThreshold.input0 = TotalSegmentator.output0
+  Threshold.input0 = IntervalThreshold.output0
+  Histogram.input0 = Switch.output0
 }
 networkModel = ""
