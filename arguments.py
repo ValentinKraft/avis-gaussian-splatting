@@ -809,6 +809,40 @@ class TrainingScriptParams(ParamGroup):
         )
         self._register("max_points_per_iter")
 
+        group.add_argument(
+            "--eval_masked_mse_full_roi_interval",
+            type=int,
+            default=0,
+            help=(
+                "Run a full-model masked-MSE evaluation every N iterations and at the final iteration. "
+                "Set to 0 to disable this evaluation pass."
+            ),
+        )
+        self._register("eval_masked_mse_full_roi_interval")
+
+        group.add_argument(
+            "--eval_masked_mse_full_roi_target",
+            type=str,
+            default="auto",
+            choices=["auto", "mask", "ct"],
+            help=(
+                "Target used for full-model masked-MSE evaluation. "
+                "'auto' uses CT for ct/joint supervision and mask for mask-only supervision."
+            ),
+        )
+        self._register("eval_masked_mse_full_roi_target")
+
+        group.add_argument(
+            "--eval_masked_mse_full_roi_downscale_factor",
+            type=int,
+            default=1,
+            help=(
+                "Working-grid downscale factor used by the periodic full-model masked-MSE evaluation. "
+                "Use 1 for native-grid evaluation; larger values trade accuracy for speed."
+            ),
+        )
+        self._register("eval_masked_mse_full_roi_downscale_factor")
+
 
 class OptimizationParams(ParamGroup):
     """Learning schedules, densification knobs, and regularization weights."""

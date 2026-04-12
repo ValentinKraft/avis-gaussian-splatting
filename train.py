@@ -516,6 +516,15 @@ def training(
 
     tb_log_interval = max(1, int(getattr(args, "tb_log_interval", 10)))
     postfix_interval = max(1, int(getattr(args, "progress_postfix_interval", 10)))
+    eval_masked_mse_full_roi_interval = max(
+        0, int(getattr(args, "eval_masked_mse_full_roi_interval", 0))
+    )
+    eval_masked_mse_full_roi_target = str(
+        getattr(args, "eval_masked_mse_full_roi_target", "auto")
+    )
+    eval_masked_mse_full_roi_downscale_factor = max(
+        1, int(getattr(args, "eval_masked_mse_full_roi_downscale_factor", 1))
+    )
 
     # Provide voxel spacing to the Gaussian model so voxel-unit clamps work.
     gaussians.voxel_size = volume_supervisor.voxel_size
@@ -1096,6 +1105,35 @@ def training(
         with torch.no_grad():
             progress_bar.update(1)  # Update by 1 each iteration
 
+            eval_masked_mse_full_roi = None
+            eval_masked_mse_full_roi_target_used = None
+            should_eval_masked_mse_full_roi = (
+                eval_masked_mse_full_roi_interval > 0
+                and (
+                    iteration == opt.iterations
+                    or (iteration % eval_masked_mse_full_roi_interval) == 0
+                )
+            )
+            if should_eval_masked_mse_full_roi:
+                eval_masked_mse_full_roi, eval_masked_mse_full_roi_target_used = (
+                    volume_supervisor.compute_full_roi_masked_mse(
+                        gaussians,
+                        target=eval_masked_mse_full_roi_target,
+                        working_grid_downscale_factor=(
+                            eval_masked_mse_full_roi_downscale_factor
+                        ),
+                        refresh_appearance=True,
+                    )
+                )
+                print(
+                    (
+                        f"\n[ITER {iteration}] eval/masked_mse_full_roi="
+                        f"{eval_masked_mse_full_roi:.6f} "
+                        f"(target={eval_masked_mse_full_roi_target_used}, "
+                        f"downscale={eval_masked_mse_full_roi_downscale_factor})"
+                    )
+                )
+
             should_postfix = (
                 iteration == 1
                 or iteration == opt.iterations
@@ -1145,6 +1183,12 @@ def training(
                     "timing/iter_ms", iter_start.elapsed_time(iter_end), iteration
                 )
                 tb_writer.add_scalar("model/points", gaussians._xyz.shape[1], iteration)
+                if eval_masked_mse_full_roi is not None:
+                    tb_writer.add_scalar(
+                        "eval/masked_mse_full_roi",
+                        eval_masked_mse_full_roi,
+                        iteration,
+                    )
 
                 if diagnostics_enabled and should_postfix:
                     tb_writer.add_scalar(

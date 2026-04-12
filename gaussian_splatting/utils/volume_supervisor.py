@@ -575,6 +575,178 @@ class VolumeSupervisor:
 
         return counts
 
+    def _resolve_eval_target(self, target: str) -> str:
+        """Resolve the requested evaluation target to either mask or ct."""
+        target_norm = str(target).lower()
+        if target_norm == "auto":
+            return "ct" if self.supervision_target in {"ct", "joint"} else "mask"
+        if target_norm not in {"mask", "ct"}:
+            raise ValueError(
+                "eval target must be one of {'auto','mask','ct'}, got "
+                f"{target!r}."
+            )
+        return target_norm
+
+    def _resolve_eval_intensities(self, gaussians, n_points: int, device: torch.device) -> Tensor:
+        """Return a scalar intensity buffer suitable for full-model evaluation."""
+        intensity_mode = getattr(gaussians, "intensity_mode", "learned")
+
+        if intensity_mode in {"sampled", "sampled_mean_covered"}:
+            has_buffer = (
+                hasattr(gaussians, "intensities")
+                and isinstance(gaussians.intensities, torch.Tensor)
+                and gaussians.intensities.numel() > 0
+                and gaussians.intensities.shape[0] == n_points
+            )
+            if not has_buffer:
+                self.refresh_cached_appearance(gaussians, force_all=True)
+
+            has_buffer = (
+                hasattr(gaussians, "intensities")
+                and isinstance(gaussians.intensities, torch.Tensor)
+                and gaussians.intensities.numel() > 0
+                and gaussians.intensities.shape[0] == n_points
+            )
+            if has_buffer:
+                intensities = gaussians.intensities.detach()
+            else:
+                intensities = gaussians.ensure_intensity_buffer(
+                    n_points,
+                    1,
+                    device=device,
+                    dtype=torch.float32,
+                    fill_value=0.5,
+                )
+                gaussians.intensities = intensities.detach()
+
+            return self._ensure_scalar_point_attribute(
+                "intensity",
+                intensities,
+                n_points,
+            )
+
+        if (
+            hasattr(gaussians, "_features_dc")
+            and gaussians._features_dc is not None
+            and gaussians._features_dc.numel() > 0
+        ):
+            learned = gaussians.learned_intensity_from_features()
+            if learned is not None and learned.numel() > 0:
+                return self._ensure_scalar_point_attribute(
+                    "intensity",
+                    learned,
+                    n_points,
+                )
+
+        has_buffer = (
+            hasattr(gaussians, "intensities")
+            and isinstance(gaussians.intensities, torch.Tensor)
+            and gaussians.intensities.numel() > 0
+            and gaussians.intensities.shape[0] == n_points
+        )
+        if has_buffer:
+            return self._ensure_scalar_point_attribute(
+                "intensity",
+                gaussians.intensities.detach(),
+                n_points,
+            )
+
+        fallback = gaussians.ensure_intensity_buffer(
+            n_points,
+            1,
+            device=device,
+            dtype=torch.float32,
+            fill_value=0.5,
+        )
+        gaussians.intensities = fallback.detach()
+        return self._ensure_scalar_point_attribute("intensity", fallback, n_points)
+
+    @torch.no_grad()
+    def compute_full_roi_masked_mse(
+        self,
+        gaussians,
+        *,
+        target: str = "auto",
+        working_grid_downscale_factor: int = 1,
+        refresh_appearance: bool = True,
+    ) -> Tuple[float, str]:
+        """Evaluate full-model masked MSE inside the ROI on the current volume grid."""
+        resolved_target = self._resolve_eval_target(target)
+
+        if refresh_appearance:
+            self.refresh_cached_appearance(gaussians, force_all=True)
+
+        xyz = gaussians.get_xyz
+        scaling = gaussians.get_scaling
+        rotation = gaussians.get_rotation
+        n_points = xyz.shape[1] if xyz.shape[0] == 3 else xyz.shape[0]
+
+        use_opacity = self._ensure_scalar_point_attribute(
+            "opacity",
+            gaussians.get_opacity,
+            n_points,
+        )
+
+        bounds_min = self.bounds_min.to(xyz.device)
+        bounds_max = self.bounds_max.to(xyz.device)
+        roi_shape = self.roi_shape
+        mask_roi = self.mask_bool_roi.to(device=xyz.device)
+        eval_downscale = max(1, int(working_grid_downscale_factor))
+
+        if resolved_target == "mask":
+            pred = splat_to_volume(
+                points=xyz,
+                point_scales=scaling,
+                point_rotations=rotation,
+                point_opacities=use_opacity,
+                point_intensities=None,
+                volume_shape=roi_shape,
+                device=xyz.device,
+                active_idx=None,
+                grid_bounds=(bounds_min, bounds_max),
+                render_mode="density",
+                density_scale=float(getattr(self, "density_scale", 1.0)),
+                working_grid_downscale_factor=eval_downscale,
+                sparse_support_cutoff=self.sparse_support_cutoff,
+                sparse_max_radius_vox=self.sparse_max_radius_vox,
+                sparse_support_softness=self.sparse_support_softness,
+                render_min_sigma_vox=self.render_min_sigma_vox,
+            )
+            target_roi = self.mask_volume_roi.to(device=pred.device, dtype=pred.dtype)
+        else:
+            use_intensities = self._resolve_eval_intensities(gaussians, n_points, xyz.device)
+            pred = splat_to_volume(
+                points=xyz,
+                point_scales=scaling,
+                point_rotations=rotation,
+                point_opacities=use_opacity,
+                point_intensities=use_intensities,
+                volume_shape=roi_shape,
+                device=xyz.device,
+                active_idx=None,
+                grid_bounds=(bounds_min, bounds_max),
+                render_mode="intensity",
+                density_scale=float(getattr(self, "density_scale", 1.0)),
+                working_grid_downscale_factor=eval_downscale,
+                sparse_support_cutoff=self.sparse_support_cutoff,
+                sparse_max_radius_vox=self.sparse_max_radius_vox,
+                sparse_support_softness=self.sparse_support_softness,
+                render_min_sigma_vox=self.render_min_sigma_vox,
+            )
+            target_ct_roi = self.volume_gt_roi.to(device=pred.device, dtype=pred.dtype)
+            denom = max(self.global_intensity_max - self.global_intensity_min, 1e-8)
+            if denom <= 1e-8:
+                target_roi = torch.full_like(target_ct_roi, 0.5)
+            else:
+                target_roi = (
+                    (target_ct_roi - float(self.global_intensity_min)) / float(denom)
+                ).clamp_(0.0, 1.0)
+
+        pred_vals = pred[mask_roi]
+        tgt_vals = target_roi[mask_roi]
+        mse = (pred_vals - tgt_vals).square().mean()
+        return float(mse.item()), resolved_target
+
     def _ensure_scalar_point_attribute(
         self,
         name: str,
