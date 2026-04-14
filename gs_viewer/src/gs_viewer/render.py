@@ -10,6 +10,7 @@ Composite:
 
 from __future__ import annotations
 
+import ctypes
 from dataclasses import dataclass
 
 import numpy as np
@@ -265,12 +266,7 @@ void main() {
 class _GpuBuffers:
     vao: int
     vbo_quad: int
-    vbo_pos: int
-    vbo_opacity: int
-    vbo_intensity: int
-    vbo_scale: int
-    vbo_quat: int
-    vbo_ao: int
+    vbo_instances: int
     count: int
 
 
@@ -293,13 +289,12 @@ class OitRenderer:
         self._gpu: _GpuBuffers | None = None
         self._current_model_id: int | None = None
         self._positions_cpu: np.ndarray | None = None
-        self._opacity_cpu: np.ndarray | None = None
-        self._intensity_cpu: np.ndarray | None = None
-        self._scale_cpu: np.ndarray | None = None
-        self._quat_cpu: np.ndarray | None = None
-        self._ao_cpu: np.ndarray | None = None
+        self._instance_cpu: np.ndarray | None = None
+        self._draw_count: int = 0
+        self._last_sort_view: np.ndarray | None = None
 
         self._init_programs()
+        self._cache_uniform_locations()
         self._fs_vao = GL.glGenVertexArrays(1)
 
     def ensure_size(self, width: int, height: int) -> None:
@@ -327,38 +322,30 @@ class OitRenderer:
     ) -> None:
         self._ensure_model_uploaded(model)
         assert self._gpu is not None
-        self._sort_and_upload_instances(view)
+        view32 = np.asarray(view, dtype=np.float32)
+        proj32 = np.asarray(proj, dtype=np.float32)
+        self._sort_and_upload_instances(view32)
+        if self._draw_count <= 0:
+            return
 
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._fbo)
         GL.glDrawBuffers(1, [GL.GL_COLOR_ATTACHMENT0])
 
         GL.glUseProgram(self._splat_prog)
 
-        loc_view = GL.glGetUniformLocation(self._splat_prog, "u_view")
-        loc_proj = GL.glGetUniformLocation(self._splat_prog, "u_proj")
-        GL.glUniformMatrix4fv(loc_view, 1, GL.GL_TRUE, view.astype(np.float32))
-        GL.glUniformMatrix4fv(loc_proj, 1, GL.GL_TRUE, proj.astype(np.float32))
+        GL.glUniformMatrix4fv(self._loc_splat_view, 1, GL.GL_TRUE, view32)
+        GL.glUniformMatrix4fv(self._loc_splat_proj, 1, GL.GL_TRUE, proj32)
 
         # Approximate focal length in pixels.
         focal_px = 0.5 * float(self._height) / float(np.tan(np.deg2rad(45.0) / 2.0))
-        GL.glUniform1f(GL.glGetUniformLocation(self._splat_prog, "u_focal_px"), focal_px)
-        GL.glUniform1f(
-            GL.glGetUniformLocation(self._splat_prog, "u_splat_scale"),
-            max(0.0, float(splat_scale)),
-        )
-        GL.glUniform2f(
-            GL.glGetUniformLocation(self._splat_prog, "u_viewport"),
-            float(self._width),
-            float(self._height),
-        )
-        GL.glUniform1f(
-            GL.glGetUniformLocation(self._splat_prog, "u_gauss_softness"),
-            max(0.05, float(gauss_softness)),
-        )
+        GL.glUniform1f(self._loc_splat_focal_px, focal_px)
+        GL.glUniform1f(self._loc_splat_scale, max(0.0, float(splat_scale)))
+        GL.glUniform2f(self._loc_splat_viewport, float(self._width), float(self._height))
+        GL.glUniform1f(self._loc_splat_gauss_softness, max(0.05, float(gauss_softness)))
 
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_1D, lut_tex_id)
-        GL.glUniform1i(GL.glGetUniformLocation(self._splat_prog, "u_lut"), 0)
+        GL.glUniform1i(self._loc_splat_lut, 0)
 
         # Standard premultiplied alpha compositing.
         GL.glEnable(GL.GL_BLEND)
@@ -366,7 +353,7 @@ class OitRenderer:
         GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
 
         GL.glBindVertexArray(self._gpu.vao)
-        GL.glDrawArraysInstanced(GL.GL_TRIANGLE_STRIP, 0, 4, self._gpu.count)
+        GL.glDrawArraysInstanced(GL.GL_TRIANGLE_STRIP, 0, 4, self._draw_count)
         GL.glBindVertexArray(0)
 
         GL.glDisable(GL.GL_BLEND)
@@ -392,13 +379,13 @@ class OitRenderer:
 
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self._tex_accum)
-        GL.glUniform1i(GL.glGetUniformLocation(self._compose_prog, "u_accum"), 0)
+        GL.glUniform1i(self._loc_compose_accum, 0)
 
         GL.glActiveTexture(GL.GL_TEXTURE1)
         GL.glBindTexture(GL.GL_TEXTURE_2D, self._tex_reveal)
-        GL.glUniform1i(GL.glGetUniformLocation(self._compose_prog, "u_reveal"), 1)
+        GL.glUniform1i(self._loc_compose_reveal, 1)
         GL.glUniform3f(
-            GL.glGetUniformLocation(self._compose_prog, "u_background"),
+            self._loc_compose_background,
             float(np.clip(r, 0.0, 1.0)),
             float(np.clip(g, 0.0, 1.0)),
             float(np.clip(b, 0.0, 1.0)),
@@ -417,6 +404,18 @@ class OitRenderer:
         cvs = _compile_shader(_COMPOSE_VS, GL.GL_VERTEX_SHADER)
         cfs = _compile_shader(_COMPOSE_FS, GL.GL_FRAGMENT_SHADER)
         self._compose_prog = _link_program(cvs, cfs)
+
+    def _cache_uniform_locations(self) -> None:
+        self._loc_splat_view = GL.glGetUniformLocation(self._splat_prog, "u_view")
+        self._loc_splat_proj = GL.glGetUniformLocation(self._splat_prog, "u_proj")
+        self._loc_splat_focal_px = GL.glGetUniformLocation(self._splat_prog, "u_focal_px")
+        self._loc_splat_scale = GL.glGetUniformLocation(self._splat_prog, "u_splat_scale")
+        self._loc_splat_viewport = GL.glGetUniformLocation(self._splat_prog, "u_viewport")
+        self._loc_splat_gauss_softness = GL.glGetUniformLocation(self._splat_prog, "u_gauss_softness")
+        self._loc_splat_lut = GL.glGetUniformLocation(self._splat_prog, "u_lut")
+        self._loc_compose_accum = GL.glGetUniformLocation(self._compose_prog, "u_accum")
+        self._loc_compose_reveal = GL.glGetUniformLocation(self._compose_prog, "u_reveal")
+        self._loc_compose_background = GL.glGetUniformLocation(self._compose_prog, "u_background")
 
     def _create_or_resize_targets(self, width: int, height: int) -> None:
         if self._fbo == 0:
@@ -448,51 +447,29 @@ class OitRenderer:
     def _sort_and_upload_instances(self, view: np.ndarray) -> None:
         if self._gpu is None:
             return
-        if (
-            self._positions_cpu is None
-            or self._opacity_cpu is None
-            or self._intensity_cpu is None
-            or self._scale_cpu is None
-            or self._quat_cpu is None
-            or self._ao_cpu is None
-        ):
+        if self._positions_cpu is None or self._instance_cpu is None:
+            return
+        if self._last_sort_view is not None and np.allclose(view, self._last_sort_view, rtol=0.0, atol=1.0e-5):
             return
 
         positions = self._positions_cpu
-        pos_h = np.concatenate(
-            [positions, np.ones((positions.shape[0], 1), dtype=np.float32)],
-            axis=1,
-        )
-        view_pos = pos_h @ view.astype(np.float32).T
-        depth = -view_pos[:, 2]
+        view_row = view[2, :]
+        depth = -(positions @ view_row[:3] + view_row[3])
+        visible_idx = np.flatnonzero(depth > 1.0e-4)
+        if visible_idx.size == 0:
+            self._draw_count = 0
+            self._last_sort_view = view.copy()
+            return
 
         # Back-to-front for alpha blending.
-        order = np.argsort(depth)[::-1]
+        order = np.argsort(depth[visible_idx])[::-1]
+        ordered_visible_idx = visible_idx[order]
+        sorted_instances = np.ascontiguousarray(self._instance_cpu[ordered_visible_idx], dtype=np.float32)
+        self._draw_count = int(ordered_visible_idx.size)
+        self._last_sort_view = view.copy()
 
-        sorted_positions = np.ascontiguousarray(positions[order], dtype=np.float32)
-        sorted_opacity = np.ascontiguousarray(self._opacity_cpu[order], dtype=np.float32)
-        sorted_intensity = np.ascontiguousarray(self._intensity_cpu[order], dtype=np.float32)
-        sorted_scale = np.ascontiguousarray(self._scale_cpu[order], dtype=np.float32)
-        sorted_quat = np.ascontiguousarray(self._quat_cpu[order], dtype=np.float32)
-        sorted_ao = np.ascontiguousarray(self._ao_cpu[order], dtype=np.float32)
-
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._gpu.vbo_pos)
-        GL.glBufferSubData(GL.GL_ARRAY_BUFFER, 0, sorted_positions.nbytes, sorted_positions)
-
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._gpu.vbo_opacity)
-        GL.glBufferSubData(GL.GL_ARRAY_BUFFER, 0, sorted_opacity.nbytes, sorted_opacity)
-
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._gpu.vbo_intensity)
-        GL.glBufferSubData(GL.GL_ARRAY_BUFFER, 0, sorted_intensity.nbytes, sorted_intensity)
-
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._gpu.vbo_scale)
-        GL.glBufferSubData(GL.GL_ARRAY_BUFFER, 0, sorted_scale.nbytes, sorted_scale)
-
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._gpu.vbo_quat)
-        GL.glBufferSubData(GL.GL_ARRAY_BUFFER, 0, sorted_quat.nbytes, sorted_quat)
-
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._gpu.vbo_ao)
-        GL.glBufferSubData(GL.GL_ARRAY_BUFFER, 0, sorted_ao.nbytes, sorted_ao)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._gpu.vbo_instances)
+        GL.glBufferSubData(GL.GL_ARRAY_BUFFER, 0, sorted_instances.nbytes, sorted_instances)
         GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
 
     def _ensure_model_uploaded(self, model: GaussianModelPly) -> None:
@@ -513,11 +490,20 @@ class OitRenderer:
             ao = model.ao.astype(np.float32)
 
         self._positions_cpu = positions
-        self._opacity_cpu = opacity
-        self._intensity_cpu = intensity
-        self._scale_cpu = scale
-        self._quat_cpu = quat
-        self._ao_cpu = ao
+        instance_data = np.concatenate(
+            [
+                positions,
+                opacity[:, None],
+                intensity[:, None],
+                scale,
+                quat,
+                ao[:, None],
+            ],
+            axis=1,
+        ).astype(np.float32, copy=False)
+        self._instance_cpu = np.ascontiguousarray(instance_data)
+        self._draw_count = model.count
+        self._last_sort_view = None
 
         quad = np.array(
             [
@@ -532,44 +518,25 @@ class OitRenderer:
         vao = GL.glGenVertexArrays(1)
         GL.glBindVertexArray(vao)
 
-        vbo_pos = GL.glGenBuffers(1)
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo_pos)
-        GL.glBufferData(GL.GL_ARRAY_BUFFER, positions.nbytes, positions, GL.GL_DYNAMIC_DRAW)
+        vbo_instances = GL.glGenBuffers(1)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo_instances)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, self._instance_cpu.nbytes, self._instance_cpu, GL.GL_DYNAMIC_DRAW)
+        stride = 13 * np.dtype(np.float32).itemsize
         GL.glEnableVertexAttribArray(0)
-        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, False, 0, None)
-
-        vbo_op = GL.glGenBuffers(1)
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo_op)
-        GL.glBufferData(GL.GL_ARRAY_BUFFER, opacity.nbytes, opacity, GL.GL_DYNAMIC_DRAW)
+        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, False, stride, ctypes.c_void_p(0))
         GL.glEnableVertexAttribArray(1)
-        GL.glVertexAttribPointer(1, 1, GL.GL_FLOAT, False, 0, None)
-
-        vbo_int = GL.glGenBuffers(1)
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo_int)
-        GL.glBufferData(GL.GL_ARRAY_BUFFER, intensity.nbytes, intensity, GL.GL_DYNAMIC_DRAW)
+        GL.glVertexAttribPointer(1, 1, GL.GL_FLOAT, False, stride, ctypes.c_void_p(3 * 4))
         GL.glEnableVertexAttribArray(2)
-        GL.glVertexAttribPointer(2, 1, GL.GL_FLOAT, False, 0, None)
+        GL.glVertexAttribPointer(2, 1, GL.GL_FLOAT, False, stride, ctypes.c_void_p(4 * 4))
         GL.glVertexAttribDivisor(2, 1)
-
-        vbo_scale = GL.glGenBuffers(1)
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo_scale)
-        GL.glBufferData(GL.GL_ARRAY_BUFFER, scale.nbytes, scale, GL.GL_DYNAMIC_DRAW)
         GL.glEnableVertexAttribArray(3)
-        GL.glVertexAttribPointer(3, 3, GL.GL_FLOAT, False, 0, None)
+        GL.glVertexAttribPointer(3, 3, GL.GL_FLOAT, False, stride, ctypes.c_void_p(5 * 4))
         GL.glVertexAttribDivisor(3, 1)
-
-        vbo_quat = GL.glGenBuffers(1)
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo_quat)
-        GL.glBufferData(GL.GL_ARRAY_BUFFER, quat.nbytes, quat, GL.GL_DYNAMIC_DRAW)
         GL.glEnableVertexAttribArray(4)
-        GL.glVertexAttribPointer(4, 4, GL.GL_FLOAT, False, 0, None)
+        GL.glVertexAttribPointer(4, 4, GL.GL_FLOAT, False, stride, ctypes.c_void_p(8 * 4))
         GL.glVertexAttribDivisor(4, 1)
-
-        vbo_ao = GL.glGenBuffers(1)
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo_ao)
-        GL.glBufferData(GL.GL_ARRAY_BUFFER, ao.nbytes, ao, GL.GL_DYNAMIC_DRAW)
         GL.glEnableVertexAttribArray(5)
-        GL.glVertexAttribPointer(5, 1, GL.GL_FLOAT, False, 0, None)
+        GL.glVertexAttribPointer(5, 1, GL.GL_FLOAT, False, stride, ctypes.c_void_p(12 * 4))
         GL.glVertexAttribDivisor(5, 1)
 
         vbo_quad = GL.glGenBuffers(1)
@@ -588,12 +555,7 @@ class OitRenderer:
         self._gpu = _GpuBuffers(
             vao=vao,
             vbo_quad=vbo_quad,
-            vbo_pos=vbo_pos,
-            vbo_opacity=vbo_op,
-            vbo_intensity=vbo_int,
-            vbo_scale=vbo_scale,
-            vbo_quat=vbo_quat,
-            vbo_ao=vbo_ao,
+            vbo_instances=vbo_instances,
             count=model.count,
         )
         self._current_model_id = model_id

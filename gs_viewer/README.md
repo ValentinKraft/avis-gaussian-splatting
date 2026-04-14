@@ -37,6 +37,7 @@ python gs_viewer\\run_viewer.py --ply path\\to\\model.ply
 - Right mouse drag: pan
 - Middle mouse drag (vertical): zoom
 - Mouse wheel: zoom
+- The Controls panel shows live render stats for FPS and frame time.
 - UI slider `Splat scale`: adjusts projected splat size (0.0 to 5.0).
 - UI slider `Gaussian softness`: adjusts splat edge falloff (lower = sharper, higher = softer).
 

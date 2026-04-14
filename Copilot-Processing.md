@@ -3,6 +3,45 @@
 - Start implementation of the anisotropy-improvement plan for smoother surfaces, cleaner object boundaries, and more elongated vessel splats.
 - Goal: first leverage existing anisotropy machinery, then add only the smallest missing features that materially improve init-time orientation guidance.
 
+## User Request Details (2026-04-13, GS Viewer Live FPS)
+- Add live render performance information to the standalone `gs-viewer`.
+- Goal: show a continuously updating FPS readout in the viewer UI without changing rendering behavior.
+
+## Action Plan (2026-04-13)
+1. Inspect the standalone viewer loop and existing ImGui panel.
+2. Add lightweight frame-timing state in `gs_viewer/src/gs_viewer/viewer.py` and display it in the Controls panel.
+3. Update the viewer README and run validation on touched files.
+
+## Task Tracker (2026-04-13)
+- [x] Confirm the render loop and ImGui controls integration points in `gs_viewer/src/gs_viewer/viewer.py`.
+- [x] Add smoothed live FPS and frame-time readouts to the Controls panel.
+- [x] Update `gs_viewer/README.md` and validate touched files.
+
+## Summary / Current State (2026-04-13)
+- `gs_viewer/src/gs_viewer/viewer.py` now tracks per-frame timing in the viewer loop and shows smoothed live FPS plus frame time in the Controls panel.
+- `gs_viewer/README.md` now documents that the Controls panel includes live render stats.
+- Validation completed with clean editor diagnostics and a successful runtime import check of `gs_viewer.viewer` in the `avis_gaussian_splatting` conda environment.
+
+## User Request Details (2026-04-13, GS Viewer Render Speed)
+- Improve standalone `gs-viewer` rendering speed where possible without changing the visible controls workflow.
+- Goal: reduce avoidable CPU and driver overhead in the current per-frame splat path.
+
+## Action Plan (2026-04-13, Render Speed)
+1. Inspect the viewer render path for repeated per-frame CPU sorting and GPU buffer uploads.
+2. Remove redundant upload work and skip resorting when the camera view has not changed.
+3. Validate touched files and confirm the viewer still imports cleanly.
+
+## Task Tracker (2026-04-13, Render Speed)
+- [x] Inspect the render loop and identify the per-frame sort/upload hotspot in `gs_viewer/src/gs_viewer/render.py`.
+- [x] Pack per-instance data into one dynamic VBO, cache sorted uploads for stable views, and cull splats behind the camera.
+- [x] Validate touched files and summarize the change.
+
+## Summary / Current State (2026-04-13, Render Speed)
+- `gs_viewer/src/gs_viewer/render.py` now uploads one packed instance buffer instead of six separate attribute buffers during per-frame depth sorting.
+- The renderer now skips resorting and re-uploading when the camera view matrix has not changed, which reduces idle-frame CPU and driver overhead substantially.
+- Splats behind the camera are culled before upload/draw, reducing per-frame work when part of the cloud is outside the current view.
+- Validation completed with clean editor diagnostics and a successful runtime import check of `gs_viewer.render` in the `avis_gaussian_splatting` conda environment.
+
 ## Action Plan (2026-04-06)
 1. Expose orientation-field smoothing controls on the CLI.
 2. Thread the new settings through `train.py` into `VolumeSupervisor`.

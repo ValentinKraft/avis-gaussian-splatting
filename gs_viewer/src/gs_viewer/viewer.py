@@ -31,6 +31,8 @@ class _UiState:
     splat_scale: float = 1.0
     gauss_softness: float = 1.0
     background_rgba: tuple[float, float, float, float] = (0.05, 0.05, 0.05, 1.0)
+    fps_ema: float = 0.0
+    frame_time_ms: float = 0.0
 
 
 class Viewer:
@@ -50,6 +52,7 @@ class Viewer:
         self._drag_last_x: float | None = None
         self._drag_last_y: float | None = None
         self._drag_button: int | None = None
+        self._last_frame_start: float | None = None
 
     def run(self) -> None:
         """Create window and enter the render loop."""
@@ -63,6 +66,7 @@ class Viewer:
 
         while not glfw.window_should_close(self._window):
             glfw.poll_events()
+            self._update_frame_timing(glfw.get_time())
 
             width, height = glfw.get_framebuffer_size(self._window)
             if width <= 0 or height <= 0:
@@ -198,6 +202,21 @@ class Viewer:
             return
         self._camera.zoom(float(yoff))
 
+    def _update_frame_timing(self, frame_start: float) -> None:
+        if self._last_frame_start is None:
+            self._last_frame_start = frame_start
+            return
+
+        dt = max(frame_start - self._last_frame_start, 1.0e-6)
+        fps = 1.0 / dt
+        smoothing = 0.1
+        if self._ui.fps_ema <= 0.0:
+            self._ui.fps_ema = fps
+        else:
+            self._ui.fps_ema += (fps - self._ui.fps_ema) * smoothing
+        self._ui.frame_time_ms = 1000.0 / self._ui.fps_ema
+        self._last_frame_start = frame_start
+
     def _render_ui(self, width: int, height: int) -> None:
         assert self._imgui is not None
 
@@ -218,6 +237,11 @@ class Viewer:
 
         if self._ui.error_text:
             imgui.text_colored(self._ui.error_text, 1.0, 0.3, 0.3, 1.0)
+
+        if self._ui.fps_ema > 0.0:
+            imgui.separator()
+            imgui.text(f"FPS: {self._ui.fps_ema:.1f}")
+            imgui.text(f"Frame time: {self._ui.frame_time_ms:.2f} ms")
 
         if self._model is not None:
             imgui.separator()

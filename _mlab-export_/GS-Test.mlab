@@ -782,10 +782,10 @@ module View3D {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "557 199 1555 1121"
-        relativePosition = "-0.1119 -0.3563"
+        geometry = "555 198 1555 1121"
+        relativePosition = "-0.1125 -0.3570"
         sizeHint = "1005 629"
-        wasOpen = no
+        wasOpen = yes
       }
     }
   }
@@ -815,12 +815,12 @@ module View3D {
     colorFactor = "1 1 1"
     camType = TRUE
     camProjectionType = CAMERA_PERSPECTIVE
-    camPosition = "175.37744140625 -288.943908691406 -157.142761230469"
-    camOrientation = "0.99890661239624 -0.0301830526441336 -0.0357003025710583 1.6380352973938"
+    camPosition = "191.858673095703 -294.611572265625 -151.442138671875"
+    camOrientation = "0.998474299907684 -0.0551333613693714 0.00305184535682201 1.60376298427582"
     initialCameraOrientation = CAMERA_KEEP_AS_IS
-    camFar = 753.0976
-    camNear = 266.72226
-    camFocal = 514.15778
+    camFar = 750.13135
+    camNear = 278.65479
+    camFocal = 514.15784
     camHeight = 0.78539801
     decoration = FALSE
     annotations = FALSE
@@ -1524,6 +1524,29 @@ module Histogram {
     maxBinCount = 25000000
   }
 }
+module SoShowFPS {
+  internal {
+    frame = "917 829 104 56"
+    moduleGroupName = ""
+    windows {
+      window _default {
+        geometry = "1616 654 227 192"
+        relativePosition = "0.0029 -0.0295"
+        sizeHint = "205 192"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = SoShowFPS
+    numAverageFrames = 30
+    drawFPS = TRUE
+    drawRepaintCount = FALSE
+    fontSize = 32
+    color = "0 1 0"
+    alpha = 1
+  }
+}
 connections {
   gaussian_splatting_export.image = Switch.output0
   gaussian_splatting_export.mask = Switch.output0
@@ -1531,6 +1554,7 @@ connections {
   Arithmetic2.input0 = LoadNIfTI.outImage
   Arithmetic2.input1 = LoadNIfTI1.outImage
   View3D.inImage = Switch.output0
+  View3D.inInvPreLUT = SoShowFPS.self
   View3D.inInvPostLUT = SoLUTEditor.outInventorLUT
   MinMaxScan.input0 = Switch.output0
   SoLUTEditor.inHistogram = Histogram.outputHistogramCurve
