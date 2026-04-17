@@ -239,6 +239,35 @@
 - Editor diagnostics for `paper/paper_test.tex` are clean.
 - [x] Update `README.md` with scope + setup + training + outputs + viewer.
 
+## User Request Details (2026-04-17, External PLY Masked MSE Evaluation)
+- Add functionality to load an external PLY file, rasterize it back into a voxel grid with the same splat-to-volume path used during training, and compute masked MSE against the input ground-truth volume.
+- Goal: evaluate standard 3DGS PLY outputs in a way that is directly comparable to the `eval/masked_mse_full_roi` values produced during training for this fork.
+
+## Action Plan (2026-04-17, External PLY Masked MSE Evaluation)
+1. Inspect the current full-ROI masked-MSE path, PLY loading, and exported scalar appearance attributes.
+2. Patch PLY loading so exported scalar intensity attributes can survive round-trip loading and evaluation.
+3. Add a standalone evaluator that can load a PLY, optionally inherit raster/eval settings from a saved `cfg_args`, and compute the masked MSE via `VolumeSupervisor.compute_full_roi_masked_mse(...)`.
+4. Add focused regression tests for the safe `cfg_args` parser and PLY intensity-source selection.
+5. Validate touched files and document the new workflow.
+
+## Task Tracker (2026-04-17, External PLY Masked MSE Evaluation)
+- [x] Confirm the current full-ROI masked-MSE implementation in `gaussian_splatting/utils/volume_supervisor.py` and the existing PLY loading path in `scene/gaussian_model.py`.
+- [x] Patch `scene/gaussian_model.py` so optional exported scalar intensity attributes are loaded for evaluation.
+- [x] Add a standalone masked-MSE evaluator for external PLY files.
+- [x] Add focused tests for `cfg_args` parsing and intensity-source configuration.
+- [x] Validate touched files and summarize the change.
+
+## Summary / Current State (2026-04-17, External PLY Masked MSE Evaluation)
+- Added `evaluate_ply_masked_mse.py`, a standalone evaluator that loads an external PLY, reuses `VolumeSupervisor.compute_full_roi_masked_mse(...)`, and can inherit volume/mask/raster/eval settings from a saved `cfg_args` file or training output directory.
+- Added `gaussian_splatting/utils/ply_masked_mse_eval.py` with a safe `Namespace(...)` parser for `cfg_args`, effective eval-target resolution, and explicit PLY intensity-source selection (`intensity_01` vs `f_dc_*`).
+- Updated `scene/gaussian_model.py` so `load_ply(...)` can target CPU or CUDA explicitly and now preserves optional exported `intensity_01` values plus the set of PLY attributes that were actually loaded.
+- Added `test_ply_masked_mse_eval.py` covering safe `cfg_args` parsing, auto-selection of the PLY intensity source, and round-trip loading of `intensity_01` from a minimal PLY.
+- Updated `README.md` with the new external PLY masked-MSE workflow.
+- Validation completed:
+	- `pytest -q test_ply_masked_mse_eval.py` passed (`3 passed`).
+	- `python evaluate_ply_masked_mse.py --help` succeeded.
+	- End-to-end smoke evaluation succeeded on `_output_/point_cloud.ply` against `_input_/volume.nii.gz` and `_input_/vessel-mask-float.nii.gz`, producing `Masked MSE: 0.203730` with `Target: ct` and `Intensity source: intensity_01`.
+
 ## Summary / Current State (2026-02-24)
 - `README.md` now starts with a fork-specific overview focused on volume-supervised training (setup, data conventions, example commands, outputs, and the standalone `gs_viewer`).
 - The upstream 3DGS README content remains below for reference.

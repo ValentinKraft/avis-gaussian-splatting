@@ -141,6 +141,7 @@ class GaussianModel:
         # Allow movement by providing a warmup and a minimum displacement in voxel units.
         self.position_displacement_warmup_iters = 50
         self.min_position_displacement_vox = 0.5
+        self._loaded_ply_attribute_names: set[str] = set()
 
         # --- Adaptive densification tracking ---
         self._scale_history = deque(maxlen=32)
@@ -1891,15 +1892,26 @@ class GaussianModel:
             )
         )
 
-    def load_ply(self, path: str, use_train_test_exp: bool = False):
+    def load_ply(
+        self,
+        path: str,
+        use_train_test_exp: bool = False,
+        device: Optional[Union[str, torch.device]] = None,
+    ):
         """
         Load a Gaussian model from a PLY file.
 
         Args:
             path: Path to the PLY file
             use_train_test_exp: Whether to use expected dataset size for training/testing
+            device: Target device used for the loaded tensors
         """
         plydata = PlyData.read(path)
+        dtype_names = plydata.elements[0].data.dtype.names or ()
+        self._loaded_ply_attribute_names = set(dtype_names)
+        target_device = torch.device(device) if device is not None else self._tensor_device()
+        if target_device.type == "cuda" and not torch.cuda.is_available():
+            target_device = torch.device("cpu")
 
         # Extract xyz coordinates
         xyz = np.stack(
@@ -1927,6 +1939,12 @@ class GaussianModel:
             num_rest_feats = features_rest.shape[1] // 3
             features_rest = features_rest.reshape(-1, num_rest_feats, 3)
 
+        intensity_01 = self._extract_optional_ply_scalar_attribute(
+            plydata,
+            "intensity_01",
+            use_train_test_exp,
+        )
+
         # Extract opacity, scale, and rotation
         opacity = np.asarray(plydata.elements[0]["opacity"]).reshape(-1, 1)
         if use_train_test_exp:
@@ -1939,7 +1957,7 @@ class GaussianModel:
         assert rot.shape[1] == 4, "Expected rotation to have 4 components"
 
         # Create parameter tensors from loaded data
-        xyz_tensor = torch.tensor(xyz, dtype=torch.float, device="cuda")
+        xyz_tensor = torch.tensor(xyz, dtype=torch.float32, device=target_device)
         self._xyz = nn.Parameter(
             xyz_tensor.transpose(0, 1).contiguous().requires_grad_(True)
         )
@@ -1948,42 +1966,59 @@ class GaussianModel:
         # Create features_dc tensor
         if len(features_dc) > 0:
             self._features_dc = nn.Parameter(
-                torch.tensor(features_dc, dtype=torch.float, device="cuda")
+                torch.tensor(features_dc, dtype=torch.float32, device=target_device)
                 .contiguous()
                 .requires_grad_(True)
             )
         else:
             self._features_dc = nn.Parameter(
                 torch.zeros(
-                    (xyz.shape[0], 1, 3), dtype=torch.float, device="cuda"
+                    (xyz.shape[0], 1, 3), dtype=torch.float32, device=target_device
                 ).requires_grad_(True)
             )
 
         # Create features_rest tensor
         if len(features_rest) > 0:
             self._features_rest = nn.Parameter(
-                torch.tensor(features_rest, dtype=torch.float, device="cuda")
+                torch.tensor(features_rest, dtype=torch.float32, device=target_device)
                 .contiguous()
                 .requires_grad_(True)
             )
         else:
             self._features_rest = nn.Parameter(
                 torch.zeros(
-                    (xyz.shape[0], 0, 3), dtype=torch.float, device="cuda"
+                    (xyz.shape[0], 0, 3), dtype=torch.float32, device=target_device
                 ).requires_grad_(True)
             )
 
         # Create other parameter tensors
         self._opacity = nn.Parameter(
-            torch.tensor(opacity, dtype=torch.float, device="cuda").requires_grad_(True)
+            torch.tensor(opacity, dtype=torch.float32, device=target_device).requires_grad_(
+                True
+            )
         )
         self._scaling = nn.Parameter(
-            torch.tensor(scale, dtype=torch.float, device="cuda").requires_grad_(True)
+            torch.tensor(scale, dtype=torch.float32, device=target_device).requires_grad_(
+                True
+            )
         )
         self._initial_scaling = self._scaling.detach().clone()
         self._rotation = nn.Parameter(
-            torch.tensor(rot, dtype=torch.float, device="cuda").requires_grad_(True)
+            torch.tensor(rot, dtype=torch.float32, device=target_device).requires_grad_(
+                True
+            )
         )
+
+        if intensity_01.size > 0:
+            self.intensities = torch.tensor(
+                intensity_01,
+                dtype=torch.float32,
+                device=target_device,
+            )
+            self.volume_min = 0.0
+            self.volume_max = 1.0
+        else:
+            self.intensities = torch.empty((0, 1), dtype=torch.float32, device=target_device)
 
         self.active_sh_degree = self.max_sh_degree
 
@@ -2018,6 +2053,22 @@ class GaussianModel:
                 attributes = attributes[:29060, :]
 
         return attributes if len(attributes) > 0 else np.array([])
+
+    def _extract_optional_ply_scalar_attribute(
+        self,
+        plydata: PlyData,
+        name: str,
+        use_train_test_exp: bool,
+    ) -> np.ndarray:
+        """Extract one optional scalar PLY attribute as a ``[N, 1]`` array."""
+        names = plydata.elements[0].data.dtype.names or ()
+        if name not in names:
+            return np.array([], dtype=np.float32)
+
+        values = np.asarray(plydata.elements[0][name], dtype=np.float32).reshape(-1, 1)
+        if use_train_test_exp:
+            values = values[:29060, :]
+        return values
 
     # ===== Export functions =====
 

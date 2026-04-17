@@ -135,6 +135,25 @@ python train.py `
   - `--export_ao`: bake fast ambient occlusion from the mask into exported colors and add an `ao` PLY attribute.
   - `--export_ao_method {isotropic,normal}`, `--export_ao_radius_vox`, `--export_ao_strength`.
 
+## External PLY masked MSE
+
+Use `evaluate_ply_masked_mse.py` to score an external PLY with the same full-ROI masked-MSE path used during training.
+
+Example using a saved training run to inherit the same volume, mask, raster settings, and full-ROI eval downscale:
+
+If you have a real training output directory:
+
+```shell
+python evaluate_ply_masked_mse.py --ply_path path\to\standard_3dgs.ply --training_model_path _output_/your_run
+```
+
+If you want to evaluate directly from inputs:
+```shell
+python evaluate_ply_masked_mse.py --ply_path abdomen_220k.ply --volume_path abdomen1.5.nii.gz --mask_path abdomen1.5_liver-float.nii.gz --target ct
+```
+
+If the PLY was exported by this fork, `--intensity_source auto` will prefer the stored `intensity_01` attribute. For a standard 3DGS PLY without `intensity_01`, the evaluator falls back to SH/DC appearance via `f_dc_*`.
+
 ## GS Viewer (standalone PLY viewer)
 
 `gs_viewer/` is a minimal viewer for Gaussian PLY models exported by this repo. It supports orbit/pan/zoom controls and a medical-style 1D transfer function that maps a per-splat scalar to color + transparency.
