@@ -218,6 +218,25 @@
 ## Task Tracker (2026-02-24)
 - [x] Verify environment name + key deps from `environment.yml`.
 - [x] Verify volume/mask CLI flags from `arguments.py`.
+
+## User Request Details (2026-04-17, Paper Section 3.3)
+- Add a short, scientifically phrased Section 3.3 ("Differentiable Splat-to-Volume Formulation") to `paper/paper_test.tex`.
+- Goal: explain how Gaussians are rasterized into a dense voxel grid, which practical approximations are used, and include a simple formula plus high-level pseudo code.
+
+## Action Plan (2026-04-17, Paper Section 3.3)
+1. Inspect the current Method section and the voxel rasterization implementation in `gaussian_splatting/utils/splat_to_volume.py`.
+2. Replace the placeholder text in Section 3.3 with a concise formulation that matches the implementation.
+3. Validate the edited TeX file for diagnostics.
+
+## Task Tracker (2026-04-17, Paper Section 3.3)
+- [x] Confirm the rasterization details and implementation approximations in `gaussian_splatting/utils/splat_to_volume.py`.
+- [x] Update Section 3.3 in `paper/paper_test.tex` with paragraph, formulas, and pseudo code.
+- [x] Validate the edited TeX file.
+
+## Summary / Current State (2026-04-17, Paper Section 3.3)
+- `paper/paper_test.tex` now contains a concise Section 3.3 describing voxel-grid rasterization from the Gaussian set, including a simple anisotropic kernel formula, the intensity and density accumulation rules, and high-level pseudo code.
+- The text reflects the actual implementation in `gaussian_splatting/utils/splat_to_volume.py`, including batch processing, finite local support, capped support radius, minimum voxel-space sigma, and optional downscaled working-grid accumulation with trilinear upsampling.
+- Editor diagnostics for `paper/paper_test.tex` are clean.
 - [x] Update `README.md` with scope + setup + training + outputs + viewer.
 
 ## Summary / Current State (2026-02-24)
