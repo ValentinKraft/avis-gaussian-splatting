@@ -145,12 +145,17 @@ We reformulate 3D Gaussian Splatting as a direct volumetric optimization problem
 Given $V$ and $M$, the objective is to learn a compact Gaussian set that approximates the underlying volumetric signal within relevant regions. Optimization is performed entirely in voxel space via a differentiable splatting formulation.
 
 
+\begin{figure}
+\centering
+\includegraphics[width=0.9\textwidth]{viewer_app.png}
+\caption{Our novel gs viewer exploits the new per-splat intensity values (effectively storing HU values) to dynamically change a transfer function during rendering, similar to a volume rendering.} \label{fig:app}
+\end{figure}
 
 
 \subsection{Gaussian Representation}
 Similar to the original 3DGS approach, we parameterize each Gaussian $i$ by its center position $\mu_i$, its covariance matrix $\Sigma_i$ and opacity $\alpha_i$. In addition to that, each splat explicitly encodes a physical intensity value $c_i$ (e.g., Hounsfield units in CT), sampled directly from the input volume at each Gaussian position using trilinear interpolation in normalized volume space. For large splats, the method can instead use the mean of the voxels covered by the splat footprint.
 
-This allows transfer functions to be applied or modified after training (see Fig \ref{fig1}), similar to classical volume rendering, without requiring re-optimization. In contrast to the original method, however, we use a spherical harmonic degree of 0 or 1 to avoid view-dependent colors, which would not fit to the expected precision in medical applications.
+This allows transfer functions to be applied or modified after training (see Fig \ref{fig:app}), similar to classical volume rendering, without requiring re-optimization. In contrast to the original method, however, we use a spherical harmonic degree of 0 or 1 to avoid view-dependent colors, which would not fit to the expected precision in medical applications.
 
 In order to still be somewhat compatible with other gaussian splatting tools and workflows, the exported PLY files contain a grayscale sh color value that gets computed by converting the intensity values to a SH color using a standard black-and-white transfer function.
 
@@ -225,7 +230,7 @@ To make training practical for large medical volumes, the implementation include
 
 The system also includes task-specific presets for different anatomical regimes (e.g. for vessels) and exports intermediate checkpoints and PLY snapshots for inspection and downstream rendering. Overall, the implementation is designed to keep volumetric optimization tractable while preserving the flexibility needed for different datasets, supervision modes, and hardware constraints. All hyperparameters are made accessible as CLI parameters. For optimization, we employ the Adam optimizer.
 
-Since standard Gaussian splatting viewers do not support our new intensity value, which we store per splat, we created a novel viewer application that allows dynamic changes of the transfer function during rendering, similar to a volume rendering workflow (see Fig \ref{fig1}). This functionality is essential to fully exploit the intensity-aware representation.
+Since standard Gaussian splatting viewers do not support our new intensity value, which we store per splat, we created a novel viewer application that allows dynamic changes of the transfer function during rendering, similar to a volume rendering workflow (see Fig \ref{fig:app}). This functionality is essential to fully exploit the intensity-aware representation.
 
 The implementation (including the novel viewer application) is publicly available at \url{https://github.com/your-repo/3d-gaussian-splatting}
 
@@ -260,9 +265,9 @@ This discrepancy is further accentuated by our active-set training strategy, whe
 We therefore adopt a two-part evaluation protocol consisting of (i) a quantitative evaluation in the volume domain and (ii) a qualitative comparison in image space.
 
 \paragraph{Quantitative volume-domain evaluation.}
-Our primary quantitative metric is the masked mean squared error (masked MSE) computed in the native volume domain. After training, the Gaussian representation is rasterized onto the original voxel grid of the input volume. The reconstructed volume is then compared to the ground-truth volume within the region of interest (ROI), defined by a binary mask. This ensures that evaluation is performed in the same domain as supervision, avoiding ambiguities related to camera placement or cross-method alignment. Importantly, all Gaussians are used during evaluation, irrespective of the subset-based updates during training.
+Our primary quantitative metric is the masked mean squared error (MMSE) computed in the native volume domain. After training, the Gaussian representation is rasterized onto the original voxel grid of the input volume. The reconstructed volume is then compared to the ground-truth volume within the region of interest (ROI), defined by a binary mask. This ensures that evaluation is performed in the same domain as supervision, avoiding ambiguities related to camera placement or cross-method alignment. Importantly, all Gaussians are used during evaluation, irrespective of the subset-based updates during training.
 
-Formally, let $V$ denote the normalized ground-truth volume, $\hat{V}$ the reconstructed volume obtained by rasterizing the Gaussian model, and $M \in \{0,1\}$ the ROI mask. The masked MSE (MMSE) is defined as
+Formally, let $V$ denote the normalized ground-truth volume, $\hat{V}$ the reconstructed volume obtained by rasterizing the Gaussian model, and $M \in \{0,1\}$ the ROI mask. The MMSE is defined as
 
 \begin{equation}
 \mathcal{L}_{\mathrm{MMSE}} =
@@ -273,24 +278,20 @@ Formally, let $V$ denote the normalized ground-truth volume, $\hat{V}$ the recon
 where the sum runs over all voxels and only voxels within the ROI contribute to the error. This metric serves as our primary quantitative measure of reconstruction fidelity.
 
 \paragraph{Qualitative comparison to volume rendering and 3DGS.}
-In addition to the volume-domain evaluation, we perform a qualitative comparison against direct volume rendering of the input data and against standard 3DGS (see Figure \ref{fig2}). Since these methods operate in different coordinate systems and are not naturally aligned to a shared camera model, renderings are generated from approximately matched viewpoints rather than enforcing exact pose correspondence. These comparisons are intended solely for visual inspection of structural fidelity, anatomical plausibility, and perceptual quality, and are not used for quantitative evaluation.
+In addition to the volume-domain evaluation, we perform a qualitative comparison against direct volume rendering of the input data and against standard 3DGS (see Figure \ref{fig:comparison}). Since these methods operate in different coordinate systems and are not naturally aligned to a shared camera model, renderings are generated from approximately matched viewpoints rather than enforcing exact pose correspondence. These comparisons are intended solely for visual inspection of structural fidelity, anatomical plausibility, and perceptual quality, and are not used for quantitative evaluation.
 
 
 \section{Results}
 
-\begin{figure}
-\centering
-\includegraphics[width=0.9\textwidth]{Figure2.png}
-\caption{Our novel gs viewer showcasing the new dynamic transfer function feature.} \label{fig1}
-\end{figure}
+
 
 \subsection{Quantitative Results}
-We report masked MSE in the volume domain as defined in Sec.~\ref{sec:evaluation}. Table \ref{tab1} summarizes the reconstruction accuracy of our method.
+We report the MMSE values of our method as defined in Sec.~\ref{sec:evaluation} in Table \ref{tab:mmse}:
 
-\begin{table}[b]
+\begin{table}
 \centering
 \caption{Average MMSE and PSNR inside the ROI for our volume-supervised method for iterations 0 to 1000, evaluated against the ground-truth input volume. The Gaussian model is rasterized onto the native evaluation grid, and the metrics are computed only within the ROI mask.}
-\label{tab1}
+\label{tab:mmse}
 \begin{tabular}{lcc}
 \hline
 Splat Count & MMSE (Avg.) & PSNR (Avg.) [dB] \\
@@ -303,27 +304,25 @@ Splat Count & MMSE (Avg.) & PSNR (Avg.) [dB] \\
 \end{tabular}
 \end{table}
 
-The low MMSE values obtained in our experiments indicate that the proposed method reconstructs the target volume with high fidelity inside the ROI. Although this metric provides a precise volume-domain measure, it is complemented by qualitative inspection to assess fine-scale structural accuracy beyond the averaged error.
+The low MMSE values obtained in our experiments indicate that the proposed method reconstructs the target volume with high fidelity inside the ROI. Although this metric provides a precise volume-domain measure, it is complemented by qualitative inspection to assess fine-scale structural accuracy beyond the averaged error. \todo{In discussion!}
 
 \subsection{Qualitative Results}
 
 \begin{figure}
-\includegraphics[width=\textwidth]{Figure.png}
-\caption{The abdomen dataset rendered using different modalities. Top left: Volume Rendering (reference), top right: Standard 3DGS (253k Splats, 30 Min training time), bottom left: our method (200k Splats, 30 Min. Training time), bottom right: our method (1M Splats, 30 Min Training time). It is obvious that the standard 3DGS model is a bit sharper, but less precise with respect to the colors.} \label{fig2}
+\includegraphics[width=\textwidth]{comparison.png}
+\caption{The abdomen dataset rendered using different modalities. Top left: Volume Rendering (reference), top right: Standard 3DGS (253k Splats, 30 Min training time), bottom left: our method (200k Splats, 30 Min. Training time), bottom right: our method (1M Splats, 30 Min Training time). It is obvious that the standard 3DGS model is a bit sharper, but less precise with respect to the colors.} \label{fig:comparison}
 \end{figure}
 
-We qualitatively compare our method to direct volume rendering (reference) and to standard 3DGS. Figure \ref{fig2} shows representative renderings from approximately matched viewpoints.
+We qualitatively compare our method to direct volume rendering (reference) and to standard 3DGS. Figure \ref{fig:comparison} shows representative renderings from approximately matched viewpoints.
 
-Our method preserves the overall anatomical structure while significantly reducing representational complexity. In particular, fine structures such as vessels remain visually consistent, whereas 3DGS exhibits artifacts due to its reliance on image-based supervision.
+Our method preserves the overall anatomical structure while significantly reducing representational complexity. In particular, fine structures such as vessels remain visually consistent, whereas 3DGS exhibits artifacts due to its reliance on image-based supervision.\todo{In discussion!}
 
 \subsection{Efficiency Analysis}
-We evaluate rendering performance in terms of frames per second (FPS). Table \ref{tab2} compares our method to volume rendering and 3DGS. We used the "GigaVoxelRenderer" in MeVislab for measuring the Volume Rendering. For 3DGS and our method, we used the "SIBR Gaussian Viewer App" that is part of the standard 3DGS repository. All measurements were taken at a rendering resolution of $1024 \times 1024$.
-
-We also present the timings for model training using our method in table \ref{tab3}. Since our method significantly differs from standard Gaussian Splatting, we do not compare against it in terms of training times.
+We evaluate rendering performance in terms of frames per second (FPS). Table \ref{tab:fps} compares our method to volume rendering and 3DGS. We used the "GigaVoxelRenderer" in MeVislab for measuring the Volume Rendering. For 3DGS and our method, we used the "SIBR Gaussian Viewer App" that is part of the standard 3DGS repository. All measurements were taken at a rendering resolution of $1024 \times 1024$.
 
 \begin{table}
 \centering
-\caption{Rendering performance of the different methods. Note that the rendering FPS is bounded by the SIBR viewer implementation and hardware constraints (240Hz display) and therefore does not fully reflect the theoretical performance differences between methods.}\label{tab2}
+\caption{Rendering performance of the different methods. Note that the rendering FPS is bounded by the SIBR viewer implementation and hardware constraints (240Hz display) and therefore does not fully reflect the theoretical performance differences between methods.}\label{tab:fps}
 \begin{tabular}{|l|c|c|}
 \hline
 Method & Nr. of primitives & Dataset 1 (Abdomen)\\
@@ -337,9 +336,11 @@ Ours & 1M & 147 FPS \\
 \end{tabular}
 \end{table}
 
+We also present the timings for model training using our method in table \ref{tab:training}. Since our method significantly differs from standard Gaussian Splatting, we do not compare against it in terms of training times.
+
 \begin{table}
 \centering
-\caption{Training performance.}\label{tab3}
+\caption{Training performance.}\label{tab:training}
 \begin{tabular}{|l|c|}
 \hline
 Nr of splats & Training time [min]\\
