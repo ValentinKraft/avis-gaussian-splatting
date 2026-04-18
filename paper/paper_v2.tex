@@ -10,6 +10,7 @@
 % Other font encondings may result in incorrect characters.
 %
 \usepackage{graphicx}
+\usepackage{todonotes}
 \usepackage{amsmath,amssymb}
 % Used for displaying a sample figure. If possible, figure files should
 % be included in EPS format.
@@ -226,7 +227,7 @@ The system also includes task-specific presets for different anatomical regimes 
 
 Since standard Gaussian splatting viewers do not support our new intensity value, which we store per splat, we created a novel viewer application that allows dynamic changes of the transfer function during rendering, similar to a volume rendering workflow (see Fig \ref{fig1}). This functionality is essential to fully exploit the intensity-aware representation.
 
-The implementation is publicly available at \url{https://github.com/your-repo/3d-gaussian-splatting}
+The implementation (including the novel viewer application) is publicly available at \url{https://github.com/your-repo/3d-gaussian-splatting}
 
 
 % ----------------------------
@@ -236,7 +237,7 @@ The implementation is publicly available at \url{https://github.com/your-repo/3d
 \subsection{Experimental Setup}
 We evaluate our method on medical volumetric datasets, focusing on anatomically relevant structures such as vessels and organs. The input data consists of CT images together with corresponding segmentation masks.
 
-We use the ``Case 1'' dataset from the AbdomenCT-1k project \cite{ma2021abdomenct}. The dataset was resampled to an isotropic voxel spacing of 1.5\,mm and size $292 \times 292 \times 180$. Segmentations were obtained using TotalSegmentator v2 and saved as binary masks.
+We use the ``Case 1'' dataset from the AbdomenCT-1k project \cite{ma2021abdomenct}. The dataset was resampled to an isotropic voxel spacing of 1.5\,mm and size $292 \times 292 \times 180$. Segmentations were obtained using TotalSegmentator v2 and saved as binary masks. In addition, a soft liver segmentation mask was created using an internal segmentation model.
 
 All experiments are conducted on a Windows 11 system with an Intel i7 Ultra 155H, 32GB RAM, and an NVIDIA RTX 4060 Mobile GPU (8GB VRAM).
 
@@ -252,9 +253,9 @@ We compare our method against the following baselines:
 \subsection{Evaluation Protocol}
 \label{sec:evaluation}
 
-Our evaluation protocol is designed to reflect the inherent differences between our method and standard 3D Gaussian Splatting (3DGS). While both approaches rely on a Gaussian scene representation, they are trained under fundamentally different supervision regimes. Our method is optimized directly in the volume domain using a target volume and ROI mask, whereas standard 3DGS is trained from multi-view images under known or estimated camera parameters. Consequently, the methods differ in input modality, optimization objective, coordinate system, and computational structure.
+Our evaluation protocol is designed to reflect the inherent differences between our method and standard 3D Gaussian Splatting (3DGS). While both approaches rely on a Gaussian scene representation, they are trained under fundamentally different supervision regimes. Our method is optimized directly in the volume domain using a target volume and ROI mask, whereas standard 3DGS is trained from multi-view images under known or estimated camera parameters. Consequently, the methods differ in input modality, optimization objective, coordinate system, and computational structure, and thus address related but inherently different reconstruction problems.
 
-This discrepancy is further accentuated by our active-set training strategy, where only a subset of Gaussians is updated per iteration (controlled via \texttt{max\_points\_per\_iter}), while evaluation is always performed on the full set. As a result, direct quantitative comparisons between both approaches are not well-defined and may lead to misleading conclusions.
+This discrepancy is further accentuated by our active-set training strategy, where only a subset of Gaussians is updated per iteration (controlled via \texttt{max\_points\_per\_iter}), while evaluation is always performed on the full set. As a result, direct quantitative comparisons between both approaches are not well-defined and may lead to misleading conclusions. In particular, quantitative comparisons in image space would be confounded by differences in supervision, rendering assumptions, and pose alignment.
 
 We therefore adopt a two-part evaluation protocol consisting of (i) a quantitative evaluation in the volume domain and (ii) a qualitative comparison in image space.
 
@@ -273,9 +274,6 @@ where the sum runs over all voxels and only voxels within the ROI contribute to 
 
 \paragraph{Qualitative comparison to volume rendering and 3DGS.}
 In addition to the volume-domain evaluation, we perform a qualitative comparison against direct volume rendering of the input data and against standard 3DGS (see Figure \ref{fig2}). Since these methods operate in different coordinate systems and are not naturally aligned to a shared camera model, renderings are generated from approximately matched viewpoints rather than enforcing exact pose correspondence. These comparisons are intended solely for visual inspection of structural fidelity, anatomical plausibility, and perceptual quality, and are not used for quantitative evaluation.
-
-\paragraph{Discussion of comparability.}
-Overall, our method and standard 3DGS address related but inherently different reconstruction problems. Our approach is evaluated quantitatively in the domain in which it is defined and supervised, yielding a direct and reliable measure of volumetric reconstruction accuracy. In contrast, 3DGS serves as a qualitative baseline, as quantitative comparisons in image space would be confounded by differences in supervision, rendering assumptions, and pose alignment. The proposed protocol therefore enables a rigorous evaluation of volumetric fidelity while still providing an informative comparison to established view-based Gaussian rendering methods.
 
 
 \section{Results}
@@ -365,7 +363,7 @@ Nr of splats & Training time [min]\\
 % Results show that mask supervision improves reconstruction accuracy within the region of interest and leads to better preservation of anatomical structures.
 
 
-\section{Discussion}
+\section{Discussion}\todo{discuss PSNR and other results!}
 
 Our results demonstrate the advantages of reformulating Gaussian Splatting as a direct volumetric optimization problem. By operating directly in voxel space and supervising against a target volume and region-of-interest mask, the method avoids the need for multi-view image rendering, structure-from-motion preprocessing, or camera-based supervision. This provides a more direct optimization pathway that is inherently aligned with the data domain and is particularly well suited for medical imaging applications, where volumetric ground truth is naturally available.
 
