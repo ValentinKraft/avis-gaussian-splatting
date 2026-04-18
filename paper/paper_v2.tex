@@ -264,7 +264,7 @@ This discrepancy is further accentuated by our active-set training strategy, whe
 
 We therefore adopt a two-part evaluation protocol consisting of (i) a quantitative evaluation in the volume domain and (ii) a qualitative comparison in image space.
 
-\paragraph{Quantitative volume-domain evaluation.}
+\paragraph{Quantitative evaluation:}
 Our primary quantitative metric is the masked mean squared error (MMSE) computed in the native volume domain. After training, the Gaussian representation is rasterized onto the original voxel grid of the input volume. The reconstructed volume is then compared to the ground-truth volume within the region of interest (ROI), defined by a binary mask. This ensures that evaluation is performed in the same domain as supervision, avoiding ambiguities related to camera placement or cross-method alignment. Importantly, all Gaussians are used during evaluation, irrespective of the subset-based updates during training.
 
 Formally, let $V$ denote the normalized ground-truth volume, $\hat{V}$ the reconstructed volume obtained by rasterizing the Gaussian model, and $M \in \{0,1\}$ the ROI mask. The MMSE is defined as
@@ -277,7 +277,7 @@ Formally, let $V$ denote the normalized ground-truth volume, $\hat{V}$ the recon
 
 where the sum runs over all voxels and only voxels within the ROI contribute to the error. This metric serves as our primary quantitative measure of reconstruction fidelity.
 
-\paragraph{Qualitative comparison to volume rendering and 3DGS.}
+\paragraph{Qualitative evaluation:}
 In addition to the volume-domain evaluation, we perform a qualitative comparison against direct volume rendering of the input data and against standard 3DGS (see Figure \ref{fig:comparison}). Since these methods operate in different coordinate systems and are not naturally aligned to a shared camera model, renderings are generated from approximately matched viewpoints rather than enforcing exact pose correspondence. These comparisons are intended solely for visual inspection of structural fidelity, anatomical plausibility, and perceptual quality, and are not used for quantitative evaluation.
 
 
@@ -286,15 +286,15 @@ In addition to the volume-domain evaluation, we perform a qualitative comparison
 
 
 \subsection{Quantitative Results}
-We report the MMSE values of our method as defined in Sec.~\ref{sec:evaluation} in Table \ref{tab:mmse}:
+We report the MMSE values for our method as defined in Sec.~\ref{sec:evaluation} in Table \ref{tab:mmse}. Please note that MMSE values for standard 3DGS cannot be computed in a meaningful way without an additional registration step or similar calibration steps, as the resulting models produced by its image-space optimization are usually not aligned with the original voxel grid / coordinate system.
 
 \begin{table}
 \centering
-\caption{Average MMSE and PSNR inside the ROI for our volume-supervised method for iterations 0 to 1000, evaluated against the ground-truth input volume. The Gaussian model is rasterized onto the native evaluation grid, and the metrics are computed only within the ROI mask.}
+\caption{MMSE and ROI-based PSNR for our volume-supervised method for iteration 1000, evaluated against the ground-truth input volume. The Gaussian model is rasterized onto the native evaluation grid, and the metrics are computed only within the ROI mask.}
 \label{tab:mmse}
-\begin{tabular}{lcc}
+\begin{tabular}{|l|c|c|}
 \hline
-Splat Count & MMSE (Avg.) & PSNR (Avg.) [dB] \\
+Splat Count & MMSE & PSNR [dB] \\
 \hline
 200k & 0.002680 & 25.72 \\
 500k & 0.002458 & 26.09 \\
@@ -310,7 +310,7 @@ The low MMSE values obtained in our experiments indicate that the proposed metho
 
 \begin{figure}
 \includegraphics[width=\textwidth]{comparison.png}
-\caption{The abdomen dataset rendered using different modalities. Top left: Volume Rendering (reference), top right: Standard 3DGS (253k Splats, 30 Min training time), bottom left: our method (200k Splats, 30 Min. Training time), bottom right: our method (1M Splats, 30 Min Training time). It is obvious that the standard 3DGS model is a bit sharper, but less precise with respect to the colors.} \label{fig:comparison}
+\caption{The abdomen dataset rendered using different modalities. Top left: Volume Rendering (reference), top right: Standard 3DGS (253k Splats), bottom left: our method (200k Splats), bottom right: our method (1M Splats). It is obvious that the standard 3DGS model appears a bit sharper, but less precise with respect to the colors.} \label{fig:comparison}
 \end{figure}
 
 We qualitatively compare our method to direct volume rendering (reference) and to standard 3DGS. Figure \ref{fig:comparison} shows representative renderings from approximately matched viewpoints.
@@ -318,6 +318,8 @@ We qualitatively compare our method to direct volume rendering (reference) and t
 Our method preserves the overall anatomical structure while significantly reducing representational complexity. In particular, fine structures such as vessels remain visually consistent, whereas 3DGS exhibits artifacts due to its reliance on image-based supervision.\todo{In discussion!}
 
 \subsection{Efficiency Analysis}
+
+\paragraph{Rendering performance:}
 We evaluate rendering performance in terms of frames per second (FPS). Table \ref{tab:fps} compares our method to volume rendering and 3DGS. We used the "GigaVoxelRenderer" in MeVislab for measuring the Volume Rendering. For 3DGS and our method, we used the "SIBR Gaussian Viewer App" that is part of the standard 3DGS repository. All measurements were taken at a rendering resolution of $1024 \times 1024$.
 
 \begin{table}
@@ -336,7 +338,10 @@ Ours & 1M & 147 FPS \\
 \end{tabular}
 \end{table}
 
-We also present the timings for model training using our method in table \ref{tab:training}. Since our method significantly differs from standard Gaussian Splatting, we do not compare against it in terms of training times.
+\paragraph{Training performance:}
+We also present the timings for model training using our method in table \ref{tab:training}. Since our method significantly differs from standard Gaussian Splatting (see section \ref{sec:evaluation}), we do not compare against it in terms of training times.
+
+Training time depends not only on the number of Gaussians but also on the chosen subset size, voxel resolution, and ROI extent. The reported values should therefore be interpreted as indicative rather than directly comparable across methods.
 
 \begin{table}
 \centering
