@@ -72,7 +72,7 @@ A key aspect of our approach is an intensity-aware Gaussian representation, wher
 
 While our method does not aim to fully replace high-quality volume rendering in terms of visual fidelity, it offers a compelling trade-off between quality and efficiency. In particular, it enables fast, lightweight rendering that is well suited for interactive and immersive applications where computational resources are limited.
 
-In summary, our work bridges the gap between Gaussian Splatting and volumetric medical data by reformulating the method as a direct optimization problem in voxel space. This results in a representation that is more aligned with the underlying data domain, simplifies the reconstruction pipeline, and enables efficient and flexible visualization of volumetric data. \textbf{LÖSCHEN}?
+%In summary, our work bridges the gap between Gaussian Splatting and volumetric medical data by reformulating the method as a direct optimization problem in voxel space. This results in a representation that is more aligned with the underlying data domain, simplifies the reconstruction pipeline, and enables efficient and flexible visualization of volumetric data. \textbf{TODO: LÖSCHEN}?
 
 Our main contributions are as follows:
 
@@ -218,7 +218,7 @@ Our implementation follows the original 3D Gaussian Splatting pipeline and is ba
 
 To make training practical for large medical volumes, the implementation includes several memory- and runtime-aware design choices, including ROI-restricted computation, optional downscaling of the working grid, chunked accumulation of Gaussian contributions, and mixed-precision storage where appropriate. We further use monitoring and logging utilities to track optimization stability and support debugging during long training runs.
 
-The system also includes task-specific presets for different anatomical regimes (e.g. for vessels) and exports intermediate checkpoints and PLY snapshots for inspection and downstream rendering. Overall, the implementation is designed to keep volumetric optimization tractable while preserving the flexibility needed for different datasets, supervision modes, and hardware constraints. All hyperparameters are made accessible as CLI parameters. For optimization, we employ the Adam optimizer. (\textbf{QUELLE?})
+The system also includes task-specific presets for different anatomical regimes (e.g. for vessels) and exports intermediate checkpoints and PLY snapshots for inspection and downstream rendering. Overall, the implementation is designed to keep volumetric optimization tractable while preserving the flexibility needed for different datasets, supervision modes, and hardware constraints. All hyperparameters are made accessible as CLI parameters. For optimization, we employ the Adam optimizer.
 
 Since standard Gaussian splatting viewers do not support our new intensity value, which we store per splat, we created a novel viewer application that allows dynamic changes of the transfer function during rendering, similar to a volume rendering workflow (see Fig \ref{fig1}).
 
@@ -232,7 +232,7 @@ The implementation is publicly available at \url{https://github.com/your-repo/3d
 \subsection{Experimental Setup}
 We evaluate our method on medical volumetric datasets, focusing on anatomically relevant structures such as vessels and organs. The input data consists of CT images together with corresponding segmentation masks.
 
-We use the ``Case 1'' dataset from the AbdomenCT-1k project \cite{ma2021abdomenct}. The dataset was resampled to an isotropic voxel spacing of 1.5\,mm and size $292 \times 292 \times 180$. Segmentations were obtained using TotalSegmentator v2.
+We use the ``Case 1'' dataset from the AbdomenCT-1k project \cite{ma2021abdomenct}. The dataset was resampled to an isotropic voxel spacing of 1.5\,mm and size $292 \times 292 \times 180$. Segmentations were obtained using TotalSegmentator v2 and saved as binary masks.
 
 All experiments are conducted on a Windows 11 system with an Intel i7 Ultra 155H, 32GB RAM, and an NVIDIA RTX 4060 Mobile GPU (8GB VRAM).
 
@@ -240,9 +240,9 @@ All experiments are conducted on a Windows 11 system with an Intel i7 Ultra 155H
 We compare our method against the following baselines:
 
 \begin{itemize}
-\item \textbf{Volume Rendering (VR):} Standard GPU-based volume rendering using the GigaVoxel renderer in MeVisLab 4.2.70 (\textbf{REF}). This serves as a reference for visual fidelity.
+\item \textbf{Volume Rendering (VR):} Standard GPU-based volume rendering using the GigaVoxel renderer in MeVisLab 4.2.70 \cite{mevislab}. This serves as a reference for visual fidelity.
 
-\item \textbf{3D Gaussian Splatting (3DGS):} Standard image-based 3DGS as implemented in Nerfstudio (\textbf{REF}). Training is performed on 500 rendered images with a resolution of $1024 \times 1024$ and from random spherical camera positions. The renderings were generated with the same GigaVoxel renderer to ensure consistency of input data.
+\item \textbf{3D Gaussian Splatting (3DGS):} Standard image-based 3DGS as implemented in Nerfstudio \cite{nerfstudio}. Training is performed on 500 rendered images with a resolution of $1024 \times 1024$ and from random spherical camera positions. The renderings were generated with the same GigaVoxel renderer to ensure consistency of input data.
 \end{itemize}
 
 \subsection{Evaluation Protocol}
