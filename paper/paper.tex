@@ -209,6 +209,11 @@ s_i=\bar v\left(\sigma_{\min}^{\mathrm{vox}}+u_i\left(\sigma_{\max}^{\mathrm{vox
 
 Here, $s_i$ is the initial base scale of Gaussian $i$, $\bar v$ is the mean voxel size, $\sigma_{\min}^{\mathrm{vox}}$ and $\sigma_{\max}^{\mathrm{vox}}$ are the user-defined minimum and maximum initialization scales in voxel units, and $u_i \sim \mathcal{U}(0,1)$ is a random sample that selects a scale uniformly within that interval.
 
+\begin{figure}
+\includegraphics[width=\textwidth]{comparison-early.png}
+\caption{The abdomen dataset with the soft liver mask. Left: Volume Rendering (reference), right: Our method (500k Splats, iteration 100). Even almost directly after initialization, the resulting gaussian model is very close to the reference, due to the smart initialization.} \label{fig:comparison}
+\end{figure}
+
 \subsection{ROI-Aware Optimization}
 Training is performed directly in voxel space using losses restricted to the ROI. This prevents large empty background regions from dominating optimization and improves robustness for sparse anatomical structures.
 
@@ -300,11 +305,12 @@ Dataset & Mask & Splat Count & \multicolumn{2}{c|}{MMSE $\downarrow$} & \multico
 \cline{4-7}
  & & & Worst & Best & Worst & Best \\
 \hline
-Abdomen     & TS (binary)   & 250k   & 0,00276   & 0.002347  & 25.58     & 26.29 \\
+Abdomen     & TS (binary)   & 100k   & 0.00336   & 0.00242   & 24.92     & 26.16 \\
+Abdomen     & TS (binary)   & 250k   & 0.00276   & 0.00235   & 25.58     & 26.29 \\
 Abdomen     & TS (binary)   & 500k   & 0.00273   & 0.00213   & 25.65     & 26.71 \\
-Abdomen     & TS (binary)   & 1000k  & 0,00241   & 0.00192   & 26.17     & 27.18 \\
-Abdomen     & Liver (float) & 250k   & 0,00066   & 0.00059   & 31.80     & 32.27 \\
-Abdomen     & Liver (float) & 500k   & 0,00066   & 0.00056   & 31.81     & 32.53 \\
+Abdomen     & TS (binary)   & 1000k  & 0.00241   & 0.00192   & 26.17     & 27.18 \\
+Abdomen     & Liver (float) & 250k   & 0.00066   & 0.00059   & 31.80     & 32.27 \\
+Abdomen     & Liver (float) & 500k   & 0.00066   & 0.00056   & 31.81     & 32.53 \\
 
 \hline
 \end{tabular}
@@ -359,7 +365,7 @@ Dataset & Mask & Subset size & \multicolumn{2}{c|}{Splat count} & Time [min] & P
 \cline{4-5}
  & & & Start & End & & \\
 \hline
-Abdomen & TS (binary)    & 2k  & 100k   & 100k  & ?  & ? \\
+Abdomen & TS (binary)    & 2k  & 100k   & 100k  & 23 & 24.77 \\
 Abdomen & TS (binary)    & 8k  & 200k   & 375k  & 77 & 25.62\\
 Abdomen & TS (binary)    & 8k  & 250k   & 250k  & 74 & 25.61\\
 Abdomen & TS (binary)    & 8k  & 500k   & 518k  & 77 & 25.65\\
@@ -400,18 +406,21 @@ At the same time, the method introduces new challenges. Volumetric rasterization
 
 Overall, volumetric Gaussian Splatting occupies a middle ground between dense volume rendering and view-based Gaussian Splatting. It leverages direct voxel-space supervision to improve robustness and alignment with the data domain, while enabling efficient rendering and interactive transfer-function-based exploration. This makes it particularly suitable for medical visualization scenarios where accuracy, efficiency, and controllability are critical.
 
-
 \section{Conclusion}
 
-We presented a novel formulation of 3D Gaussian Splatting that operates directly in the volumetric domain. By replacing conventional image-based supervision with voxel-space optimization, our approach eliminates the need for camera models and multi-view reconstruction pipelines, resulting in a representation that is naturally aligned with medical imaging data.
+We presented a novel formulation of 3D Gaussian Splatting that operates directly in the volumetric domain. By replacing conventional image-based supervision with voxel-space optimization, our approach eliminates the need for camera models, multi-view reconstruction, and intermediate rendering, resulting in a representation that is inherently aligned with medical imaging data.
 
-The proposed method introduces a differentiable splat-to-volume rasterization and an intensity-aware Gaussian representation, enabling direct optimization of volumetric data and flexible post hoc visualization through transfer functions. This allows Gaussian Splatting to bridge the gap between efficient point-based rendering and classical volume rendering techniques.
+This direct supervision in voxel space enables a more precise and robust optimization process, avoiding error sources associated with projection, pose estimation, and view-dependent rendering. As demonstrated in our experiments, the proposed method achieves high reconstruction fidelity within the region of interest, with strong quantitative performance and rapid convergence already in early training stages.
 
-Our experiments demonstrate that the resulting representation provides a compelling trade-off between reconstruction quality and computational efficiency. In particular, it enables real-time, volume-rendering-like visualization on resource-constrained hardware, making it well suited for interactive and mixed reality applications.
+A key contribution of our approach is the intensity-aware Gaussian representation, where each splat encodes a physically meaningful value (e.g., Hounsfield units). This enables flexible post hoc transfer function design without retraining, in contrast to conventional 3D Gaussian Splatting models with largely static appearance. As a result, our method combines the efficiency of Gaussian-based rendering with the flexibility and interpretability of classical volume rendering.
 
-Future work could focus on improving reconstruction accuracy, further optimizing training performance, and directly computing and storing lighting-related information per splat, such as ambient occlusion, to enable more realistic rendering and to get closer to sophisticated rendering methods like Path Tracing.
+In addition, the proposed representation provides a compact and efficient alternative to dense voxel grids, enabling real-time, volume-rendering-like visualization even on resource-constrained hardware. This makes it particularly suitable for interactive and mixed reality applications in medical visualization.
 
-We believe that the proposed volume-centric perspective opens new directions for Gaussian-based scene representations beyond traditional image-based settings.
+Despite these advantages, the method introduces additional computational demands during training and relies on accurate ROI masks and appropriate hyperparameter choices. Furthermore, the current implementation leaves room for improvements in adaptive Gaussian parameterization and overall efficiency.
+
+Overall, our volume-centric formulation bridges the gap between Gaussian Splatting and classical volume rendering, offering a compelling trade-off between precision, flexibility, and efficiency. We believe that this perspective opens new directions for Gaussian-based representations beyond traditional image-based settings.
+
+Future work could focus on improving reconstruction accuracy, further optimizing training performance, and extending the representation with additional physically-based properties such as lighting or ambient occlusion to enable more advanced rendering effects.
 
 \begin{credits}
 \subsubsection{\ackname} A bold run-in heading in small font size at the end of the paper is
