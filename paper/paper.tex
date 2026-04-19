@@ -188,16 +188,16 @@ where $c_i$ is the intensity associated with Gaussian $i$, and $\varepsilon$ is 
 
 % where $\gamma$ is a scaling factor. This formulation is analogous to alpha compositing and allows the model to approximate occupancy or mask-like signals.
 
-A naive evaluation of all Gaussians for every voxel would be computationally prohibitive. Therefore, we restrict computation to local neighborhoods by evaluating each Gaussian only within a finite spatial support derived from its covariance. In practice, this includes:
+A naive evaluation of all Gaussians for every voxel would be computationally prohibitive. Therefore, we restrict computation to local neighborhoods by evaluating each Gaussian only within a finite spatial support derived from its covariance. %In practice, this includes:
 
-\begin{itemize}
-\item limiting evaluation to a bounded voxel neighborhood per Gaussian,
-\item clamping minimum and maximum Gaussian scales in voxel space,
-\item processing Gaussians in batches, and
-\item optionally performing accumulation on a downscaled grid followed by trilinear upsampling.
-\end{itemize}
+% \begin{itemize}
+% \item limiting evaluation to a bounded voxel neighborhood per Gaussian,
+% \item clamping minimum and maximum Gaussian scales in voxel space,
+% \item processing Gaussians in batches, and
+% \item optionally performing accumulation on a downscaled grid followed by trilinear upsampling.
+% \end{itemize}
 
-These approximations preserve differentiability with respect to all Gaussian parameters while making training feasible for large volumetric datasets.
+% These approximations preserve differentiability with respect to all Gaussian parameters while making training feasible for large volumetric datasets.
 
 %In practice, a full evaluation over all Gaussians and voxels is computationally infeasible. We therefore employ a sparse, local accumulation scheme with bounded Gaussian support and batched processing.
 
@@ -216,20 +216,13 @@ optionally upsample to full resolution
 \end{tabbing}
 \end{quote}
 
-
 \subsection{Smart Initialization}
 
-For almost all clinical tasks, e.g. for intervention planning, only specific structures are relevant. Therefore, and to focus model capacity and compute power on only where it is necessary, we assume the availability of a ROI mask. The ROI mask could for instance come from a machine learning-based segmentation model like TotalSegmentator and can be a binary or soft (float) mask and could cover one or multiple relevant structures. During initialization, the Gaussian spawn-positions are sampled inside the ROI mask. For soft masks, sampling probabilities correspond to the voxel value (which, depending on the segmentation method, might be interpreted as a segmentation confidence), allowing the method to retain uncertain but potentially important regions.
+For most clinical tasks, e.g. intervention planning, only specific anatomical structures are relevant. To focus model capacity and computation on these regions, we assume the availability of a region-of-interest (ROI) mask. The mask can be obtained from segmentation methods such as TotalSegmentator and may be binary or soft (float). Gaussian centers are sampled within the ROI, where soft masks are interpreted as sampling probabilities, allowing uncertain but potentially relevant regions to be retained.
 
-In addition, we incorporate simple structural priors derived from the input volume. Local volume gradients and second-order cues (e.g., structure tensor or Hessian-based estimates) are used to estimate preferred orientations, enabling anisotropic Gaussians to align with elongated structures such as vessels. This provides a strong initialization that improves convergence and reduces the need for extensive topology adaptation during training.
+In addition, we incorporate simple structural priors derived from the input volume. Local gradients and second-order cues (e.g., structure tensor or Hessian-based estimates) are used to infer preferred orientations, enabling anisotropic Gaussians to align with elongated structures such as vessels. This improves convergence and reduces the need for extensive topology adaptation during training.
 
-The initial splat scale is sampled per Gaussian from a uniform range defined in voxel units, using the mean voxel spacing as the isotropic reference scale:
-
-\begin{equation}
-s_i=\bar v\left(\sigma_{\min}^{\mathrm{vox}}+u_i\left(\sigma_{\max}^{\mathrm{vox}}-\sigma_{\min}^{\mathrm{vox}}\right)\right).
-\end{equation}
-
-Here, $s_i$ is the initial base scale of Gaussian $i$, $\bar v$ is the mean voxel size, $\sigma_{\min}^{\mathrm{vox}}$ and $\sigma_{\max}^{\mathrm{vox}}$ are the user-defined minimum and maximum initialization scales in voxel units, and $u_i \sim \mathcal{U}(0,1)$ is a random sample that selects a scale uniformly within that interval.
+The initial Gaussian scales are sampled uniformly within a predefined range in voxel units and converted to world space using the mean voxel spacing. This ensures scale consistency across datasets with different resolutions while providing a diverse set of initial splat sizes.
 
 \begin{figure}
 \includegraphics[width=\textwidth]{comparison-early.png}
@@ -317,7 +310,7 @@ We report the MMSE values for our method as defined in Sec.~\ref{sec:evaluation}
 
 \begin{table}
 \centering
-\caption{Best and worst MMSE and ROI-based PSNR for our novel method within the first 1000 iterations. The Gaussian model is rasterized onto the native voxel grid and evaluated against the ground-truth input volume. The metrics are computed only within the ROI mask.}
+\caption{Best and worst MMSE and ROI-based PSNR for our novel method within the first 1000 iterations. The Gaussian model is rasterized onto the native voxel grid and evaluated against the ground-truth input volume.}
 \label{tab:mmse}
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.1}
@@ -378,7 +371,7 @@ Training time depends not only on the number of Gaussians but also on the chosen
 
 \begin{table}
 \centering
-\caption{Training performance of our method per 1000 iterations.}\label{tab:training}
+\caption{Training performance of our method for 1000 iterations.}\label{tab:training}
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.1}
 \begin{tabular}{|l|l|c|l|l|c|c|}
