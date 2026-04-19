@@ -226,7 +226,7 @@ The initial Gaussian scales are sampled uniformly within a predefined range in v
 
 \begin{figure}
 \includegraphics[width=\textwidth]{comparison-early.png}
-\caption{Abdomen dataset with soft (float) liver mask. Left: Volume rendering (reference). Right: Our method (500k splats, iteration 100). Despite early training, the Gaussian representation already closely approximates the reference, due to the smart initialization strategy.} \label{fig:comparison-early}
+\caption{Case1 dataset with soft (float) liver mask. Left: Volume rendering (reference). Right: Our method (500k splats, iteration 100). Despite early training, the Gaussian representation already closely approximates the reference, due to the smart initialization strategy.} \label{fig:comparison-early}
 \end{figure}
 
 \subsection{ROI-Aware Optimization}
@@ -262,7 +262,7 @@ The implementation (including the novel viewer application) is publicly availabl
 \subsection{Experimental Setup}
 We evaluate our method on medical volumetric datasets, focusing on anatomically relevant structures such as vessels and organs. The input data consists of CT images together with corresponding segmentation masks.
 
-We use the ``Case 1'' dataset from the AbdomenCT-1k project \cite{ma2021abdomenct}. The dataset was resampled to an isotropic voxel spacing of 1.5\,mm and size $292 \times 292 \times 180$. Segmentations were obtained using TotalSegmentator v2 and saved as binary masks. In addition, a soft liver segmentation mask was created using an internal segmentation model.
+We use "Case 1" and "Case 4" datasets from the AbdomenCT-1k project \cite{ma2021abdomenct}. The datasets were resampled to an isotropic voxel spacing of 1.5\,mm and size $292 \times 292 \times 180$ and $253 \times 253 \times 314$. Segmentations were obtained using TotalSegmentator v2 and saved as binary masks. In addition, a soft liver segmentation mask was created using an internal segmentation model.
 
 All experiments are conducted on a Windows 11 system with an Intel i7 Ultra 155H, 32GB RAM, and an NVIDIA RTX 4060 Mobile GPU (8GB VRAM).
 
@@ -320,12 +320,12 @@ Dataset & Mask & Splat Count & \multicolumn{2}{c|}{MMSE $\downarrow$} & \multico
 \cline{4-7}
  & & & Worst & Best & Worst & Best \\
 \hline
-Abdomen     & TS (binary)   & 100k   & 0.00336   & 0.00242   & 24.92     & 26.16 \\
-Abdomen     & TS (binary)   & 250k   & 0.00276   & 0.00235   & 25.58     & 26.29 \\
-Abdomen     & TS (binary)   & 500k   & 0.00273   & 0.00213   & 25.65     & 26.71 \\
-Abdomen     & TS (binary)   & 1000k  & 0.00241   & 0.00192   & 26.17     & 27.18 \\
-Abdomen     & Liver (float) & 250k   & 0.00066   & 0.00059   & 31.80     & 32.27 \\
-Abdomen     & Liver (float) & 500k   & 0.00066   & 0.00056   & 31.81     & 32.53 \\
+Case1     & TS (binary)   & 100k   & 0.00336   & 0.00242   & 24.92     & 26.16 \\
+Case1     & TS (binary)   & 250k   & 0.00276   & 0.00235   & 25.58     & 26.29 \\
+Case1     & TS (binary)   & 500k   & 0.00273   & 0.00213   & 25.65     & 26.71 \\
+Case1     & TS (binary)   & 1000k  & 0.00241   & 0.00192   & 26.17     & 27.18 \\
+Case1     & Liver (float) & 250k   & 0.00066   & 0.00059   & 31.80     & 32.27 \\
+Case1     & Liver (float) & 500k   & 0.00066   & 0.00056   & 31.81     & 32.53 \\
 
 \hline
 \end{tabular}
@@ -337,7 +337,7 @@ Abdomen     & Liver (float) & 500k   & 0.00066   & 0.00056   & 31.81     & 32.53
 
 \begin{figure}
 \includegraphics[width=\textwidth]{comparison.png}
-\caption{The abdomen dataset rendered using different modalities. Top left: Volume Rendering (reference), top right: Standard 3DGS (250k Splats), bottom left: our method (250k Splats), bottom right: our method (1M Splats). It is obvious that the standard 3DGS model appears a bit sharper, but less precise with respect to the colors.} \label{fig:comparison}
+\caption{The Case1 dataset rendered using different modalities. Top left: Volume Rendering (reference), top right: Standard 3DGS (250k Splats), bottom left: our method (250k Splats), bottom right: our method (1M Splats). It is obvious that the standard 3DGS model appears a bit sharper, but less precise with respect to the colors.} \label{fig:comparison}
 \end{figure}
 
 We qualitatively compare our method to direct volume rendering (reference) and to standard 3DGS. Figure \ref{fig:comparison} shows representative renderings from approximately matched viewpoints.
@@ -356,11 +356,11 @@ We evaluate rendering performance in terms of frames per second (FPS). Table \re
 \hline
 Method & Dataset & Mask & Splat Count & Framerate [FPS]\\
 \hline
-Volume Rendering    & Abdomen  & TS (binary) & - & 107\\
-3DGS                & Abdomen  & TS (binary) & 250k & 240 (max) \\
-Ours                & Abdomen  & TS (binary) & 250k & 240 (max) \\
-Ours                & Abdomen  & TS (binary) & 500k & 240 (max) \\
-Ours                & Abdomen  & TS (binary) & 1M & 147 \\
+Volume Rendering    & Case1  & TS (binary) & - & 107\\
+3DGS                & Case1  & TS (binary) & 250k & 240 (max) \\
+Ours                & Case1  & TS (binary) & 250k & 240 (max) \\
+Ours                & Case1  & TS (binary) & 500k & 240 (max) \\
+Ours                & Case1  & TS (binary) & 1M & 147 \\
 \hline
 \end{tabular}
 \end{table}
@@ -380,13 +380,13 @@ Dataset & Mask & Subset size & \multicolumn{2}{c|}{Splat count} & Time [min] & P
 \cline{4-5}
  & & & Start & End & & \\
 \hline
-Abdomen & TS (binary)    & 2k  & 100k   & 100k  & 23 & 24.77 \\
-Abdomen & TS (binary)    & 8k  & 200k   & 375k  & 77 & 25.62\\
-Abdomen & TS (binary)    & 8k  & 250k   & 250k  & 74 & 25.61\\
-Abdomen & TS (binary)    & 8k  & 500k   & 518k  & 77 & 25.65\\
-Abdomen & TS (binary)    & 8k  & 1000k  & 1036k & 76 & 26.17\\
-Abdomen & Liver (float)  & 8k  & 250k   & 250k  & 85 & 31.86\\
-Abdomen & Liver (float)  & 8k  & 500k   & 500k  & 95 & 31.81\\
+Case1 & TS (binary)    & 2k  & 100k   & 100k  & 23 & 24.77 \\
+Case1 & TS (binary)    & 8k  & 200k   & 375k  & 77 & 25.62\\
+Case1 & TS (binary)    & 8k  & 250k   & 250k  & 74 & 25.61\\
+Case1 & TS (binary)    & 8k  & 500k   & 518k  & 77 & 25.65\\
+Case1 & TS (binary)    & 8k  & 1000k  & 1036k & 76 & 26.17\\
+Case1 & Liver (float)  & 8k  & 250k   & 250k  & 85 & 31.86\\
+Case1 & Liver (float)  & 8k  & 500k   & 500k  & 95 & 31.81\\
 \hline
 \end{tabular}
 \end{table}
