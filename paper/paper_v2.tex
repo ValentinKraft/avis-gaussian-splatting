@@ -310,7 +310,7 @@ Abdomen     & Liver (float) & 500k   & 0,00066   & 0.00056   & 31.81     & 32.53
 \end{tabular}
 \end{table}
 
-The low MMSE values obtained in our experiments indicate that the proposed method reconstructs the target volume with high fidelity inside the ROI. Although this metric provides a precise volume-domain measure, it is complemented by qualitative inspection to assess fine-scale structural accuracy beyond the averaged error. \todo{In discussion!}
+
 
 \subsection{Qualitative Results}
 
@@ -320,8 +320,6 @@ The low MMSE values obtained in our experiments indicate that the proposed metho
 \end{figure}
 
 We qualitatively compare our method to direct volume rendering (reference) and to standard 3DGS. Figure \ref{fig:comparison} shows representative renderings from approximately matched viewpoints.
-
-Our method preserves the overall anatomical structure while significantly reducing representational complexity. In particular, fine structures such as vessels remain visually consistent, whereas 3DGS exhibits artifacts due to its reliance on image-based supervision.\todo{In discussion!}
 
 \subsection{Efficiency Analysis}
 
@@ -348,7 +346,6 @@ Ours                & Abdomen  & TS (binary) & 1M & 147 \\
 
 \paragraph{Training performance:}
 We also present the timings for model training using our method in table \ref{tab:training}. Since our method significantly differs from standard Gaussian Splatting (see section \ref{sec:evaluation}), we do not compare against it in terms of training times.
-
 Training time depends not only on the number of Gaussians but also on the chosen subset size, voxel resolution, and ROI extent. The reported values should therefore be interpreted as indicative rather than directly comparable across methods.
 
 \begin{table}
@@ -362,7 +359,7 @@ Dataset & Mask & Iterations & Subset size & \multicolumn{2}{c|}{Splat count} & T
 \cline{5-6}
  & & & & Start & End & \\
 \hline
-Abdomen & TS (binary)   & 1k & 10k & 10k    & 10k   & 91 \\
+Abdomen & TS (binary)   & 1k & 2k & 10k    & 10k   & 35 ? \\
 Abdomen & TS (binary)   & 1k & 8k  & 200k   & 375k  & 77 \\
 Abdomen & TS (binary)   & 1k & 8k  & 250k   & 250k  & 74 \\
 Abdomen & TS (binary)   & 1k & 8k  & 500k   & 518k  & 77 \\
@@ -385,7 +382,7 @@ Abdomen & Liver (float) & 1k & 8k  & 500k   & 500k  & 95 \\
 % Results show that mask supervision improves reconstruction accuracy within the region of interest and leads to better preservation of anatomical structures.
 
 
-\section{Discussion}\todo{discuss PSNR and other results!}
+\section{Discussion}
 
 Our results demonstrate the advantages of reformulating Gaussian Splatting as a direct volumetric optimization problem. By operating directly in voxel space and supervising against a target volume and region-of-interest mask, the method avoids the need for multi-view image rendering, structure-from-motion preprocessing, or camera-based supervision. This provides a more direct optimization pathway that is inherently aligned with the data domain and is particularly well suited for medical imaging applications, where volumetric ground truth is naturally available.
 
@@ -398,6 +395,13 @@ Furthermore, initialization can exploit domain knowledge by seeding Gaussians fr
 At the same time, the method introduces new challenges. While dense ray-marched rendering preserves all details of the original data, the Gaussian representation is an approximation and may smooth fine structures or subtle intensity variations. In addition, volumetric rasterization and optimization can be memory- and compute-intensive, especially at large Gaussian counts. Training quality is sensitive to initialization quality, mask accuracy, and hyperparameter selection. Furthermore, the current implementation is not yet fully optimized, and the learned representations may still exhibit relatively uniform, point-cloud-like distributions in certain cases, indicating room for improved adaptive parameterization and densification strategies.
 
 Overall, volumetric Gaussian Splatting occupies a middle ground between dense volume rendering and view-based Gaussian Splatting. It leverages direct voxel-space supervision to improve efficiency and robustness, while reducing reliance on indirect estimation pipelines that can introduce accumulated errors. At the same time, it enables interactive, transfer-function-driven exploration of volumetric data without retraining, making it particularly suitable for medical visualization scenarios where efficiency, controllability, and flexibility are critical.
+
+
+This is supported by the results data:
+- Quantitative evaluation: The low MMSE values obtained in our experiments indicate that the proposed method reconstructs the target volume with high fidelity inside the ROI. Inparticular, already very early iterations have very good PSNR values, thus we dont need long training.
+- Qualitative evaluation: our method also visually reconstructs the dataset well and it is visually very close to a volume rendering. However, depending on the splat count and maybe also in general it is a bit blurry and details could get lost. The Standard 3DGS looks a bit sharper, but is less precise with respect to the colors (especially semi-transparent areas are complicated). 
+- Render times: Our method is just as efficient as standard 3DGS and yields a volume rendering like appearance with significantly improved render performance.
+- Training times: Hard to compare to standard 3DGS. Also, seems to be very dependent on subset size. However, since splats are created already very smart based on the input data, already early iterations yield very good results (see PSNRs and Figure 4), thus we usually dont need long training. And therefore a good representation can already be computed after 10-30 minutes (with the test dataset and our machine).
 
 
 \section{Conclusion}
