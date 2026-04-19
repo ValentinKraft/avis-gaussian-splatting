@@ -157,43 +157,65 @@ Similar to the original 3DGS approach, we parameterize each Gaussian $i$ by its 
 
 This allows transfer functions to be applied or modified after training (see Fig \ref{fig:app}), similar to classical volume rendering, without requiring re-optimization. In contrast to the original method, however, we use a spherical harmonic degree of 0 or 1 to avoid view-dependent colors, which would not fit to the expected precision in medical applications.
 
-In order to still be somewhat compatible with other gaussian splatting tools and workflows, the exported PLY files contain a grayscale sh color value that gets computed by converting the intensity values to a SH color using a standard black-and-white transfer function.
-
+In order to still be somewhat compatible with other gaussian splatting tools and workflows, the exported PLY files contain a grayscale SH color value that gets computed by converting the intensity values to a SH color using a standard black-and-white transfer function.
 
 \subsection{Differentiable Splat-to-Volume Formulation}
-To compare the Gaussian representation to the target data, we rasterize the current Gaussian set into a dense voxel grid defined over the volume or ROI bounds. For a voxel center $\mathbf{x}$, Gaussian $i$ contributes an opacity-weighted anisotropic kernel in its local frame,
+
+To enable direct supervision in voxel space, we rasterize the Gaussian representation into a dense voxel grid that is aligned with the target volume. This allows a direct comparison between the reconstructed volume $\hat{V}$ and the ground-truth volume $V$.
+
+Each Gaussian $i$, defined by its center $\mu_i$, covariance $\Sigma_i$, opacity $\alpha_i$, and intensity $c_i$, contributes locally to nearby voxels via a spatial weighting function. Specifically, the contribution of Gaussian $i$ to a voxel at position $\mathbf{x}$ is given by
 
 \begin{equation}
-w_i(\mathbf{x}) = \alpha_i \exp\left(-\tfrac{1}{2}\left\|S_i^{-1} R_i^\top (\mathbf{x}-\mu_i)\right\|_2^2\right),
+w_i(\mathbf{x}) = \alpha_i \, \mathcal{N}(\mathbf{x} \mid \mu_i, \Sigma_i),
 \end{equation}
 
-where $\mu_i$ is the Gaussian center, $R_i$ the rotation, $S_i$ the diagonal scale matrix, and $\alpha_i$ the opacity. For intensity supervision, the voxel value is obtained as a normalized weighted average of the per-Gaussian intensities $c_i$,
+where $\mathcal{N}(\mathbf{x} \mid \mu_i, \Sigma_i)$ denotes the anisotropic Gaussian kernel evaluated at $\mathbf{x}$. Intuitively, $w_i(\mathbf{x})$ measures how strongly Gaussian $i$ influences voxel $\mathbf{x}$, modulated by its opacity.
+
+To reconstruct the voxel intensity, we aggregate contributions from all Gaussians using a normalized weighted average:
 
 \begin{equation}
-\hat{V}(\mathbf{x}) = \frac{\sum_i w_i(\mathbf{x}) c_i}{\sum_i w_i(\mathbf{x}) + \varepsilon},
-\qquad
-\hat{D}(\mathbf{x}) = 1 - \exp\left(-\gamma \sum_i w_i(\mathbf{x})\right)
+\hat{V}(\mathbf{x}) = 
+\frac{\sum_i w_i(\mathbf{x}) \, c_i}{\sum_i w_i(\mathbf{x}) + \varepsilon},
 \end{equation}
 
-for intensity and density rendering, respectively. In practice, a dense all-to-all evaluation would be too expensive, so our implementation uses several bounded approximations: Gaussians are processed in batches, each splat is evaluated only inside a finite local support derived from a kernel cutoff, the support radius is capped in voxel units, very small splats are clamped to a minimum voxel-space standard deviation, and for large point sets accumulation can be performed on a downscaled working grid that is trilinearly upsampled to the target resolution. This sparse local accumulation keeps the rasterization differentiable with respect to positions, scales, rotations, opacities, and intensities while making training feasible for larger volumes.
+where $c_i$ is the intensity associated with Gaussian $i$, and $\varepsilon$ is a small constant to ensure numerical stability. This formulation can be interpreted as a smooth interpolation of Gaussian intensities in voxel space.
+
+% In addition to intensity reconstruction, we optionally define a density-like quantity
+
+% \begin{equation}
+% \hat{D}(\mathbf{x}) = 1 - \exp\left(-\gamma \sum_i w_i(\mathbf{x})\right),
+% \end{equation}
+
+% where $\gamma$ is a scaling factor. This formulation is analogous to alpha compositing and allows the model to approximate occupancy or mask-like signals.
+
+A naive evaluation of all Gaussians for every voxel would be computationally prohibitive. Therefore, we restrict computation to local neighborhoods by evaluating each Gaussian only within a finite spatial support derived from its covariance. In practice, this includes:
+
+\begin{itemize}
+\item limiting evaluation to a bounded voxel neighborhood per Gaussian,
+\item clamping minimum and maximum Gaussian scales in voxel space,
+\item processing Gaussians in batches, and
+\item optionally performing accumulation on a downscaled grid followed by trilinear upsampling.
+\end{itemize}
+
+These approximations preserve differentiability with respect to all Gaussian parameters while making training feasible for large volumetric datasets.
+
+%In practice, a full evaluation over all Gaussians and voxels is computationally infeasible. We therefore employ a sparse, local accumulation scheme with bounded Gaussian support and batched processing.
 
 \begin{quote}
 \noindent\textbf{High-level pseudo code:}
 \begin{tabbing}
 \hspace{1.2em}\=\hspace{1.2em}\=\kill
 initialize numerator grid $A \leftarrow 0$ and weight grid $W \leftarrow 0$ \\
-optionally choose a downscaled working grid \\
 \textbf{for} each Gaussian batch $\mathcal{B}$ \textbf{do} \\
-\> map Gaussian centers to working-grid coordinates \\
-\> determine a finite voxel neighborhood for each Gaussian \\
-\> evaluate anisotropic kernel weights inside that neighborhood \\
-\> accumulate $A \mathrel{+}= w_i c_i$ and $W \mathrel{+}= w_i$ \\
+\> determine local voxel support for each Gaussian \\
+\> evaluate weights $w_i(\mathbf{x})$ within the support \\
+\> accumulate $A \mathrel{+}= w_i(\mathbf{x}) \, c_i$ and $W \mathrel{+}= w_i(\mathbf{x})$ \\
 \textbf{end for} \\
-\textbf{if} intensity rendering \textbf{then} output $\hat{V} = A / (W + \varepsilon)$ \\
-\textbf{else} output $\hat{D} = 1 - \exp(-\gamma W)$ \\
-\textbf{if} a working grid was used \textbf{then} trilinearly upsample to full resolution
+compute $\hat{V} = A / (W + \varepsilon)$ \\
+optionally upsample to full resolution
 \end{tabbing}
 \end{quote}
+
 
 \subsection{Smart Initialization}
 
