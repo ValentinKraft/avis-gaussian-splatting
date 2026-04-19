@@ -226,7 +226,7 @@ The initial Gaussian scales are sampled uniformly within a predefined range in v
 
 \begin{figure}
 \includegraphics[width=\textwidth]{comparison-early.png}
-\caption{The abdomen dataset with the soft liver mask. Left: Volume Rendering (reference), right: Our method (500k Splats, iteration 100). Even almost directly after initialization, the resulting gaussian model is very close to the reference, due to the smart initialization.} \label{fig:comparison}
+\caption{Abdomen dataset with soft (float) liver mask. Left: Volume rendering (reference). Right: Our method (500k splats, iteration 100). Despite early training, the Gaussian representation already closely approximates the reference, due to the smart initialization strategy.} \label{fig:comparison-early}
 \end{figure}
 
 \subsection{ROI-Aware Optimization}
@@ -438,9 +438,7 @@ Overall, our volume-centric formulation bridges the gap between Gaussian Splatti
 Future work could focus on improving reconstruction accuracy, further optimizing training performance, and extending the representation with additional physically-based properties such as lighting or ambient occlusion to enable more advanced rendering effects.
 
 \begin{credits}
-\subsubsection{\ackname} A bold run-in heading in small font size at the end of the paper is
-used for general acknowledgments, for example: This study was funded
-by X (grant number Y).
+\subsubsection{\ackname} This study was funded by the Federal Ministry of Research, Technology and Space (BMFTR) within the AHrEZ project (grant number 16SV9075).
 
 % \subsubsection{\discintname}
 % It is now necessary to declare any competing interests or to specifically
