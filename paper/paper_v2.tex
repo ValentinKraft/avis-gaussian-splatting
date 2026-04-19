@@ -286,19 +286,25 @@ In addition to the volume-domain evaluation, we perform a qualitative comparison
 
 
 \subsection{Quantitative Results}
-We report the MMSE values for our method as defined in Sec.~\ref{sec:evaluation} in Table \ref{tab:mmse}. Please note that MMSE values for standard 3DGS cannot be computed in a meaningful way without an additional registration step or similar calibration steps, as the resulting models produced by its image-space optimization are usually not aligned with the original voxel grid / coordinate system.
+We report the MMSE values for our method as defined in Sec.~\ref{sec:evaluation} in Table \ref{tab:mmse}. Please note that MMSE values for standard 3DGS cannot be computed in a meaningful way without an additional registration or calibration step, as the resulting models produced by its image-space optimization are usually not aligned with the original voxel grid / coordinate system.
 
 \begin{table}
 \centering
-\caption{MMSE and ROI-based PSNR for our volume-supervised method for iteration 1000, evaluated against the ground-truth input volume. The Gaussian model is rasterized onto the native evaluation grid, and the metrics are computed only within the ROI mask.}
+\caption{Best and worst MMSE and ROI-based PSNR for our novel method within the first 1000 iterations. The Gaussian model is rasterized onto the native voxel grid and evaluated against the ground-truth input volume. The metrics are computed only within the ROI mask.}
 \label{tab:mmse}
-\begin{tabular}{|l|c|c|}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{|c|c|c|c|c|c|c|}
 \hline
-Splat Count & MMSE & PSNR [dB] \\
+Dataset & Mask & Splat Count & \multicolumn{2}{c|}{MMSE $\downarrow$} & \multicolumn{2}{c|}{PSNR $\uparrow$ [dB]} \\
+\cline{4-7}
+ & & & Worst & Best & Worst & Best \\
 \hline
-200k & 0.002680 & 25.72 \\
-500k & 0.002458 & 26.09 \\
-1M &   0.002126 & 26.72 \\
+Abdomen     & TS (binary)   & 250k   & - & - & - & - \\
+Abdomen     & TS (binary)   & 500k   & 0.00273   & 0.00213   & 25.65     & 26.71 \\
+Abdomen     & TS (binary)   & 1000k  & 0,00241   & 0.00192   & 26.17     & 27.18 \\
+Abdomen     & Liver (float) & 250k   & 0,00066   & 0.00059   & 31.80     & 32.27 \\
+Abdomen     & Liver (float) & 500k   & 0,00066   & 0.00056   & 31.81     & 32.53 \\
 
 \hline
 \end{tabular}
@@ -324,16 +330,18 @@ We evaluate rendering performance in terms of frames per second (FPS). Table \re
 
 \begin{table}
 \centering
-\caption{Rendering performance of the different methods. Note that the rendering FPS is bounded by the SIBR viewer implementation and hardware constraints (240Hz display) and therefore does not fully reflect the theoretical performance differences between methods.}\label{tab:fps}
-\begin{tabular}{|l|c|c|}
+\caption{Rendering performance of the different methods at $1024 \times 1024$ image resolution. Note that the rendering FPS is bounded by the SIBR viewer implementation and hardware constraints (240Hz display) and therefore does not fully reflect the theoretical performance differences between methods.}\label{tab:fps}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{|l|c|c|c|l|}
 \hline
-Method & Nr. of primitives & Dataset 1 (Abdomen)\\
+Method & Dataset & Mask & Splat Count & Framerate [FPS]\\
 \hline
-Volume Rendering & 15.347.520 & 107 FPS\\
-3DGS & 200k & 240 (max) FPS \\
-Ours & 200k & 240 (max) FPS \\
-Ours & 500k & 240 (max) FPS \\
-Ours & 1M & 147 FPS \\
+Volume Rendering    & Abdomen  & TS (binary) & - & 107\\
+3DGS                & Abdomen  & TS (binary) & 200k & 240 (max) \\
+Ours                & Abdomen  & TS (binary) & 200k & 240 (max) \\
+Ours                & Abdomen  & TS (binary) & 500k & 240 (max) \\
+Ours                & Abdomen  & TS (binary) & 1M & 147 \\
 \hline
 \end{tabular}
 \end{table}
@@ -346,13 +354,21 @@ Training time depends not only on the number of Gaussians but also on the chosen
 \begin{table}
 \centering
 \caption{Training performance.}\label{tab:training}
-\begin{tabular}{|l|c|}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{|l|l|c|c|l|l|c|}
 \hline
-Nr of splats & Training time [min]\\
+Dataset & Mask & Iterations & Subset size & \multicolumn{2}{c|}{Splat count} & Time [min]\\
+\cline{5-6}
+ & & & & Start & End & \\
 \hline
-200k & 30 \\
-500k & X \\
-1M & Y \\
+Abdomen & TS (binary)   & 1k & 10k & 10k    & 10k   & 91 \\
+Abdomen & TS (binary)   & 1k & 8k  & 200k   & 375k  & 77 \\
+Abdomen & TS (binary)   & 1k & 8k  & 250k   & 250k  & 74 \\
+Abdomen & TS (binary)   & 1k & 8k  & 500k   & 518k  & 77 \\
+Abdomen & TS (binary)   & 1k & 8k  & 1000k  & 1036k & 76 \\
+Abdomen & Liver (float) & 1k & 8k  & 250k   & 250k  & 85 \\
+Abdomen & Liver (float) & 1k & 8k  & 500k   & 500k  & 95 \\
 \hline
 \end{tabular}
 \end{table}
