@@ -37,7 +37,7 @@ Gabriel Zachmann\inst{2}\orcidID{0000-0001-8155-1127}}
 % First names are abbreviated in the running head.
 % If there are more than two authors, 'et al.' is used.
 %
-\institute{Fraunhofer MEVIS, 28359 Bremen, Germany \and
+\institute{Fraunhofer Institute for Digital Medicine MEVIS, 28359 Bremen, Germany \and
 Computer Graphics and Virtual Reality Department, University of Bremen, 28359 Bremen, Germany\\}
 %
 \maketitle              % typeset the header of the contribution
@@ -77,7 +77,7 @@ Volume rendering is the de facto standard for visualizing medical data, as it pr
 
 At the same time, 3D Gaussian Splatting \cite{kerbl2023gaussiansplatting} has recently emerged as a highly efficient rendering paradigm, enabling real-time visualization of complex scenes with impressive performance characteristics. However, existing formulations are fundamentally designed for image-based reconstruction, where a scene is learned from multi-view RGB observations under known or estimated camera parameters. This paradigm introduces a complex processing pipeline—including camera pose estimation, feature extraction, and multi-view consistency constraints—and defines supervision in the image domain.
 
-While this formulation is well suited for natural image data, it is not well aligned with volumetric domains such as medical imaging. In these settings, ground-truth data is directly available in voxel space, providing a consistent spatial reference frame and physically meaningful intensity values (e.g., Hounsfield units). Optimizing a representation through rendered images therefore introduces an unnecessary level of indirection and reliance on camera-based supervision introduces additional sources of error and complexity that are unneccesary in the volumetric setting.
+While this formulation is well suited for natural image data, it is not well aligned with volumetric domains such as medical imaging. In these settings, ground-truth data is directly available in voxel space, providing a consistent spatial reference frame and physically meaningful intensity values (e.g., Hounsfield units representing tissue density). Optimizing a representation through rendered images therefore introduces an unnecessary level of indirection and reliance on camera-based supervision introduces additional sources of error and complexity that are unneccesary in the volumetric setting.
 
 These limitations motivate a reformulation of Gaussian Splatting that operates directly in the native domain of the data. In this work, we revisit 3D Gaussian Splatting from a volume-centric perspective and cast it as a direct volumetric optimization problem. Instead of relying on image-based supervision, we optimize a set of anisotropic Gaussians against a target volume (sometimes referred to as ‘training’ for simplicity), guided by region-of-interest constraints. This eliminates the need for intermediate rendering during training and removes dependencies on camera models, feature extraction, and pose estimation.
 
@@ -108,9 +108,9 @@ We demonstrate that the proposed representation provides a compact and efficient
 \paragraph{Gaussian Splatting and Neural Rendering:}
 Recent advances in neural rendering have introduced highly efficient scene representations, among which 3D Gaussian Splatting \cite{kerbl2023gaussiansplatting} has emerged as a particularly impactful approach, sparking a lot of follow-up research. The foundational work represents scenes as sets of anisotropic Gaussians optimized from multi-view image supervision, enabling extremely efficient real-time rendering with high visual fidelity.
 
-Subsequent work has explored multiple extensions of this paradigm. Siemens Healthineers proposed "Cinematic Gaussians" \cite{cinematicgaussians2024}, which demonstrates that Gaussian Splatting can achieve near photorealistic visualization of anatomical structures using advanced rendering techniques such as path tracing. Similarly, Zhang et al. \cite{relightablegaussian2024} introduces relightable representations that further reduce the need for traditional volume rendering.
+Subsequent work has explored multiple extensions of this paradigm. Niedermayr et al. proposed "Cinematic Gaussians" \cite{cinematicgaussians2024}, which demonstrates that Gaussian Splatting can achieve near photorealistic visualization of anatomical structures using advanced rendering techniques such as path tracing. Similarly, Zhang et al. \cite{relightablegaussian2024} introduces relightable representations that further reduce the need for traditional volume rendering.
 
-Recent work also investigates more advanced formulations of Gaussian-based rendering. Gao et al. \cite{ddgsct2024,sixdgs2024} extend Gaussian Splatting toward volumetric rendering scenarios by incorporating direction-dependent effects and improving fine-detail reconstruction. Also interaction techniques which are known from volume rendering, such as clipping \cite{raraclipper2025} or transfer-function-like behaviour \cite{ivrgs2025} are beginning to get transferred to Gaussian Splatting.
+Recent work also investigates more advanced formulations of Gaussian-based rendering. Gao et al. \cite{ddgsct2024,sixdgs2024} extended Gaussian Splatting toward volumetric rendering scenarios by incorporating direction-dependent effects and improving fine-detail reconstruction. Also interaction techniques which are known from volume rendering, such as clipping \cite{raraclipper2025} or transfer-function-like behaviour \cite{ivrgs2025} are beginning to get transferred to Gaussian Splatting.
 
 Despite these advances, all existing approaches remain fundamentally tied to image-based supervision and view-dependent rendering. Even methods targeting volumetric effects still rely on rendering-based optimization rather than directly leveraging volumetric ground-truth data.
 
@@ -356,7 +356,7 @@ Case 4     & TS-Bones (binary) & 500k   & 0.007106   & 0.003935   & 21.48     & 
 
 \begin{figure}
 \includegraphics[width=\textwidth]{comparison.png}
-\caption{The Case1 dataset with TotalSegmentator binary masks rendered using different modalities. Top left: Volume Rendering (reference), top right: Standard 3DGS (250k Splats), bottom left: our method (250k Splats), bottom right: our method (1M Splats). It is obvious that the standard 3DGS model appears a bit sharper, but less precise with respect to the colors.} \label{fig:comparison}
+\caption{The Case1 dataset with TotalSegmentator binary masks rendered using different modalities. Top left: Volume Rendering (reference), top right: Standard 3DGS (250k Splats), bottom left: our method (250k Splats), bottom right: our method (1 Million Splats). It is obvious that the standard 3DGS model appears a bit sharper, but less precise with respect to the colors.} \label{fig:comparison}
 \end{figure}
 
 We qualitatively compare our method to direct volume rendering (reference) and to standard 3DGS. Figure \ref{fig:comparison} shows representative renderings from approximately matched viewpoints.
@@ -378,11 +378,12 @@ Method & Dataset & Mask & Splat Count & Framerate [FPS]\\
 Volume Rendering    & Case 1  & TS (binary) & - & 107\\
 3DGS                & Case 1  & TS (binary) & 250k & 240 (max) \\
 Ours                & Case 1  & TS (binary) & 250k & 240 (max) \\
-Ours                & Case 1  & TS (binary) & 500k & 240 (max) \\
-Ours                & Case 1  & TS (binary) & 1M & 147 \\
-Volume Rendering    & Case 4  & TS-bones (binary) & - & ??\\
+Ours                & Case 1  & TS (binary) & 500k & 236 \\
+Ours                & Case 1  & TS (binary) & 1000k & 147 \\
+Volume Rendering    & Case 4  & TS-bones (binary) & - & 125\\
 3DGS                & Case 4  & TS-bones (binary) & 250k & 240 (max) \\
-Ours                & Case 4  & TS-bones (binary) & 1M & ??? \\
+Ours                & Case 4  & TS-bones (binary) & 500k & 238 \\
+Ours                & Case 4  & TS-bones (binary) & 1000k & 152 \\
 
 
 \hline
@@ -411,7 +412,7 @@ Case 1 & TS (binary)    & 8k  & 500k   & 518k  & 77 & 25.65\\
 Case 1 & TS (binary)    & 8k  & 1000k  & 1036k & 76 & 26.17\\
 Case 1 & Liver (float)  & 8k  & 250k   & 250k  & 85 & 31.86\\
 Case 1 & Liver (float)  & 8k  & 500k   & 500k  & 95 & 31.81\\
-Case 4 & TS-bones (binary)  & 4k  & 500k   & 500k  & ??? & 21.48\\
+Case 4 & TS-bones (binary)  & 4k  & 500k   & 500k  & 51 & 21.48\\
 \hline
 \end{tabular}
 \end{table}
