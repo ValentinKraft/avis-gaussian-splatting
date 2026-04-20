@@ -226,7 +226,7 @@ The initial Gaussian scales are sampled uniformly within a predefined range in v
 
 \begin{figure}
 \includegraphics[width=\textwidth]{comparison-early.png}
-\caption{Case1 dataset with soft (float) liver mask. Left: Volume rendering (reference). Right: Our method (500k splats, iteration 100). Despite early training, the Gaussian representation already closely approximates the reference, due to the smart initialization strategy.} \label{fig:comparison-early}
+\caption{Case 4 dataset with the TotalSegmentator bones mask. Left: Volume rendering (reference). Right: Our method (500k splats, iteration 100). Despite early training, the Gaussian representation already closely approximates the reference, due to the smart initialization strategy.} \label{fig:comparison-early}
 \end{figure}
 
 \subsection{ROI-Aware Optimization}
@@ -326,6 +326,12 @@ Case1     & TS (binary)   & 500k   & 0.00273   & 0.00213   & 25.65     & 26.71 \
 Case1     & TS (binary)   & 1000k  & 0.00241   & 0.00192   & 26.17     & 27.18 \\
 Case1     & Liver (float) & 250k   & 0.00066   & 0.00059   & 31.80     & 32.27 \\
 Case1     & Liver (float) & 500k   & 0.00066   & 0.00056   & 31.81     & 32.53 \\
+Case4     & TS-Bones (binary) & 100k   & 0.008410   & 0.004617   & 20.75     & 23.36 \\
+Case4     & TS-Bones (binary) & 250k   & 0.007950   & 0.004173   & 21.00     & 23.80 \\
+Case4     & TS-Bones (binary) & 500k   & 0.007106   & 0.003935   & 21.48     & 24.05 \\
+
+
+
 
 \hline
 \end{tabular}
@@ -337,7 +343,7 @@ Case1     & Liver (float) & 500k   & 0.00066   & 0.00056   & 31.81     & 32.53 \
 
 \begin{figure}
 \includegraphics[width=\textwidth]{comparison.png}
-\caption{The Case1 dataset rendered using different modalities. Top left: Volume Rendering (reference), top right: Standard 3DGS (250k Splats), bottom left: our method (250k Splats), bottom right: our method (1M Splats). It is obvious that the standard 3DGS model appears a bit sharper, but less precise with respect to the colors.} \label{fig:comparison}
+\caption{The Case1 dataset with TotalSegmentator binary masks rendered using different modalities. Top left: Volume Rendering (reference), top right: Standard 3DGS (250k Splats), bottom left: our method (250k Splats), bottom right: our method (1M Splats). It is obvious that the standard 3DGS model appears a bit sharper, but less precise with respect to the colors.} \label{fig:comparison}
 \end{figure}
 
 We qualitatively compare our method to direct volume rendering (reference) and to standard 3DGS. Figure \ref{fig:comparison} shows representative renderings from approximately matched viewpoints.
@@ -361,6 +367,9 @@ Volume Rendering    & Case1  & TS (binary) & - & 107\\
 Ours                & Case1  & TS (binary) & 250k & 240 (max) \\
 Ours                & Case1  & TS (binary) & 500k & 240 (max) \\
 Ours                & Case1  & TS (binary) & 1M & 147 \\
+Ours                & Case4  & TS-bones (binary) & 500k & 240 (max) \\
+
+
 \hline
 \end{tabular}
 \end{table}
