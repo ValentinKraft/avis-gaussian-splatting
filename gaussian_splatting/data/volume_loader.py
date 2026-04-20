@@ -87,6 +87,16 @@ class VolumeLoader:
             return torch.bfloat16
         return torch.float32
 
+    @staticmethod
+    def _normalize_volume(volume: Tensor) -> Tensor:
+        """Normalize to [0, 1] while preserving constant positive masks."""
+        vol_min = volume.min()
+        vol_max = volume.max()
+        if float((vol_max - vol_min).item()) <= 1e-8:
+            fill_value = 1.0 if float(vol_max.item()) > 0.0 else 0.0
+            return torch.full_like(volume, fill_value)
+        return (volume - vol_min) / (vol_max - vol_min)
+
     def load_nifti(self, path: Union[str, Path]) -> Tensor:
         """Load a NIfTI volume file."""
         if nib is None:
@@ -159,8 +169,8 @@ class VolumeLoader:
         self.last_loaded_raw_min = float(volume.min().item())
         self.last_loaded_raw_max = float(volume.max().item())
 
-        # Normalize
-        volume = (volume - volume.min()) / (volume.max() - volume.min() + 1e-8)
+        # Normalize while keeping constant positive masks as full foreground.
+        volume = self._normalize_volume(volume)
 
         requested_target_shape = self.target_shape
         original_shape_dhw = tuple(int(v) for v in volume.shape)
