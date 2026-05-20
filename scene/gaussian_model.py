@@ -16,14 +16,14 @@ from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotati
 from torch import nn
 import torch.nn.functional as F
 import os
-import json
-from utils.system_utils import mkdir_p
-from plyfile import PlyData, PlyElement
+from plyfile import PlyData
 from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from typing import Optional, Dict, Tuple, List, Union, Any
+
+from . import gaussian_model_ply as ply_io
 
 from gaussian_splatting.utils.orientation_field import (
     gather_rotation_from_gradient,
@@ -37,12 +37,6 @@ try:
     from gaussian_rasterization import SparseGaussianAdam
 except:
     pass
-
-
-# Define constants at the module level for better maintainability
-SH_C0 = 0.28209479177387814  # Value of Y_0^0 (first spherical harmonic)
-SH_SCALE = 1.77  # Approximate 1/(2*SH_C0)
-_DEBUG_PLY_EXPORT = os.environ.get("GS_PLY_DEBUG", "0") == "1"
 
 
 def _blend_quaternions(
@@ -2025,34 +2019,8 @@ class GaussianModel:
     def _extract_ply_attributes(
         self, plydata: PlyData, prefix: str, use_train_test_exp: bool
     ) -> np.ndarray:
-        """
-        Extract attributes with a common prefix from PLY data.
-
-        Args:
-            plydata: Loaded PLY data
-            prefix: Attribute prefix to search for
-            use_train_test_exp: Whether to limit to expected dataset size
-
-        Returns:
-            Array of extracted attributes
-        """
-        attributes = []
-        i = 0
-        while True:
-            key = f"{prefix}{i}"
-            if key in plydata.elements[0].data.dtype.names:
-                attributes.append(np.asarray(plydata.elements[0][key]))
-                i += 1
-            else:
-                break
-
-        if len(attributes) > 0:
-            attributes = np.stack(attributes, axis=1)
-            if use_train_test_exp:
-                # The expected rows is 29060
-                attributes = attributes[:29060, :]
-
-        return attributes if len(attributes) > 0 else np.array([])
+        """Extract sequential scalar PLY attributes with a common prefix."""
+        return ply_io.extract_ply_attributes(plydata, prefix, use_train_test_exp)
 
     def _extract_optional_ply_scalar_attribute(
         self,
@@ -2061,14 +2029,11 @@ class GaussianModel:
         use_train_test_exp: bool,
     ) -> np.ndarray:
         """Extract one optional scalar PLY attribute as a ``[N, 1]`` array."""
-        names = plydata.elements[0].data.dtype.names or ()
-        if name not in names:
-            return np.array([], dtype=np.float32)
-
-        values = np.asarray(plydata.elements[0][name], dtype=np.float32).reshape(-1, 1)
-        if use_train_test_exp:
-            values = values[:29060, :]
-        return values
+        return ply_io.extract_optional_ply_scalar_attribute(
+            plydata,
+            name,
+            use_train_test_exp,
+        )
 
     # ===== Export functions =====
 
@@ -2078,327 +2043,45 @@ class GaussianModel:
         volume_min: Optional[float] = None,
         volume_max: Optional[float] = None,
     ) -> torch.Tensor:
-        """
-        Maps intensity values to spherical harmonic coefficients range for proper visualization.
-
-        Args:
-            intensity_values: Raw intensity values from volume
-            volume_min: Global minimum value for normalization
-            volume_max: Global maximum value for normalization
-
-        Returns:
-            Intensity values mapped to proper SH coefficient range
-        """
-        # Make a copy to avoid modifying the input
-        intensity_tensor = intensity_values.clone()
-
-        # Use provided min/max or compute from the tensor
-        if volume_min is None:
-            volume_min = intensity_tensor.min()
-        if volume_max is None:
-            volume_max = intensity_tensor.max()
-
-        # Normalize to [0,1] range if possible
-        if volume_max > volume_min:
-            intensity_tensor = (intensity_tensor - volume_min) / (
-                volume_max - volume_min
-            )
-            intensity_tensor = intensity_tensor.clamp_(0.0, 1.0)
-
-            # Map normalized [0,1] intensities to spherical harmonic coefficient range
-            intensity_tensor = intensity_tensor * 2.0 - 1.0  # Map [0,1] to [-1,1]
-            intensity_tensor = (
-                intensity_tensor * SH_SCALE
-            )  # Map [-1,1] to [-SH_SCALE, SH_SCALE]
-
-        return intensity_tensor
+        """Map intensity values to the SH DC coefficient range used for grayscale."""
+        return ply_io.map_intensities_to_sh_coefficients(
+            intensity_values,
+            volume_min,
+            volume_max,
+        )
 
     def learned_intensity_from_features(self) -> Optional[torch.Tensor]:
         """Decode a scalar [0,1] intensity from SH DC features in a train/export-consistent way."""
-        if self._features_dc is None or self._features_dc.numel() == 0:
-            return None
-        if self._features_dc.dim() != 3 or self._features_dc.shape[1] < 1:
-            return None
-
-        dc_rgb = self._features_dc[:, 0, :]
-        if dc_rgb.numel() == 0:
-            return None
-
-        rgb = dc_rgb * float(SH_C0) + 0.5
-        return rgb.mean(dim=1, keepdim=True).clamp(0.0, 1.0)
+        return ply_io.learned_intensity_from_features(self)
 
     def _prepare_colors_for_ply(self, num_points: int) -> np.ndarray:
-        """
-        Prepares color values for PLY file export.
-
-        Args:
-            num_points: Number of points in the model
-
-        Returns:
-            Array of color values in appropriate format for PLY export
-        """
-        has_intensity_buffer = (
-            hasattr(self, "intensities")
-            and self.intensities is not None
-            and self.intensities.numel() > 0
-            and self.intensities.view(-1).shape[0] == num_points
-        )
-        has_feature_colors = (
-            self._features_dc is not None
-            and self._features_dc.numel() > 0
-            and self._features_dc.shape[0] == num_points
-            and torch.sum(torch.abs(self._features_dc)) > 0
-        )
-        intensity_mode = getattr(self, "intensity_mode", "learned")
-
-        if not has_intensity_buffer and intensity_mode in {
-            "sampled",
-            "learned",
-            "sampled_mean_covered",
-        }:
-            print(
-                "Warning: export intensity buffer missing or size-mismatched; "
-                "falling back to feature-based color source."
-            )
-
-        # Learned mode should export the same appearance source used by optimization.
-        if intensity_mode == "learned" and has_feature_colors:
-            if _DEBUG_PLY_EXPORT:
-                print("Using learned feature DC values for PLY export.")
-            features_tensor = self._features_dc.detach()
-            features_tensor = features_tensor.transpose(1, 2)
-            features_tensor = features_tensor.flatten(start_dim=1)
-            return features_tensor.contiguous().cpu().numpy()
-
-        # Sampled modes export the cached scalar intensity buffer.
-        if has_intensity_buffer:
-            return self._create_colors_from_intensities(num_points)
-
-        if intensity_mode in {
-            "sampled",
-            "sampled_mean_covered",
-        }:
-            return self._create_colors_from_intensities(num_points)
-
-        # Check if we have valid feature tensors
-        if has_feature_colors:
-            if _DEBUG_PLY_EXPORT:
-                print("Using provided features for volume rendering.")
-            features_tensor = self._features_dc.detach()
-            # print(
-            #     f"Features DC shape before transpose: {features_tensor.shape}, "
-            #     f"range: [{features_tensor.min().item():.4f}, {features_tensor.max().item():.4f}]"
-            # )
-            features_tensor = features_tensor.transpose(
-                1, 2
-            )  # Change from [N, 1, 3] to [N, 3, 1]
-            # print(f"Features DC shape after transpose: {features_tensor.shape}")
-            features_tensor = features_tensor.flatten(start_dim=1)  # Change to [N, 3]
-            # print(f"Features DC shape after flatten: {features_tensor.shape}")
-            f_dc = features_tensor.contiguous().cpu().numpy()
-
-            # Check for zero values in f_dc, which indicates an issue
-            if np.allclose(f_dc, 0.0):
-                if _DEBUG_PLY_EXPORT:
-                    print(
-                        "Warning: f_dc values are all zeros! Using intensity values instead."
-                    )
-                f_dc = self._create_colors_from_intensities(num_points)
-        else:
-            # Create colors from intensity values
-            f_dc = self._create_colors_from_intensities(num_points)
-
-        # print(
-        #     f"Final f_dc shape: {f_dc.shape}, range: [{f_dc.min():.4f}, {f_dc.max():.4f}]"
-        # )
-        if _DEBUG_PLY_EXPORT:
-            print(f"RGB value examples (from features): {f_dc[:5]}")
-
-        return f_dc
+        """Prepare SH DC color values for PLY export."""
+        return ply_io.prepare_colors_for_ply(self, num_points)
 
     def _create_colors_from_intensities(self, num_points: int) -> np.ndarray:
-        """
-        Creates color values from intensity values for PLY export.
+        """Create SH DC color values from cached intensity values."""
+        return ply_io.create_colors_from_intensities(self, num_points)
 
-        Args:
-            num_points: Number of points in the model
-
-        Returns:
-            Array of color values derived from intensities
-        """
-        if hasattr(self, "intensities") and self.intensities.numel() > 0:
-            if _DEBUG_PLY_EXPORT:
-                print("Creating colors from intensities.")
-            raw_tensor = self.intensities.detach().cpu()
-            intensity_values = raw_tensor.view(-1).numpy()
-            if _DEBUG_PLY_EXPORT:
-                print(
-                    f"Raw intensity shape: {tuple(raw_tensor.shape)}, "
-                    f"range: [{intensity_values.min():.4f}, {intensity_values.max():.4f}]"
-                )
-
-            # Intensities produced by volume sampling are typically already normalized to [0,1].
-            # Avoid re-normalizing against CT HU min/max (which collapses contrast).
-            already_normalized = (
-                intensity_values.size > 0
-                and float(intensity_values.min()) >= -0.05
-                and float(intensity_values.max()) <= 1.05
-            )
-
-            if already_normalized:
-                normalized = intensity_values.astype(np.float32)
-            elif (
-                hasattr(self, "volume_min")
-                and hasattr(self, "volume_max")
-                and self.volume_max > self.volume_min
-            ):
-                denom = max(self.volume_max - self.volume_min, 1e-8)
-                normalized = ((intensity_values - self.volume_min) / denom).astype(
-                    np.float32
-                )
-                if _DEBUG_PLY_EXPORT:
-                    print(
-                        f"Applying cached global min/max [{self.volume_min:.4f}, {self.volume_max:.4f}]"
-                    )
-            else:
-                local_min = float(intensity_values.min())
-                local_max = float(intensity_values.max())
-                if local_max > local_min:
-                    normalized = ((intensity_values - local_min) / (local_max - local_min)).astype(
-                        np.float32
-                    )
-                else:
-                    normalized = np.full_like(intensity_values, 0.5, dtype=np.float32)
-                if _DEBUG_PLY_EXPORT:
-                    print(
-                        f"Fallback normalization range [{local_min:.4f}, {local_max:.4f}]"
-                    )
-
-            normalized = np.clip(normalized, 0.0, 1.0)
-            divisor = float(getattr(self, "intensity_color_divisor", 1.0))
-            divisor = max(abs(divisor), 1e-8)
-            gray01 = np.clip(normalized / divisor, 0.0, 1.0)
-
-            # Store as SH DC coefficients (see utils/sh_utils.RGB2SH): (rgb - 0.5) / C0
-            # so that SH2RGB (sh * C0 + 0.5) yields the intended grayscale.
-            gray_dc = ((gray01 - 0.5) / float(SH_C0)).astype(np.float32)
-            f_dc = np.repeat(gray_dc[:, None], 3, axis=1)
-        else:
-            # Default to mid-gray if no intensities available
-            if _DEBUG_PLY_EXPORT:
-                print("Could not find intensity values, using default mid-gray.")
-            f_dc = np.zeros((num_points, 3), dtype=np.float32)
-
-        return f_dc
-
-    def _prepare_export_intensity01(self, num_points: int, f_dc: np.ndarray) -> np.ndarray:
+    def _prepare_export_intensity01(
+        self,
+        num_points: int,
+        f_dc: np.ndarray,
+    ) -> np.ndarray:
         """Prepare normalized [0,1] scalar intensity values for PLY export."""
-        if getattr(self, "intensity_mode", "learned") == "learned":
-            learned = self.learned_intensity_from_features()
-            if learned is not None and learned.numel() > 0 and learned.shape[0] == num_points:
-                normalized = learned.detach().view(-1).cpu().numpy().astype(np.float32)
-            elif f_dc.shape[0] == num_points:
-                normalized = np.clip(
-                    (f_dc * float(SH_C0) + 0.5).mean(axis=1),
-                    0.0,
-                    1.0,
-                ).astype(np.float32)
-            else:
-                normalized = np.full((num_points,), 0.5, dtype=np.float32)
-        elif hasattr(self, "intensities") and self.intensities is not None and self.intensities.numel() > 0:
-            raw_tensor = self.intensities.detach().float().view(-1).cpu()
-            intensity_values = raw_tensor.numpy()
+        return ply_io.prepare_export_intensity01(self, num_points, f_dc)
 
-            already_normalized = (
-                intensity_values.size > 0
-                and float(intensity_values.min()) >= -0.05
-                and float(intensity_values.max()) <= 1.05
-            )
-
-            if already_normalized:
-                normalized = intensity_values.astype(np.float32)
-            elif (
-                hasattr(self, "volume_min")
-                and hasattr(self, "volume_max")
-                and self.volume_max > self.volume_min
-            ):
-                denom = max(float(self.volume_max) - float(self.volume_min), 1e-8)
-                normalized = ((intensity_values - float(self.volume_min)) / denom).astype(
-                    np.float32
-                )
-            else:
-                local_min = float(intensity_values.min()) if intensity_values.size > 0 else 0.0
-                local_max = float(intensity_values.max()) if intensity_values.size > 0 else 1.0
-                if local_max > local_min:
-                    normalized = ((intensity_values - local_min) / (local_max - local_min)).astype(
-                        np.float32
-                    )
-                else:
-                    normalized = np.full((num_points,), 0.5, dtype=np.float32)
-
-            normalized = np.clip(normalized, 0.0, 1.0)
-        else:
-            if f_dc.shape[0] == num_points:
-                normalized = np.clip((f_dc * float(SH_C0) + 0.5).mean(axis=1), 0.0, 1.0).astype(np.float32)
-            else:
-                normalized = np.full((num_points,), 0.5, dtype=np.float32)
-
-        if normalized.shape[0] != num_points:
-            if normalized.shape[0] > num_points:
-                normalized = normalized[:num_points]
-            else:
-                pad = np.full((num_points - normalized.shape[0],), 0.5, dtype=np.float32)
-                normalized = np.concatenate([normalized.astype(np.float32), pad], axis=0)
-
-        return normalized.reshape(-1, 1)
-
-    def construct_list_of_attributes(self, *, include_ao: bool = False, include_hu: bool = False) -> List[str]:
-        """
-        Construct list of attribute names for PLY export.
-
-        Returns:
-            List of attribute names
-        """
-        attributes = ["x", "y", "z", "nx", "ny", "nz"]
-
-        # Handle features for volume-only training (might be empty tensors)
-        if self._features_dc is not None and self._features_dc.numel() > 0:
-            for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):
-                attributes.append(f"f_dc_{i}")
-        else:
-            # Add dummy DC features for volume-only model
-            for i in range(3):  # RGB channels
-                attributes.append(f"f_dc_{i}")
-
-        if self._features_rest is not None and self._features_rest.numel() > 0:
-            for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):
-                attributes.append(f"f_rest_{i}")
-
-        attributes.append("intensity_01")
-        if include_hu:
-            attributes.append("hu")
-
-        if include_ao:
-            attributes.append("ao")
-
-        # Add remaining attributes
-        attributes.append("opacity")
-
-        if self._scaling.numel() > 0:
-            for i in range(self._scaling.shape[1]):
-                attributes.append(f"scale_{i}")
-        else:
-            for i in range(3):
-                attributes.append(f"scale_{i}")
-
-        if self._rotation.numel() > 0:
-            for i in range(self._rotation.shape[1]):
-                attributes.append(f"rot_{i}")
-        else:
-            for i in range(4):
-                attributes.append(f"rot_{i}")
-
-        return attributes
+    def construct_list_of_attributes(
+        self,
+        *,
+        include_ao: bool = False,
+        include_hu: bool = False,
+    ) -> List[str]:
+        """Construct list of attribute names for PLY export."""
+        return ply_io.construct_list_of_attributes(
+            self,
+            include_ao=include_ao,
+            include_hu=include_hu,
+        )
 
     def save_ply(
         self,
@@ -2407,137 +2090,8 @@ class GaussianModel:
         ao: Optional[Union[torch.Tensor, np.ndarray]] = None,
         ao_strength: float = 1.0,
     ):
-        """
-        Save the Gaussian model to a PLY file.
-
-        Args:
-            path: Path to save the PLY file
-        """
-        mkdir_p(os.path.dirname(path))
-
-        # Get the number of points
-        if self._xyz.shape[0] == 3:  # Shape is [3, N]
-            num_points = self._xyz.shape[1]
-            xyz = self._xyz.detach().cpu().numpy().T  # Convert to [N, 3]
-        else:  # Shape is already [N, 3]
-            num_points = self._xyz.shape[0]
-            xyz = self._xyz.detach().cpu().numpy()
-
-        # Create normals
-        normals = np.zeros_like(xyz)
-
-        # Prepare color values using our helper method
-        if _DEBUG_PLY_EXPORT:
-            print(
-                f"Feature tensors: _features_dc shape: "
-                f"{self._features_dc.shape if self._features_dc is not None else 'None'}, "
-                f"numel: {self._features_dc.numel() if self._features_dc is not None else 0}"
-            )
-
-        # Use the refactored helper method to get colors
-        f_dc = self._prepare_colors_for_ply(num_points)
-        intensity_01 = self._prepare_export_intensity01(num_points, f_dc)
-
-        hu_values: Optional[np.ndarray] = None
-        raw_min = getattr(self, "raw_volume_min", None)
-        raw_max = getattr(self, "raw_volume_max", None)
-        if raw_min is not None and raw_max is not None and float(raw_max) > float(raw_min):
-            hu_values = (float(raw_min) + intensity_01 * (float(raw_max) - float(raw_min))).astype(np.float32)
-
-        ao_np: Optional[np.ndarray] = None
-        if ao is not None:
-            if isinstance(ao, torch.Tensor):
-                ao_np = ao.detach().float().view(-1, 1).cpu().numpy()
-            else:
-                ao_np = np.asarray(ao, dtype=np.float32).reshape(-1, 1)
-
-            if ao_np.shape[0] != num_points:
-                raise ValueError(
-                    f"AO length mismatch: expected {num_points}, got {ao_np.shape[0]}"
-                )
-
-            strength = float(ao_strength)
-            strength = max(0.0, min(1.0, strength))
-            ao_applied = (1.0 - strength) + strength * np.clip(ao_np, 0.0, 1.0)
-            # NOTE: f_dc stores SH DC coefficients, where RGB is decoded as:
-            #   rgb = f_dc * SH_C0 + 0.5
-            # Multiplying f_dc directly drives colors towards 0.5 (mid-grey).
-            # To darken like ambient occlusion, apply AO in RGB space and then
-            # convert back to SH DC coefficients.
-            rgb = f_dc * float(SH_C0) + 0.5
-            rgb = rgb * ao_applied
-            rgb = np.clip(rgb, 0.0, 1.0)
-            f_dc = (rgb - 0.5) / float(SH_C0)
-
-        # Get rest features if available
-        if self._features_rest is not None and self._features_rest.numel() > 0:
-            f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        else:
-            # Create empty features array for volume-only model
-            f_rest = np.zeros((num_points, 0))
-
-        # Handle other attributes
-        opacity_tensor = self.get_opacity
-        if opacity_tensor.numel() == 0:
-            opacity_tensor = torch.ones((num_points, 1), device=self._xyz.device)
-        opacities = opacity_tensor.detach().cpu().numpy()
-        if opacities.shape[0] != num_points:
-            # Ensure opacity has shape [N, 1]
-            opacities = np.ones((num_points, 1))
-
-        scale = self._scaling.detach().cpu().numpy()
-        if scale.shape[0] != num_points:
-            # Ensure scale has shape [N, 3]
-            scale = np.ones((num_points, 3)) * 0.01
-
-        voxel_size = getattr(self, "voxel_size", None)
-        if voxel_size is not None:
-            voxel_np = np.asarray(
-                torch.as_tensor(voxel_size, dtype=torch.float32).view(-1).cpu().numpy(),
-                dtype=np.float32,
-            )
-            if voxel_np.size == 1:
-                voxel_np = np.repeat(voxel_np, 3)
-            if voxel_np.size >= 3:
-                voxel_xyz = np.clip(voxel_np[:3], 1e-8, None)
-                xyz = (xyz / voxel_xyz.reshape(1, 3)).astype(np.float32)
-                scale = (scale - np.log(voxel_xyz.reshape(1, 3))).astype(np.float32)
-
-        # If physical spacing is available (e.g., NIfTI pixdim), export geometry in
-        # physical units instead of pure voxel index units to preserve aspect ratio.
-        voxel_spacing = getattr(self, "voxel_spacing_xyz", None)
-        if voxel_spacing is not None:
-            spacing_np = np.asarray(
-                torch.as_tensor(voxel_spacing, dtype=torch.float32).view(-1).cpu().numpy(),
-                dtype=np.float32,
-            )
-            if spacing_np.size == 1:
-                spacing_np = np.repeat(spacing_np, 3)
-            if spacing_np.size >= 3:
-                spacing_xyz = np.clip(spacing_np[:3], 1e-8, None)
-                xyz = (xyz * spacing_xyz.reshape(1, 3)).astype(np.float32)
-                scale = (scale + np.log(spacing_xyz.reshape(1, 3))).astype(np.float32)
-
-        rotation = self._rotation.detach().cpu().numpy()
-        if rotation.shape[0] != num_points:
-            # Ensure rotation has shape [N, 4]
-            rotation = np.zeros((num_points, 4))
-            rotation[:, 0] = 1  # Identity rotation
-
-        # Create PLY file
-        self._create_ply_file(
-            path,
-            xyz,
-            normals,
-            f_dc,
-            f_rest,
-            intensity_01,
-            hu_values,
-            opacities,
-            scale,
-            rotation,
-            ao=ao_np,
-        )
+        """Save the Gaussian model to a PLY file."""
+        ply_io.save_ply(self, path, ao=ao, ao_strength=ao_strength)
 
     def _create_ply_file(
         self,
@@ -2553,52 +2107,21 @@ class GaussianModel:
         rotation: np.ndarray,
         ao: Optional[np.ndarray] = None,
     ):
-        """
-        Create a PLY file with the given attributes.
-
-        Args:
-            path: Output file path
-            xyz: Point positions
-            normals: Point normals
-            f_dc: DC feature values
-            f_rest: Rest feature values
-            intensity_01: Normalized per-splat intensity values
-            hu: Optional per-splat HU values
-            opacities: Opacity values
-            scale: Scale values
-            rotation: Rotation quaternions
-        """
-        num_points = xyz.shape[0]
-        attributes_list = self.construct_list_of_attributes(
-            include_ao=ao is not None,
-            include_hu=hu is not None,
+        """Create a PLY file with prepared GaussianModel attributes."""
+        ply_io.create_ply_file(
+            self,
+            path,
+            xyz,
+            normals,
+            f_dc,
+            f_rest,
+            intensity_01,
+            hu,
+            opacities,
+            scale,
+            rotation,
+            ao=ao,
         )
-        dtype_full = [(attribute, 'f4') for attribute in attributes_list]
-
-        # Create combined attributes array
-        elements = np.empty(num_points, dtype=dtype_full)
-
-        # Safely concatenate all attributes
-        all_attributes = []
-        all_attributes.append(xyz)          # [N, 3]
-        all_attributes.append(normals)      # [N, 3]
-        all_attributes.append(f_dc)         # [N, 3]
-        if f_rest.shape[1] > 0:
-            all_attributes.append(f_rest)  # [N, F-3]
-        all_attributes.append(intensity_01) # [N, 1]
-        if hu is not None:
-            all_attributes.append(hu)       # [N, 1]
-        if ao is not None:
-            all_attributes.append(ao)       # [N, 1]
-        all_attributes.append(opacities)    # [N, 1]
-        all_attributes.append(scale)        # [N, 3]
-        all_attributes.append(rotation)     # [N, 4]
-
-        attributes = np.concatenate(all_attributes, axis=1)
-        elements[:] = list(map(tuple, attributes))
-
-        el = PlyElement.describe(elements, 'vertex')
-        PlyData([el]).write(path)
 
     def save_ply_sequence(
         self,
@@ -2610,15 +2133,14 @@ class GaussianModel:
         ao_strength: float = 1.0,
     ) -> str:
         """Write the current Gaussian set to a numbered PLY inside `ply_sequence`."""
-        ply_dir = os.path.join(output_dir, "ply_sequence")
-        mkdir_p(ply_dir)
-
-        path = os.path.join(ply_dir, f"{prefix}_{iteration:06d}.ply")
-        self.save_ply(path, ao=ao, ao_strength=ao_strength)
-
-        if _DEBUG_PLY_EXPORT:
-            print(f"[ITER {iteration}] Saved model as PLY: {path}")
-        return path
+        return ply_io.save_ply_sequence(
+            self,
+            output_dir,
+            iteration,
+            prefix,
+            ao=ao,
+            ao_strength=ao_strength,
+        )
 
     # ===== Optimization and densification methods =====
 

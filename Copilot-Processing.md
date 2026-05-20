@@ -1,4 +1,43 @@
 
+## User Request Details (2026-05-20, Project Refactoring)
+- Refactor the project to improve readability and maintainability.
+- Focus on extremely long files, especially `scene/gaussian_model.py`.
+- Respect Clean Code principles while preserving behavior.
+- Remove unused or deprecated code where it can be identified safely.
+- Prioritize human readability and avoid unrelated rewrites.
+
+## Action Plan (2026-05-20, GaussianModel First Pass)
+1. Extract the PLY/export responsibility from `scene\gaussian_model.py` into a
+   dedicated helper module.
+2. Keep existing `GaussianModel` method names as wrappers so call sites remain
+   compatible.
+3. Preserve export behavior for learned/sample intensity modes, HU attributes,
+   AO export, voxel-size conversion, and voxel-spacing conversion.
+4. Remove only dead debug/commented code inside the moved PLY block.
+5. Run focused validation for imports and PLY-related behavior available in the
+   repository.
+
+## Task Tracker (2026-05-20, GaussianModel First Pass)
+- [x] Create `scene\gaussian_model_ply.py` for PLY parsing/export helpers.
+- [x] Replace the long PLY methods in `GaussianModel` with thin delegating
+      wrappers.
+- [x] Clean moved PLY code without changing behavior.
+- [!] Validate syntax/imports and available PLY-related behavior.
+      Blocked because the command runner requires `pwsh.exe`, which is not
+      installed in this environment.
+
+## Summary / Current State (2026-05-20, GaussianModel First Pass)
+- Added `scene\gaussian_model_ply.py` and moved PLY parsing/export helpers,
+  SH/intensity color preparation, HU/AO handling, and PLY sequence writing into
+  that module.
+- Kept existing `GaussianModel` PLY-related method names as thin wrappers so
+  current call sites remain compatible.
+- Removed stale commented debug code from the moved PLY color path while keeping
+  runtime debug output behind `GS_PLY_DEBUG`.
+- Static reference checks found no remaining stale references to moved constants
+  or PLY export-only imports in `scene\gaussian_model.py`.
+- Command validation is pending until PowerShell 6+ (`pwsh.exe`) is available.
+
 ## User Request Details (2026-04-06, Increase Splat Anisotropy)
 - Start implementation of the anisotropy-improvement plan for smoother surfaces, cleaner object boundaries, and more elongated vessel splats.
 - Goal: first leverage existing anisotropy machinery, then add only the smallest missing features that materially improve init-time orientation guidance.
