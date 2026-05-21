@@ -392,9 +392,9 @@ def _normalize_intensity_values(model, intensity_values: np.ndarray) -> np.ndarr
         local_min = float(intensity_values.min()) if intensity_values.size > 0 else 0.0
         local_max = float(intensity_values.max()) if intensity_values.size > 0 else 1.0
         if local_max > local_min:
-        normalized = (
-            (intensity_values - local_min) / (local_max - local_min)
-        ).astype(np.float32)
+            normalized = (
+                (intensity_values - local_min) / (local_max - local_min)
+            ).astype(np.float32)
         else:
             normalized = np.full_like(intensity_values, 0.5, dtype=np.float32)
         if DEBUG_PLY_EXPORT:
