@@ -716,7 +716,7 @@ module gaussian_splatting_export {
 }
 module LoadNIfTI {
   internal {
-    frame = "689 1181 128 72"
+    frame = "793 1165 128 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -736,7 +736,7 @@ module LoadNIfTI {
 }
 module LoadNIfTI {
   internal {
-    frame = "845 1181 184 72"
+    frame = "781 1253 184 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -782,10 +782,10 @@ module View3D {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "555 198 1555 1121"
-        relativePosition = "-0.1125 -0.3570"
+        geometry = "-34 163 1555 1121"
+        relativePosition = "-0.1125 -0.3576"
         sizeHint = "1005 629"
-        wasOpen = yes
+        wasOpen = no
       }
     }
   }
@@ -815,12 +815,12 @@ module View3D {
     colorFactor = "1 1 1"
     camType = TRUE
     camProjectionType = CAMERA_PERSPECTIVE
-    camPosition = "191.858673095703 -294.611572265625 -151.442138671875"
-    camOrientation = "0.998474299907684 -0.0551333613693714 0.00305184535682201 1.60376298427582"
+    camPosition = "172.52978515625 -665.934814453125 -163.700912475586"
+    camOrientation = "0.998474419116974 -0.055133368819952 0.00305184558965266 1.60376298427582"
     initialCameraOrientation = CAMERA_KEEP_AS_IS
-    camFar = 750.13135
-    camNear = 278.65479
-    camFocal = 514.15784
+    camFar = 1122.5314
+    camNear = 650.31073
+    camFocal = 886.18579
     camHeight = 0.78539801
     decoration = FALSE
     annotations = FALSE
@@ -1109,7 +1109,7 @@ module SoLUTEditor {
 }
 module LoadNIfTI {
   internal {
-    frame = "1065 1181 144 72"
+    frame = "1017 1165 144 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1129,7 +1129,7 @@ module LoadNIfTI {
 }
 module LoadNIfTI {
   internal {
-    frame = "1241 1181 192 72"
+    frame = "1001 1253 192 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1149,7 +1149,7 @@ module LoadNIfTI {
 }
 module Arithmetic2 {
   internal {
-    frame = "1165 1069 104 72"
+    frame = "1037 1061 104 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1295,8 +1295,8 @@ module LoadNIfTI {
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1502 613 420 274"
-        relativePosition = "-0.0023 -0.0589"
+        geometry = "742 507 420 274"
+        relativePosition = "-0.0042 -0.0590"
         sizeHint = "420 274"
         wasOpen = no
       }
@@ -1304,7 +1304,7 @@ module LoadNIfTI {
   }
   fields {
     instanceName = LoadNIfTI4
-    inFilename = C:/DATA/MISC/AbdomenCT-1k/Case_00001_0000.nii.gz
+    inFilename = C:/DATA/MISC/AbdomenCT-1k/Case_00004_0000.nii.gz
     inApplyMode = AutoLoad
   }
 }
@@ -1314,8 +1314,8 @@ module SaveNIfTI {
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1610 655 604 191"
-        relativePosition = "0.0558 -0.0287"
+        geometry = "833 490 604 191"
+        relativePosition = "0.0911 -0.0738"
         sizeHint = "213 191"
         wasOpen = no
       }
@@ -1323,7 +1323,7 @@ module SaveNIfTI {
   }
   fields {
     instanceName = SaveNIfTI
-    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/abdomen1.5_ts2.nii.gz
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/abdomen_case4_ts.nii.gz
     inV2 = FALSE
     inCompressionLevel = 6
     inAuxiliaryFilename = ""
@@ -1332,7 +1332,7 @@ module SaveNIfTI {
 }
 module LoadNIfTI {
   internal {
-    frame = "1473 1181 144 72"
+    frame = "1209 1157 160 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1352,7 +1352,7 @@ module LoadNIfTI {
 }
 module LoadNIfTI {
   internal {
-    frame = "1649 1181 192 72"
+    frame = "1209 1253 176 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1372,7 +1372,7 @@ module LoadNIfTI {
 }
 module Arithmetic2 {
   internal {
-    frame = "1573 1069 104 72"
+    frame = "1237 1061 104 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1399,8 +1399,8 @@ module TotalSegmentator {
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1427 495 600 527"
-        relativePosition = "0.0020 -0.1437"
+        geometry = "662 409 600 527"
+        relativePosition = "0.0010 -0.1441"
         sizeHint = "600 527"
         wasOpen = no
       }
@@ -1412,20 +1412,20 @@ module TotalSegmentator {
     inModelVersion = v2
     inSegmentOrgans = TRUE
     inSegmentVertebrae = TRUE
-    inSegmentCardiac = TRUE
-    inSegmentMuscles = TRUE
+    inSegmentCardiac = FALSE
+    inSegmentMuscles = FALSE
     inSegmentRibs = TRUE
     inConfigFilename = $(MLAB_FMEstable_ReleaseMeVis)/Projects/TileProcessing/GenericTileProcessor/Modules/inference_provider_configs_FME/FME_LocalOnnxRuntime.yaml
   }
 }
 module Resample3D {
   internal {
-    frame = "197 1021 104 56"
+    frame = "77 1029 104 56"
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1556 573 324 355"
-        relativePosition = "-0.0006 -0.0876"
+        geometry = "794 473 374 355"
+        relativePosition = "0.0109 -0.0885"
         sizeHint = "324 355"
         wasOpen = no
       }
@@ -1438,9 +1438,9 @@ module Resample3D {
     isotropic = TRUE
     filterAlways = FALSE
     filterAlwaysTolerance = 0
-    zoom = "0.5703125 0.5703125 0.666666666666667"
-    imageSize = "292 292 180"
-    voxelSize = "1.5 1.5 1.5"
+    zoom = "0.5703125 0.5703125 2.30526315789474"
+    imageSize = "292 292 362"
+    voxelSize = "1.3013698630137 1.3013698630137 1.3013698630137"
     subVoxelShift = "0 0 0"
     useReferenceImage = FALSE
   }
@@ -1547,6 +1547,152 @@ module SoShowFPS {
     alpha = 1
   }
 }
+module SaveNIfTI {
+  internal {
+    frame = "553 901 96 56"
+    moduleGroupName = ""
+    windows {
+      window _default {
+        geometry = "831 489 604 191"
+        relativePosition = "0.0901 -0.0747"
+        sizeHint = "213 191"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = SaveNIfTI1
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/abdomen_case4.nii.gz
+    inV2 = FALSE
+    inCompressionLevel = 6
+    inAuxiliaryFilename = ""
+    inIntentName = ""
+  }
+}
+module LoadNIfTI {
+  internal {
+    frame = "1393 1149 160 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "741 507 420 274"
+        relativePosition = "-0.0047 -0.0590"
+        sizeHint = "420 274"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = LoadNIfTI7
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/abdomen_case4.nii.gz
+    inApplyMode = AutoLoad
+  }
+}
+module LoadNIfTI {
+  internal {
+    frame = "1401 1245 192 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "509 223 420 274"
+        relativePosition = "-0.1255 -0.3056"
+        sizeHint = "420 274"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = LoadNIfTI8
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/abdomen_case4_ts.nii.gz
+    inApplyMode = AutoLoad
+  }
+}
+module Arithmetic2 {
+  internal {
+    frame = "1421 1053 104 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1541 700 353 97"
+        relativePosition = "-0.0006 0.0036"
+        sizeHint = "353 97"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = Arithmetic23
+    function = Multiply
+    outputImageSize = InvalidateOutputIfSizesDiffer
+    constant = 0
+    autoReplicate = FALSE
+  }
+}
+module LoadNIfTI {
+  internal {
+    frame = "1593 1141 176 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "739 507 420 274"
+        relativePosition = "-0.0057 -0.0590"
+        sizeHint = "420 274"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = LoadNIfTI9
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/abdomen_case6.nii.gz
+    inApplyMode = AutoLoad
+  }
+}
+module LoadNIfTI {
+  internal {
+    frame = "1609 1237 192 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "508 222 420 274"
+        relativePosition = "-0.1260 -0.3064"
+        sizeHint = "420 274"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = LoadNIfTI10
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/abdomen_case6_ts.nii.gz
+    inApplyMode = AutoLoad
+  }
+}
+module Arithmetic2 {
+  internal {
+    frame = "1629 1045 104 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1541 700 353 97"
+        relativePosition = "-0.0006 0.0036"
+        sizeHint = "353 97"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = Arithmetic24
+    function = Multiply
+    outputImageSize = InvalidateOutputIfSizesDiffer
+    constant = 0
+    autoReplicate = FALSE
+  }
+}
 connections {
   gaussian_splatting_export.image = Switch.output0
   gaussian_splatting_export.mask = Switch.output0
@@ -1567,6 +1713,8 @@ connections {
   Switch.input0 = Arithmetic2.output0
   Switch.input1 = Arithmetic21.output0
   Switch.input2 = Arithmetic22.output0
+  Switch.input3 = Arithmetic23.output0
+  Switch.input4 = Arithmetic24.output0
   DLLiverVesselSegmentation.inImage = LoadNIfTI4.outImage
   DLLiverVesselSegmentation.inLiver = DLLiverSegmentation.outImageMask
   DLMultiscalePVHVSegmentation.inCT = LoadNIfTI4.outImage
@@ -1575,10 +1723,15 @@ connections {
   SaveNIfTI.inImage = Threshold.output0
   Arithmetic22.input0 = LoadNIfTI5.outImage
   Arithmetic22.input1 = LoadNIfTI6.outImage
-  TotalSegmentator.input0 = Resample3D.output0
+  TotalSegmentator.input0 = LoadNIfTI4.outImage
   Resample3D.input0 = LoadNIfTI4.outImage
   IntervalThreshold.input0 = TotalSegmentator.output0
   Threshold.input0 = IntervalThreshold.output0
   Histogram.input0 = Switch.output0
+  SaveNIfTI1.inImage = LoadNIfTI4.outImage
+  Arithmetic23.input0 = LoadNIfTI7.outImage
+  Arithmetic23.input1 = LoadNIfTI8.outImage
+  Arithmetic24.input0 = LoadNIfTI9.outImage
+  Arithmetic24.input1 = LoadNIfTI10.outImage
 }
 networkModel = ""

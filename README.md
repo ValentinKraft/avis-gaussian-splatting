@@ -16,25 +16,31 @@ ns-export gaussian-splat --load-config outputs/MINICT/splatfacto/2026-02-28_1637
 ns-viewer --load-config ...
 
 ---------------------------
+Evaluation command:
+
 ```shell
-python train.py `
->>    --model_path _output_/abdomen-test-25k-new `
->>    --mask_path _input_/abdomen1.5_ts2.nii.gz `
->>    --volume_path _input_/abdomen1.5.nii.gz `
+python train.py `                                       
+>>    --model_path _output_/abdomen6-test-250k `
+>>    --mask_path _input_/abdomen_case6_ts.nii.gz `      
+>>    --volume_path _input_/abdomen_case6.nii.gz `
 >>    --iterations 1000 `
->>    --init_n_points 25000 `
+>>    --init_n_points 250000 `
 >>    --medical_mode none `
 >>    --supervision_target joint `
 >>    --mask_loss_weight 0.2 `
 >>    --ct_loss_weight 1.00 `
->>    --disable_densification `
 >>    --volume_downscale_factor 1 `
 >>    --volume_render_downscale_factor 1 `
 >>    --disable_volume_overflow_guard `
->>    --save_ply_every 500 `
+>>    --save_ply_every 100 `
 >>    --enable_diagnostics `
 >>    --intensity_mode sampled `
->>    --opacity_mode sampled --max_points_per_iter 4000
+>>    --opacity_mode sampled `
+>>    --eval_masked_mse_full_roi_interval 100 `
+>>    --eval_masked_mse_full_roi_target ct `
+>>    --eval_masked_mse_full_roi_downscale_factor 1 `
+>>    --max_points_per_iter 4000 `
+>>    --disable_densification
 ```
 ---------------------------
 
