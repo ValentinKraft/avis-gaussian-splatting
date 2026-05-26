@@ -229,6 +229,18 @@ def _log_gpu_memory(
     )
 
 
+def _log_used_vram(iteration: int) -> None:
+    """Print current CUDA VRAM usage for periodic console monitoring."""
+    if not torch.cuda.is_available():
+        return
+
+    used = torch.cuda.memory_allocated() / 1e9
+    reserved = torch.cuda.memory_reserved() / 1e9
+    print(
+        f"[VRAM][iter={iteration}] used={used:.2f} GB, reserved={reserved:.2f} GB"
+    )
+
+
 def _maybe_reset_opacity(
     gaussians: GaussianModel, iteration: int, interval: int
 ) -> bool:
@@ -962,6 +974,9 @@ def training(
 
             if log_mem and total_points > 0:
                 _log_gpu_memory("after_step", iteration, total_points, active_points)
+
+            if iteration % 100 == 0:
+                _log_used_vram(iteration)
 
             # Debug: Check if scaler skipped the step (happens when gradients are inf/nan)
             if diagnostics_enabled and (iteration <= 10 or iteration % 500 == 0):
