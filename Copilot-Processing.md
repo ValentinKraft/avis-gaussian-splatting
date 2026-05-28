@@ -38,6 +38,29 @@
   or PLY export-only imports in `scene\gaussian_model.py`.
 - Command validation is pending until PowerShell 6+ (`pwsh.exe`) is available.
 
+## User Request Details (2026-05-26, Periodic VRAM Console Logging)
+- Print used VRAM to the training console every 100 iterations.
+- Keep the change minimal and integrate with the existing training loop logging.
+
+## Action Plan (2026-05-26, VRAM Logging)
+1. Inspect the existing training-loop memory logging path in `train.py`.
+2. Add a periodic current-VRAM console log every 100 iterations.
+3. Run focused validation on the touched Python file.
+
+## Task Tracker (2026-05-26, VRAM Logging)
+- [x] Inspect the existing memory logging path in `train.py`.
+- [x] Add a periodic console VRAM logger for every 100 iterations.
+- [x] Run focused validation on the touched Python file.
+
+## Summary / Current State (2026-05-26, VRAM Logging)
+- `train.py` now prints a `[VRAM][iter=...]` line every 100 iterations.
+- The periodic log reports current CUDA used VRAM via
+	`torch.cuda.memory_allocated()` and also reports reserved VRAM.
+- Existing early-iteration `[MEM]` diagnostics remain unchanged.
+- Focused validation completed successfully with clean editor diagnostics and a
+	successful `python -m py_compile train.py` check in the
+	`avis_gaussian_splatting` conda environment.
+
 ## User Request Details (2026-04-06, Increase Splat Anisotropy)
 - Start implementation of the anisotropy-improvement plan for smoother surfaces, cleaner object boundaries, and more elongated vessel splats.
 - Goal: first leverage existing anisotropy machinery, then add only the smallest missing features that materially improve init-time orientation guidance.
