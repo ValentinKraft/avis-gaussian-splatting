@@ -1,5 +1,5 @@
 // MDL v1 utf8
-mevislabVersion = 4.2.70.787
+mevislabVersion = 4.2.70.857
 network {
   watchlist = ""
 }
@@ -692,7 +692,7 @@ generate_weighted_splats_from_image(
 }
 module gaussian_splatting_export {
   internal {
-    frame = "845 389 184 56"
+    frame = "949 309 184 56"
     moduleGroupName = ""
     localMacro = 1
     windows {
@@ -778,12 +778,12 @@ module Arithmetic2 {
 }
 module View3D {
   internal {
-    frame = "1097 557 144 56"
+    frame = "1129 469 144 56"
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "-34 163 1555 1121"
-        relativePosition = "-0.1125 -0.3576"
+        geometry = "1642 220 1555 1121"
+        relativePosition = "0.2035 -0.3412"
         sizeHint = "1005 629"
         wasOpen = no
       }
@@ -815,12 +815,12 @@ module View3D {
     colorFactor = "1 1 1"
     camType = TRUE
     camProjectionType = CAMERA_PERSPECTIVE
-    camPosition = "172.52978515625 -665.934814453125 -163.700912475586"
-    camOrientation = "0.998474419116974 -0.055133368819952 0.00305184558965266 1.60376298427582"
+    camPosition = "71.1740112304688 -273.536560058594 -155.968841552734"
+    camOrientation = "0.980051279067993 -0.128848388791084 -0.151318907737732 1.63701236248016"
     initialCameraOrientation = CAMERA_KEEP_AS_IS
-    camFar = 1122.5314
-    camNear = 650.31073
-    camFocal = 886.18579
+    camFar = 793.94318
+    camNear = 234.93042
+    camFocal = 514.15778
     camHeight = 0.78539801
     decoration = FALSE
     annotations = FALSE
@@ -899,13 +899,13 @@ module View3D {
 }
 module MinMaxScan {
   internal {
-    frame = "1213 757 152 72"
+    frame = "1173 781 184 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1490 591 472 314"
-        relativePosition = "0.0017 -0.0747"
+        geometry = "1488 591 472 314"
+        relativePosition = "0.0012 -0.0747"
         sizeHint = "449 314"
         wasOpen = no
       }
@@ -920,12 +920,12 @@ module MinMaxScan {
 }
 module SoLUTEditor {
   internal {
-    frame = "1189 661 104 56"
+    frame = "1309 685 104 56"
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "1019 911 513 459"
-        relativePosition = "-0.1291 0.1552"
+        geometry = "1018 911 513 459"
+        relativePosition = "-0.1294 0.1552"
         sizeHint = "513 459"
         wasOpen = no
       }
@@ -1058,12 +1058,12 @@ module EllipsoidTestPattern {
 }
 module SoLUTEditor {
   internal {
-    frame = "1309 657 104 64"
+    frame = "1189 681 104 64"
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "851 249 513 459"
-        relativePosition = "-0.1779 -0.3204"
+        geometry = "1720 459 513 459"
+        relativePosition = "0.0747 -0.1695"
         sizeHint = "513 459"
         wasOpen = no
       }
@@ -1071,18 +1071,18 @@ module SoLUTEditor {
   }
   fields {
     instanceName = BaseLUT
-    rangeMin = 0
-    rangeMax = 2392
-    viewMin = 0
-    viewMax = 2392
+    rangeMin = -1024
+    rangeMax = 3071
+    viewMin = -1024
+    viewMax = 3071
     window = 1
     level = 0.5
     allowNewPoints = TRUE
     updateLutWhileDragging = TRUE
     relativeLut = FALSE
     colorInterpolation = InterpolateRGB
-    colorPoints = "[ 0 0.341176986694336 0.341176986694336 0.560783982276917, 623.116027832031 0.341176986694336 0.341176986694336 0.560783982276917, 1081.38000488281 0.725489974021912 0.101961001753807 0.0823528990149498, 1335.53332519531 1 0.666666984558105 0, 1395.32995605469 0.874509990215302 0.717647016048431 0.533333003520966, 2094.98999023438 1 1 1, 2392 1 1 1 ]"
-    alphaPoints = "[ 0 0, 623.116027832031 0, 1081.38000488281 0.0613497011363506, 1335.53332519531 0.766871154308319, 1395.32995605469 0.90184098482132, 2094.98999023438 1, 2392 1 ]"
+    colorPoints = "[ -1024 0.341176986694336 0.341176986694336 0.560783982276917, -498.914001464844 0.341176986694336 0.341176986694336 0.560783982276917, 99.0538024902344 0.474510014057159 0.0156862996518612 0, 130.449005126953 1 0.427450984716415 0.129411771893501, 204.5 1 0.780391991138458 0, 332.46875 0.956862986087799 0.84313702583313 0.705882012844086, 3071 1 1 1 ]"
+    alphaPoints = "[ -1024 0, -498.914001464844 0, 99.0538024902344 0, 130.449005126953 0.613497018814087, 204.5 0.717791438102722, 332.46875 0.797546029090881, 3071 0.987730026245117 ]"
     alphaFactor = 1
     newRangeMin = -1024
     newRangeMax = 1512.3695
@@ -1205,7 +1205,7 @@ module DLLungVesselSegmentation {
 }
 module DLLiverVesselSegmentation {
   internal {
-    frame = "277 589 216 56"
+    frame = "437 581 216 56"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1240,7 +1240,7 @@ module DLLiverVesselSegmentation {
 }
 module DLMultiscalePVHVSegmentation {
   internal {
-    frame = "217 685 240 56"
+    frame = "273 669 240 56"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1268,8 +1268,8 @@ module DLLiverSegmentation {
     showNetworkPanel = true
     windows {
       window _default {
-        geometry = "1551 500 496 498"
-        relativePosition = "0.0230 -0.1401"
+        geometry = "1550 499 496 498"
+        relativePosition = "0.0227 -0.1408"
         sizeHint = "332 498"
         wasOpen = no
       }
@@ -1290,7 +1290,7 @@ module DLLiverSegmentation {
 }
 module LoadNIfTI {
   internal {
-    frame = "321 1165 128 72"
+    frame = "225 1213 192 72"
     moduleGroupName = ""
     showNetworkPanel = true
     windows {
@@ -1310,7 +1310,7 @@ module LoadNIfTI {
 }
 module SaveNIfTI {
   internal {
-    frame = "189 421 88 56"
+    frame = "93 469 88 56"
     moduleGroupName = ""
     windows {
       window _default {
@@ -1420,12 +1420,12 @@ module TotalSegmentator {
 }
 module Resample3D {
   internal {
-    frame = "77 1029 104 56"
+    frame = "213 1069 104 56"
     moduleGroupName = ""
     windows {
       window _default {
-        geometry = "794 473 374 355"
-        relativePosition = "0.0109 -0.0885"
+        geometry = "1569 571 374 355"
+        relativePosition = "0.0105 -0.0891"
         sizeHint = "324 355"
         wasOpen = no
       }
@@ -1438,9 +1438,9 @@ module Resample3D {
     isotropic = TRUE
     filterAlways = FALSE
     filterAlwaysTolerance = 0
-    zoom = "0.5703125 0.5703125 2.30526315789474"
-    imageSize = "292 292 362"
-    voxelSize = "1.3013698630137 1.3013698630137 1.3013698630137"
+    zoom = "0.494791666666667 0.494791666666667 2"
+    imageSize = "253 253 314"
+    voxelSize = "1.5 1.5 1.5"
     subVoxelShift = "0 0 0"
     useReferenceImage = FALSE
   }
@@ -1693,6 +1693,185 @@ module Arithmetic2 {
     autoReplicate = FALSE
   }
 }
+module SaveNIfTI {
+  internal {
+    frame = "1585 757 96 56"
+    moduleGroupName = ""
+    windows {
+      window _default {
+        geometry = "1168 585 610 191"
+        relativePosition = "-0.0718 -0.0790"
+        sizeHint = "213 191"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = SaveNIfTI2
+    inFilename = C:/DEV/TESTS/gs/avis-gaussian-splatting/_input_/abdomen_case4_1.5_ts.nii.gz
+    inV2 = FALSE
+    inCompressionLevel = 6
+    inAuxiliaryFilename = ""
+    inIntentName = ""
+  }
+}
+module Resample3D {
+  internal {
+    frame = "1577 909 112 56"
+    moduleGroupName = ""
+    windows {
+      window _default {
+        geometry = "1569 571 374 355"
+        relativePosition = "0.0105 -0.0891"
+        sizeHint = "324 355"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = Resample3D1
+    keep = "Scale factor"
+    filter = Lanczos_3
+    isotropic = TRUE
+    filterAlways = FALSE
+    filterAlwaysTolerance = 0
+    zoom = "0.494791666666667 0.494791666666667 2"
+    imageSize = "253 253 314"
+    voxelSize = "1.5 1.5 1.5"
+    subVoxelShift = "0 0 0"
+    useReferenceImage = FALSE
+  }
+}
+module ImagePropertyConvert {
+  internal {
+    frame = "-99 653 152 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1561 426 336 649"
+        relativePosition = "0.0026 -0.1932"
+        sizeHint = "317 649"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = ImagePropertyConvert
+    changeDimensionInfo = FALSE
+    cDimInfo = ""
+    tDimInfo = ""
+    uDimInfo = ""
+    a00 = 1
+    a01 = 0
+    a02 = 0
+    a03 = 0
+    a10 = 0
+    a11 = 1
+    a12 = 0
+    a13 = 0
+    a20 = 0
+    a21 = 0
+    a22 = 1
+    a23 = 0
+    a30 = 0
+    a31 = 0
+    a32 = 0
+    a33 = 1
+    worldMatrix = "1 0 0 0
+0 1 0 0
+0 0 1 0
+0 0 0 1"
+    changeDatatype = TRUE
+    datatype = "unsigned int8"
+    changePageSize = FALSE
+    pageSizeX = 32
+    pageSizeY = 32
+    pageSizeZ = 1
+    pageSizeC = 1
+    pageSizeT = 1
+    pageSizeU = 1
+    changeMinGrayValue = FALSE
+    minGrayValue = 0
+    changeMaxGrayValue = FALSE
+    maxGrayValue = 1
+    changeWorldMatrix = FALSE
+    voxelSizeX = 1
+    voxelSizeY = 1
+    voxelSizeZ = 1
+    autoApply = TRUE
+  }
+}
+module SoSwitch {
+  internal {
+    frame = "1269 565 136 72"
+    moduleGroupName = ""
+    showNetworkPanel = true
+    windows {
+      window _default {
+        geometry = "1633 708 198 85"
+        relativePosition = "0.0035 0.0093"
+        sizeHint = "172 85"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = SoSwitch
+    whichChild = 1
+  }
+}
+module SoLUTEditor {
+  internal {
+    frame = "1433 685 112 56"
+    moduleGroupName = ""
+    windows {
+      window _default {
+        geometry = "1463 474 513 459"
+        relativePosition = "0.0000 -0.1588"
+        sizeHint = "513 459"
+        wasOpen = no
+      }
+    }
+  }
+  fields {
+    instanceName = SoLUTEditor1
+    rangeMin = -100
+    rangeMax = 1512.3695
+    viewMin = -100
+    viewMax = 1512.3695
+    window = 1
+    level = 0.5
+    allowNewPoints = TRUE
+    updateLutWhileDragging = TRUE
+    relativeLut = FALSE
+    colorInterpolation = InterpolateRGB
+    colorPoints = "[ -100 0.682352960109711 0.133333340287209 0.890196084976196, 0.773094177246094 0.682352960109711 0.133333340287209 0.890196084976196, 44.4414367675781 0.564705908298492 0.239215686917305 0.835294127464294, 100.824630737305 0.474510014057159 0.0156862996518612 0, 176.695205688477 0.917647004127502 0.372548997402191 0.0235293991863728, 253.321838378906 1 0.780391991138458 0, 343.686004638672 0.956862986087799 0.84313702583313 0.705882012844086, 1035.97314453125 0.966070115566254 0.876617729663849 0.768658339977264, 1512.36950683594 0.966070115566254 0.876617729663849 0.768658339977264 ]"
+    alphaPoints = "[ -100 0, 0.773094177246094 0, 44.4414367675781 0.0674846619367599, 100.824630737305 0.0736196339130402, 176.695205688477 0.0920245423913002, 253.321838378906 0.711655974388123, 343.686004638672 0.822085916996002, 1035.97314453125 0.886394262313843, 1512.36950683594 0.886394262313843 ]"
+    alphaFactor = 1
+    newRangeMin = -100
+    newRangeMax = 1512.3695
+    newRangeMode = ClipFormerLUT
+    colorEditorHeight = 24
+    showColorEditor = TRUE
+    showAlphaEditor = TRUE
+    markerRadius = 4
+    selectedMarkerRadius = 6
+    snapMarkerRadius = 10
+    alphaLineWidth = 2
+    backgroundColor = "0.800000011920929 0.800000011920929 0.800000011920929"
+    marginColor = "0.830999970436096 0.815999984741211 0.783999979496002"
+    borderColor = "0 0 0"
+    alphaLineColor = "0 0 0"
+    histogramColor = "0.400000005960464 0.400000005960464 0.400000005960464"
+    drawColoredMarkers = TRUE
+    markerColor = "1 1 1"
+    selectedMarkerColor = "1 0.5 0.5"
+    selectedTriangleSize = 8
+    triangleSize = 6
+    useAntiAliasing = TRUE
+  }
+}
 connections {
   gaussian_splatting_export.image = Switch.output0
   gaussian_splatting_export.mask = Switch.output0
@@ -1701,11 +1880,12 @@ connections {
   Arithmetic2.input1 = LoadNIfTI1.outImage
   View3D.inImage = Switch.output0
   View3D.inInvPreLUT = SoShowFPS.self
-  View3D.inInvPostLUT = SoLUTEditor.outInventorLUT
+  View3D.inInvPostLUT = SoSwitch.self
   MinMaxScan.input0 = Switch.output0
   SoLUTEditor.inHistogram = Histogram.outputHistogramCurve
   SoLUTEditor.newRangeMin = MinMaxScan.trueMinValue
   SoLUTEditor.newRangeMax = MinMaxScan.trueMaxValue
+  BaseLUT.inHistogram = Histogram.outputHistogramCurve
   BaseLUT.newRangeMin = MinMaxScan.trueMinValue
   BaseLUT.newRangeMax = MinMaxScan.trueMaxValue
   Arithmetic21.input0 = LoadNIfTI2.outImage
@@ -1715,23 +1895,27 @@ connections {
   Switch.input2 = Arithmetic22.output0
   Switch.input3 = Arithmetic23.output0
   Switch.input4 = Arithmetic24.output0
-  DLLiverVesselSegmentation.inImage = LoadNIfTI4.outImage
+  DLLiverVesselSegmentation.inImage = Resample3D.output0
   DLLiverVesselSegmentation.inLiver = DLLiverSegmentation.outImageMask
-  DLMultiscalePVHVSegmentation.inCT = LoadNIfTI4.outImage
+  DLMultiscalePVHVSegmentation.inCT = Resample3D.output0
   DLMultiscalePVHVSegmentation.inLiver = DLLiverSegmentation.outImageMask
-  DLLiverSegmentation.inImage = LoadNIfTI4.outImage
+  DLLiverSegmentation.inImage = Resample3D.output0
   SaveNIfTI.inImage = Threshold.output0
   Arithmetic22.input0 = LoadNIfTI5.outImage
   Arithmetic22.input1 = LoadNIfTI6.outImage
-  TotalSegmentator.input0 = LoadNIfTI4.outImage
+  TotalSegmentator.input0 = Resample3D.output0
   Resample3D.input0 = LoadNIfTI4.outImage
   IntervalThreshold.input0 = TotalSegmentator.output0
   Threshold.input0 = IntervalThreshold.output0
   Histogram.input0 = Switch.output0
-  SaveNIfTI1.inImage = LoadNIfTI4.outImage
+  SaveNIfTI1.inImage = Resample3D.output0
   Arithmetic23.input0 = LoadNIfTI7.outImage
   Arithmetic23.input1 = LoadNIfTI8.outImage
   Arithmetic24.input0 = LoadNIfTI9.outImage
   Arithmetic24.input1 = LoadNIfTI10.outImage
+  SaveNIfTI2.inImage = Resample3D1.output0
+  Resample3D1.input0 = LoadNIfTI8.outImage
+  SoSwitch.children = "BaseLUT.outInventorLUT SoLUTEditor.outInventorLUT SoLUTEditor1.outInventorLUT"
+  SoLUTEditor1.inHistogram = Histogram.outputHistogramCurve
 }
 networkModel = ""
