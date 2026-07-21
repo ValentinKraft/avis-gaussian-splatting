@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> This repository is deprecated and only used for documentation purposes. Use this one instead: https://github.com/ValentinKraft/vgs 
+
 # Nerfstudio commands
 wsl -d Ubuntu-22.04
 conda activate nerfstudio
